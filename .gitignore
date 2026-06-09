@@ -1,0 +1,25 @@
+.idea
+.vscode
+.DS_Store
+
+/toktop
+/toktop.exe
+/bin/
+/dist/
+
+.cache/
+*.test
+coverage.out
+*.coverprofile
+
+# local code-understanding artifacts (knowledge graph, generated locally)
+.understand-anything/
+
+.env
+.env.local
+
+tmp
+
+.claude
+.codex
+CLAUDE.md

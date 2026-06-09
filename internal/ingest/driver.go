@@ -1,0 +1,167 @@
+package ingest
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"toktop.unceas.dev/internal/collector"
+	"toktop.unceas.dev/internal/redact"
+	"toktop.unceas.dev/internal/source"
+	"toktop.unceas.dev/internal/trace"
+)
+
+// Spec parameterizes the generic ingest Driver for one provider. F is the
+// provider's session-file type; the driver needs only its project-relative path
+// and discovery-root path (via PathOf/RootOf), so each provider keeps its own
+// richer SessionFile shape.
+type Spec[F any] struct {
+	Source        string // provider name; also the Index.Source value
+	ParserVersion string
+
+	PathOf func(F) string // session file's project-relative path
+	RootOf func(F) string // session file's discovery-root path
+
+	// Collect reads one session file into a RawSession plus any per-file collect
+	// errors (e.g. malformed lines that don't abort the whole file).
+	Collect func(ctx context.Context, file F) (source.RawSession, []trace.ParseError, error)
+	// Parse turns a RawSession into the neutral trace pieces. It wraps the
+	// provider's parser, whose ParseResult is field-identical across providers.
+	Parse func(ctx context.Context, raw source.RawSession) (trace.Session, []trace.Turn, []trace.ParseError, error)
+}
+
+// Driver runs the shared, provider-neutral ingest pipeline (parse → accumulate →
+// finalize → price → redact → intern) for a provider described by Spec. It lives
+// in package ingest (not collector) because it returns ingest.Result, and the
+// collector package must not depend on ingest.
+type Driver[F any] struct {
+	Spec Spec[F]
+}
+
+func NewDriver[F any](spec Spec[F]) Driver[F] { return Driver[F]{Spec: spec} }
+
+// BatchBytesThreshold caps the total bytes of session files parsed per batch
+// before the pipeline flushes. One value for every provider's Stream.
+const BatchBytesThreshold = 32 << 20
+
+// Stream runs the provider-neutral streaming ingest over an already-discovered
+// session list: it emits provider metadata first, then parses changed files in
+// size-bounded batches via IngestBatch. Providers supply their own discovery and
+// metadata closure; the pipeline shape (parseBatch + StreamSessions) lives here
+// once instead of in a byte-identical per-provider Ingest wrapper.
+func (d Driver[F]) Stream(ctx context.Context, roots []SourceRoot, policy redact.Policy, sessions []F, known map[string]source.Fingerprint, metadata MetadataFn, sink BatchSink) (Summary, error) {
+	parseBatch := func(ctx context.Context, batch []F) (Result, error) {
+		return d.IngestBatch(ctx, roots, policy, batch)
+	}
+	return StreamSessions(ctx, sessions, d.Spec.PathOf, known, metadata, parseBatch, BatchBytesThreshold, sink)
+}
+
+func (d Driver[F]) newIndex(roots []SourceRoot, capHint int) trace.Index {
+	return trace.Index{
+		GeneratedAt:   time.Now().UTC(),
+		Source:        d.Spec.Source,
+		ParserVersion: d.Spec.ParserVersion,
+		SourceRoots:   RootPaths(roots),
+		Sessions:      make([]trace.Session, 0, capHint),
+	}
+}
+
+// IngestBatch parses a batch of session files concurrently and accumulates them
+// into one redacted, interned Result. A single unreadable/unparseable
+// file is recorded as a ParseError and skipped (so it cannot abort the batch and
+// every alphabetically-later batch); only context cancellation stays fatal.
+func (d Driver[F]) IngestBatch(ctx context.Context, roots []SourceRoot, policy redact.Policy, batch []F) (Result, error) {
+	index := d.newIndex(roots, len(batch))
+	type parseOutput struct {
+		raw     source.RawSession
+		collect []trace.ParseError
+		session trace.Session
+		turns   []trace.Turn
+		perrs   []trace.ParseError
+	}
+	parsed, err := collector.SafeMapErr(ctx, batch, func(file *F) (parseOutput, error) {
+		raw, collectErrors, err := d.Spec.Collect(ctx, *file)
+		if err != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return parseOutput{}, cerr
+			}
+			return parseOutput{collect: []trace.ParseError{d.fileSkipError(d.Spec.RootOf(*file), d.Spec.PathOf(*file), err)}}, nil
+		}
+		session, turns, perrs, err := d.Spec.Parse(ctx, raw)
+		if err != nil {
+			collector.ReleaseRawJSON(raw.RawEventList)
+			if cerr := ctx.Err(); cerr != nil {
+				return parseOutput{}, cerr
+			}
+			return parseOutput{collect: []trace.ParseError{d.fileSkipError(d.Spec.RootOf(*file), d.Spec.PathOf(*file), err)}}, nil
+		}
+		collector.ReleaseRawJSON(raw.RawEventList)
+		return parseOutput{raw: raw, collect: collectErrors, session: session, turns: turns, perrs: perrs}, nil
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	var rawList []source.RawEvent
+	processed := make([]string, 0, len(batch))
+	for i, out := range parsed {
+		processed = append(processed, d.Spec.PathOf(batch[i]))
+		index.RawEventCount += len(out.raw.RawEventList)
+		rawList = append(rawList, out.raw.RawEventList...)
+		index.ParseErrorList = append(index.ParseErrorList, out.collect...)
+		index.ParseErrorList = append(index.ParseErrorList, out.perrs...)
+		if out.session.TurnCount == 0 && len(out.raw.RawEventList) == 0 {
+			continue
+		}
+		index.Sessions = append(index.Sessions, out.session)
+		index.Turns = append(index.Turns, out.turns...)
+		for _, turn := range out.turns {
+			index.Invocations = append(index.Invocations, turn.Invocations...)
+			index.TurnComponents = append(index.TurnComponents, turn.Components...)
+		}
+	}
+	collector.FinalizeCounts(&index)
+	policy.ApplyToIndex(ctx, &index)
+	trace.InternIndexStrings(&index)
+	return Result{Index: index, RawEventList: rawList, ProcessedFiles: processed}, nil
+}
+
+// IngestSessionFile parses one session file into a redacted, interned
+// Result. Unlike IngestBatch, a collect/parse error is returned (a single-file
+// ingest has no sibling batch to protect).
+func (d Driver[F]) IngestSessionFile(ctx context.Context, roots []SourceRoot, file F, policy redact.Policy) (Result, error) {
+	index := d.newIndex(roots, 1)
+	raw, collectErrors, err := d.Spec.Collect(ctx, file)
+	if err != nil {
+		return Result{}, fmt.Errorf("collect %s: %w", d.Spec.PathOf(file), err)
+	}
+	session, turns, perrs, err := d.Spec.Parse(ctx, raw)
+	if err != nil {
+		return Result{}, fmt.Errorf("parse %s: %w", d.Spec.PathOf(file), err)
+	}
+	collector.ReleaseRawJSON(raw.RawEventList)
+	index.RawEventCount = len(raw.RawEventList)
+	index.ParseErrorList = append(index.ParseErrorList, collectErrors...)
+	index.ParseErrorList = append(index.ParseErrorList, perrs...)
+	if session.TurnCount > 0 || len(raw.RawEventList) > 0 {
+		index.Sessions = append(index.Sessions, session)
+		index.Turns = append(index.Turns, turns...)
+		for _, turn := range turns {
+			index.Invocations = append(index.Invocations, turn.Invocations...)
+			index.TurnComponents = append(index.TurnComponents, turn.Components...)
+		}
+	}
+	collector.FinalizeCounts(&index)
+	policy.ApplyToIndex(ctx, &index)
+	trace.InternIndexStrings(&index)
+	return Result{Index: index, RawEventList: raw.RawEventList}, nil
+}
+
+func (d Driver[F]) fileSkipError(rootPath, filePath string, err error) trace.ParseError {
+	sourceID := trace.SourceID(d.Spec.Source)
+	return trace.ParseError{
+		SourceID:     sourceID,
+		SourceRootID: trace.SourceRootID(sourceID, rootPath),
+		SourceFile:   filePath,
+		Message:      err.Error(),
+	}
+}

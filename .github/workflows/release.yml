@@ -1,0 +1,125 @@
+# Cuts a GitHub Release with prebuilt binaries when a v* tag is pushed.
+#
+# CGO + the sqlite_fts5 tag are mandatory, so a C compiler must be present for
+# every target. linux/windows/darwin-arm64 build natively on their own runner;
+# darwin/amd64 cross-compiles on the Apple-Silicon macos runner via the macOS
+# toolchain's x86_64 slice (clang -arch x86_64), since GitHub retired the free
+# Intel macos-13 runner and one macOS host targets both arches.
+# Linux is built on the oldest supported ubuntu to keep the glibc floor low.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # create the release and upload assets
+  id-token: write # keyless cosign signing via GitHub OIDC
+
+jobs:
+  # Releases may only be cut from main: fail unless the tagged commit is
+  # reachable from origin/main. (A git tag isn't bound to a branch, so this
+  # ancestry check is what actually enforces "main only".)
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Ensure the tag is on main
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "::error::Release tags must be cut from main (tagged commit is not on main)."
+            exit 1
+          fi
+
+  build:
+    needs: guard
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, goos: darwin, goarch: arm64 }
+          - { os: macos-latest, goos: darwin, goarch: amd64 }
+          - { os: ubuntu-22.04, goos: linux, goarch: amd64 }
+          - { os: ubuntu-22.04-arm, goos: linux, goarch: arm64 }
+          - { os: windows-latest, goos: windows, goarch: amd64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # Windows ships no C compiler by default; install mingw-w64 gcc for cgo.
+      # (Added to GITHUB_PATH, so it's visible to the bash build step below.)
+      - if: matrix.goos == 'windows'
+        uses: egor-tensin/setup-mingw@41b837e47d7f85214629d255b9c4bc3fcbe9fd63 # v3
+
+      # Native for most targets; darwin/amd64 cross-compiles to x86_64 on the
+      # Apple-Silicon runner (CC below points cgo at the macOS x86_64 slice).
+      - name: Build & package
+        shell: bash
+        env:
+          CGO_ENABLED: '1'
+          # Passed via env (not inlined into run:) so a tag name containing shell
+          # metacharacters can't inject into the build script. github.sha is a
+          # 40-hex commit id and safe, but kept here for symmetry.
+          VERSION: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          name="toktop_${{ matrix.goos }}_${{ matrix.goarch }}"
+          ldflags="-X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # darwin/amd64 has no free native runner since macos-13 retired, so it
+          # cross-compiles on the arm64 runner: GOARCH picks the target and CC
+          # points cgo at the x86_64 slice of the macOS toolchain.
+          if [ "${{ matrix.goos }}" = darwin ] && [ "${{ matrix.goarch }}" = amd64 ]; then
+            export GOARCH=amd64 CC="clang -arch x86_64"
+          fi
+          if [ "${{ matrix.goos }}" = windows ]; then
+            go build -tags sqlite_fts5 -ldflags "$ldflags" -o toktop.exe ./cmd/toktop
+            7z a "${name}.zip" toktop.exe
+          else
+            go build -tags sqlite_fts5 -ldflags "$ldflags" -o toktop ./cmd/toktop
+            tar -czf "${name}.tar.gz" toktop
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.goos }}_${{ matrix.goarch }}
+          path: toktop_*.*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      # checksums.txt stays in the release — install.sh verifies the binary against
+      # releases/latest/download/checksums.txt. The install scripts themselves are
+      # served from the website (toktop.unceas.dev/install.{sh,ps1}), not bundled here.
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum toktop_* > checksums.txt
+
+      # Sign checksums.txt keyless (no long-lived key): cosign uses the workflow's
+      # GitHub OIDC identity via Fulcio and logs to the Rekor transparency log, so
+      # checksums.txt — and thus every binary it lists — becomes tamper-evident.
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign checksums (keyless cosign)
+        run: |
+          cd dist
+          cosign sign-blob --yes \
+            --bundle checksums.txt.bundle \
+            checksums.txt
+
+      - uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          files: dist/*

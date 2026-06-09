@@ -1,0 +1,46 @@
+# CI mirrors the local pre-release gate: `make check` = vet + lint + vuln + build.
+#
+# CGO and the `sqlite_fts5` build tag are mandatory — the SQLite driver is
+# cgo-based and toktop refuses to run without FTS5. GitHub's ubuntu runners ship
+# gcc, so no extra system packages are needed; the Makefile already exports
+# CGO_ENABLED=1 and carries `-tags sqlite_fts5` on every target.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: vet · lint · vuln · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # Tools invoked by `make check` (GOPATH/bin onto PATH so the Makefile's
+      # bare-name invocations resolve). golangci-lint is pinned via its official
+      # install script — the maintainers advise against `go install`, and a
+      # floating @latest can break CI when a new release adds checks. govulncheck
+      # stays @latest so it scans against the newest vuln database.
+      - name: Install lint & vuln tools
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.12.2
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: make check
+        run: make check

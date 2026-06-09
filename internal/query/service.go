@@ -1,0 +1,161 @@
+package query
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"time"
+
+	"toktop.unceas.dev/internal/rules"
+	"toktop.unceas.dev/internal/store/sqlite"
+	"toktop.unceas.dev/internal/trace"
+)
+
+type Service struct {
+	store *sqlite.Store
+}
+
+func New(store *sqlite.Store) *Service {
+	return &Service{store: store}
+}
+
+type Page[T any] struct {
+	Items      []T `json:"items"`
+	Total      int `json:"total"`
+	Limit      int `json:"limit"`
+	Offset     int `json:"offset"`
+	NextOffset int `json:"next_offset"`
+}
+
+func (s *Service) Summary(ctx context.Context, f sqlite.Filter) (sqlite.Summary, error) {
+	return s.store.SummaryFiltered(ctx, f)
+}
+
+func (s *Service) ListTurns(ctx context.Context, f sqlite.Filter) (Page[trace.Turn], error) {
+	turns, total, err := s.store.ListTurnsFiltered(ctx, f)
+	if err != nil {
+		return Page[trace.Turn]{}, err
+	}
+	return makePage(turns, total, f, 50), nil
+}
+
+func (s *Service) ListSessions(ctx context.Context, f sqlite.Filter) (Page[trace.Session], error) {
+	sessions, total, err := s.store.ListSessionsFiltered(ctx, f)
+	if err != nil {
+		return Page[trace.Session]{}, err
+	}
+	return makePage(sessions, total, f, 50), nil
+}
+
+func (s *Service) ListLiveSessions(ctx context.Context, f sqlite.Filter) (Page[sqlite.LiveSessionItem], error) {
+	sessions, total, err := s.store.ListLiveSessions(ctx, f)
+	if err != nil {
+		return Page[sqlite.LiveSessionItem]{}, err
+	}
+	return makePage(sessions, total, f, 100), nil
+}
+
+func (s *Service) GetTurn(ctx context.Context, turnID string) (trace.Turn, error) {
+	turn, err := s.store.GetTurn(ctx, turnID)
+	if err != nil {
+		return trace.Turn{}, mapNotFound(err)
+	}
+	return turn, nil
+}
+
+func (s *Service) GetSession(ctx context.Context, id string) (trace.Session, error) {
+	sess, err := s.store.GetSession(ctx, id)
+	if err != nil {
+		return trace.Session{}, mapNotFound(err)
+	}
+	return sess, nil
+}
+
+func (s *Service) SessionTurns(ctx context.Context, sessionID string) ([]trace.Turn, error) {
+	return s.store.TurnsForSession(ctx, sessionID)
+}
+
+func (s *Service) ListProjects(ctx context.Context, f sqlite.Filter) ([]sqlite.ProjectListItem, error) {
+	return s.store.ListProjects(ctx, f)
+}
+
+func (s *Service) ListTools(ctx context.Context, f sqlite.Filter) ([]sqlite.ToolListItem, error) {
+	return s.store.ListTools(ctx, f)
+}
+
+func (s *Service) ListMCPs(ctx context.Context, f sqlite.Filter) ([]sqlite.MCPListItem, error) {
+	return s.store.ListMCPs(ctx, f)
+}
+
+func (s *Service) ListUnusedMCPs(ctx context.Context) ([]sqlite.MCPListItem, error) {
+	return s.store.ListUnusedMCPs(ctx)
+}
+
+func (s *Service) ListSkills(ctx context.Context, f sqlite.Filter) ([]sqlite.SkillListItem, error) {
+	return s.store.ListSkills(ctx, f)
+}
+
+func (s *Service) ListUnusedSkills(ctx context.Context) ([]sqlite.SkillListItem, error) {
+	return s.store.ListUnusedSkills(ctx)
+}
+
+func (s *Service) ListComponents(ctx context.Context, turnID string) ([]trace.TurnComponent, error) {
+	return s.store.ListComponentsForTurn(ctx, turnID)
+}
+
+func (s *Service) Search(ctx context.Context, query string, limit int, kind, source string) ([]sqlite.SearchResult, error) {
+	return s.store.Search(ctx, query, limit, kind, source)
+}
+
+func (s *Service) Suggestions(ctx context.Context, ruleID string) ([]trace.Suggestion, error) {
+	return s.store.ListSuggestions(ctx, ruleID)
+}
+
+func (s *Service) RecomputeSuggestions(ctx context.Context, now time.Time) ([]trace.Suggestion, error) {
+	// Load the full history: three of the four rules (ToolOutputDominates,
+	// RetryLoop, LongSessionDegradation) ignore `now` and scan the whole index, so
+	// a windowed load silently hid older signals here while the CLI's full-history
+	// path still surfaced them. MCPUnused30d applies its own 30-day cutoff, so a
+	// full load does not widen it.
+	index, err := s.store.LoadIndex(ctx, time.Time{})
+	if err != nil {
+		return nil, err
+	}
+	out := rules.Run(ctx, index, now)
+	if err := s.store.ReplaceSuggestions(ctx, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Snapshot loads the trace index for export. A zero since loads everything; a
+// non-zero since scopes it to sessions/turns started at or after that time.
+func (s *Service) Snapshot(ctx context.Context, since time.Time) (trace.Index, error) {
+	return s.store.LoadIndex(ctx, since)
+}
+
+var ErrNotFound = errors.New("not found")
+
+func mapNotFound(err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
+}
+
+// makePage builds a page envelope whose Limit/Offset mirror the effective
+// pagination the store actually applied. defaultLimit must match the value the
+// corresponding store query passes to Filter.pagination so the reported Limit
+// is truthful; the 500 ceiling mirrors the store's clamp.
+func makePage[T any](items []T, total int, f sqlite.Filter, defaultLimit int) Page[T] {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = defaultLimit
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	offset := max(f.Offset, 0)
+	next := min(offset+len(items), total)
+	return Page[T]{Items: items, Total: total, Limit: limit, Offset: offset, NextOffset: next}
+}

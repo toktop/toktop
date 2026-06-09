@@ -1,0 +1,87 @@
+package codex
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"toktop.unceas.dev/internal/ingest"
+	"toktop.unceas.dev/internal/trace"
+)
+
+// provider implements the optional ingest.HookInstaller seam: codex owns its
+// hooks-file location, event list, entry schema, and event→status map.
+var _ ingest.HookInstaller = provider{}
+
+func (provider) HookConfigPath(scope string) (string, string, error) {
+	switch scope {
+	case "user", "":
+		// CODEX_HOME is parsed comma-first here, the historical hooks-path
+		// behavior. This deliberately differs from resolveRoots, which treats
+		// CODEX_HOME as a single path; kept identical to the old codexHooksPath so
+		// hooks install is byte-for-byte unchanged.
+		if env := os.Getenv("CODEX_HOME"); env != "" {
+			for part := range strings.SplitSeq(env, ",") {
+				if p := strings.TrimSpace(part); p != "" {
+					return filepath.Join(filepath.Clean(p), "hooks.json"), "hooks", nil
+				}
+			}
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", "", err
+		}
+		return filepath.Join(home, ".codex", "hooks.json"), "hooks", nil
+	case "project":
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", "", err
+		}
+		return filepath.Join(cwd, ".codex", "hooks.json"), "hooks", nil
+	default:
+		return "", "", fmt.Errorf("unknown scope %q", scope)
+	}
+}
+
+func (provider) HookEvents() []string {
+	return []string{
+		"SessionStart",
+		"UserPromptSubmit",
+		"Stop",
+		"PreCompact",
+		"PostCompact",
+		"SubagentStart",
+		"SubagentStop",
+		"PreToolUse",
+		"PermissionRequest",
+		"PostToolUse",
+	}
+}
+
+func (provider) HookEntry(_, command string) map[string]any {
+	return map[string]any{
+		"matcher": ".*",
+		"hooks": []any{
+			map[string]any{
+				"type":          "command",
+				"command":       command,
+				"timeout":       2,
+				"statusMessage": "toktop observer",
+			},
+		},
+	}
+}
+
+func (provider) HookEventStatus(event string) (string, bool) {
+	switch event {
+	case "PermissionRequest":
+		return trace.StatusAwaitingConfirmation, true
+	case "Stop", "SubagentStop":
+		return trace.StatusSuccess, true
+	case "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+		"SubagentStart", "PreCompact", "PostCompact":
+		return trace.StatusActive, true
+	}
+	return "", false
+}
