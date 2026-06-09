@@ -83,6 +83,7 @@ func NewRootCmd(info Info) *cobra.Command {
 		buildSimpleCmd("sources", "List configured providers and discovery roots", runSources),
 		buildSimpleCmd("config", "Show effective configuration and its sources (get | path)", runConfig),
 		buildSimpleCmd("db", "Database utilities (stats | path)", runDB),
+		buildSimpleCmd("uninstall", "Stop the daemon, remove observer hooks, and delete the home directory", runUninstall),
 	)
 	return rootCmd
 }

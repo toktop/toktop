@@ -59,6 +59,12 @@ irm https://toktop.unceas.dev/install.ps1 | iex
 This drops a prebuilt binary in `~/.local/bin` (or `%LOCALAPPDATA%\toktop\bin` on Windows) —
 no compiler needed. Override the location with `TOKTOP_INSTALL_DIR`.
 
+**Upgrading is the same command** — the installer always fetches the latest release and
+overwrites the binary in place, so re-run it whenever you want the newest version (keep the
+same `TOKTOP_INSTALL_DIR` if you set one). There is no `toktop upgrade` subcommand. If a
+daemon is running, `toktop daemon stop` afterwards so the next `status`/`stream` picks up the
+new binary.
+
 Releases are **signed**: `checksums.txt` is signed keyless with
 [cosign](https://docs.sigstore.dev/) using the release workflow's GitHub OIDC identity
 (logged in the Rekor transparency log), so a tampered release — not just transit
@@ -322,6 +328,42 @@ toktop db path                       # path to the SQLite file
 - **Redaction** is on by default and runs on persisted/indexed text (turn text, tool
   input/output) — never on the raw transcript bytes.
 - **Same-user only.** The default unix socket is `0600`; TCP off loopback requires a token.
+
+---
+
+## Uninstall
+
+`toktop uninstall` reverses an install — it stops the daemon, removes the observer hooks it
+injected into Claude Code / Codex, and deletes the home directory, then prints the one command
+to remove the binary itself:
+
+```bash
+toktop uninstall              # prompts before deleting ~/.toktop
+toktop uninstall --keep-data  # stop daemon + remove hooks, but keep config / data / DB
+toktop uninstall --yes        # skip the confirmation prompt (for scripts)
+```
+
+It deletes the binary last and leaves that single step to you — a running executable can't
+remove itself on every platform — so it ends by printing `rm <path>`. `TOKTOP_INSTALL_DIR` /
+`TOKTOP_HOME` set at install time are honored. Toktop only ever *reads* your transcripts (the
+hooks are its only writes), so removing it leaves Claude Code, Codex, and their history
+untouched.
+
+<details>
+<summary>Remove it by hand instead</summary>
+
+```bash
+toktop daemon stop                                   # stop the background daemon
+toktop hooks uninstall --sources=claude-code,codex   # remove injected hooks
+rm ~/.local/bin/toktop                               # the binary (%LOCALAPPDATA%\toktop\bin on Windows)
+rm -rf ~/.toktop                                      # all config, data, DB, and the socket
+```
+
+Order matters: uninstall the hooks **before** removing the binary — they live in
+`~/.claude.json` / `~/.codex/config.toml` and shell out to `toktop` on every tool call, so a
+removed binary leaves dangling entries you'd have to delete by hand.
+
+</details>
 
 ---
 
