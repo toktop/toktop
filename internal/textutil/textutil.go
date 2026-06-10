@@ -103,6 +103,19 @@ func FormatCount(n int) string {
 	}
 }
 
+// FormatCacheWrite renders a cache-write token total with its TTL split:
+// "187.7M (5m 120.4M · 1h 67.3M)". long is the long-lived (1h) subset of
+// total; the short (5m) subset is derived — here and only here — as
+// total - long. When there is no long-lived subset (codex has no cache
+// writes; most sessions only write the default short tier) the bare total
+// is returned.
+func FormatCacheWrite(total, long int) string {
+	if long == 0 {
+		return FormatCount(total)
+	}
+	return FormatCount(total) + " (5m " + FormatCount(total-long) + " · 1h " + FormatCount(long) + ")"
+}
+
 // formatScaled renders n/unit with one rounded decimal and a suffix, rolling a
 // rounded-up fraction (e.g. 1_999_999 -> "2.0M") into the whole part.
 func formatScaled(n, unit int, suffix string) string {

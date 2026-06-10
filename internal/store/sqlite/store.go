@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -19,6 +20,20 @@ import (
 )
 
 const dbFileName = "toktop.db"
+
+// schemaUserVersion is the schema epoch stamped into PRAGMA user_version. Bump it
+// on ANY in-place edit to migrations/00001_init.sql (added/dropped column,
+// table/index/FTS/trigger change) or on a parser change that must re-project old
+// data. On Open, a database whose stamp differs — older or newer build alike —
+// is wiped and rebuilt from scratch: the DB is a pure projection of the
+// transcripts (the source of truth) and ingest is idempotent, so a clean rebuild
+// loses no data — it just re-projects on the next ingest/reconcile. This is a
+// rebuild trigger, not a data migration (we never ALTER in place).
+//
+// Must stay nonzero: 0 is both the implicit value of a fresh database file and
+// the in-progress-wipe marker wipeSchema sets, so 0 always means "no schema
+// built at this epoch".
+const schemaUserVersion = 2
 
 var writerCacheKiB, readerCacheKiB, sqliteMmapBytes = memoryBudget(memory.TotalMemory())
 
@@ -68,16 +83,25 @@ func init() {
 var migrationFiles embed.FS
 
 type Store struct {
-	dataDir string
-	writeDB *sql.DB
-	readDB  *sql.DB
+	dataDir   string
+	writeDB   *sql.DB
+	readDB    *sql.DB
+	wipeGuard WipeGuard
 }
+
+// WipeGuard is consulted immediately before the destructive schema-epoch wipe
+// (and only then — steady-state opens never invoke it). Returning an error
+// aborts Open. Callers use it to refuse wiping a database that another
+// long-lived process still has open: an older-binary daemon would race the
+// DDL and then silently repopulate the rebuilt schema with old-parser rows.
+// nil means no guard.
+type WipeGuard func() error
 
 func (s *Store) reader() *sql.DB { return s.readDB }
 
 func (s *Store) writer() *sql.DB { return s.writeDB }
 
-func Open(ctx context.Context, dataDir string) (*Store, error) {
+func Open(ctx context.Context, dataDir string, guard WipeGuard) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
@@ -93,7 +117,7 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		_ = writeDB.Close()
 		return nil, fmt.Errorf("sqlite FTS5 is required; build with -tags sqlite_fts5: %w", caps.FTS5Err)
 	}
-	store := &Store{dataDir: dataDir, writeDB: writeDB}
+	store := &Store{dataDir: dataDir, writeDB: writeDB, wipeGuard: guard}
 	// Hold an inter-process init lock across the WAL pragma and migrations: both
 	// write the freshly-created db file, and two processes opening the same new
 	// home at once would otherwise race goose DDL. The lock makes them serialize;
@@ -231,7 +255,8 @@ func applyPragmas(ctx context.Context, db *sql.DB) error {
 }
 
 func (s *Store) migrate(ctx context.Context) error {
-	if err := s.ensureGooseOwned(ctx); err != nil {
+	current, err := s.ensureSchemaEpoch(ctx)
+	if err != nil {
 		return err
 	}
 	goose.SetBaseFS(migrationFiles)
@@ -242,86 +267,136 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := goose.UpContext(ctx, s.writeDB, "migrations"); err != nil {
 		return fmt.Errorf("apply migrations: %w", err)
 	}
+	if current {
+		// Steady state: already stamped. Skip the re-stamp — PRAGMA user_version
+		// writes the DB header (a write transaction) even when the value is
+		// unchanged, and an unconditional write on every Open would block behind
+		// a live writer's transaction and break read-only commands.
+		return nil
+	}
+	// First successful build at this epoch (fresh database or post-wipe
+	// rebuild): stamp it. PRAGMA takes no bind parameters.
+	if _, err := s.writeDB.ExecContext(ctx, "PRAGMA user_version = "+strconv.Itoa(schemaUserVersion)); err != nil {
+		return fmt.Errorf("stamp schema epoch: %w", err)
+	}
 	return nil
 }
 
-func (s *Store) ensureGooseOwned(ctx context.Context) error {
-	hasGoose, err := tableExists(ctx, s.writeDB, "goose_db_version")
+// ensureSchemaEpoch compares the database's stamped schema epoch (PRAGMA
+// user_version) against this build's schemaUserVersion and wipes the schema on
+// any mismatch — an older stamp (upgrade) and a newer one (downgrade) alike —
+// so an in-place edit to migrations/00001_init.sql takes effect without manual
+// intervention. A database with no schema objects at all (fresh file, or a
+// wipe that committed before the rebuild ran) is left for goose to build. This
+// subsumes the older pre-goose legacy drop: any existing schema not at the
+// current epoch — including a legacy DB at the implicit user_version 0 — is
+// rebuilt from scratch. Safe because the DB is a pure projection of the
+// transcripts.
+//
+// Returns current=true when the stamp already matches, meaning nothing was
+// wiped and migrate must not re-stamp.
+func (s *Store) ensureSchemaEpoch(ctx context.Context) (current bool, err error) {
+	var userVersion int
+	if err := s.writeDB.QueryRowContext(ctx, "PRAGMA user_version").Scan(&userVersion); err != nil {
+		return false, fmt.Errorf("read schema epoch: %w", err)
+	}
+	if userVersion == schemaUserVersion {
+		return true, nil
+	}
+	empty, err := schemaEmpty(ctx, s.writeDB)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if hasGoose {
-		return nil
+	if empty {
+		return false, nil
 	}
-	hasLegacy, err := anyLegacyTable(ctx, s.writeDB)
-	if err != nil {
-		return err
+	if s.wipeGuard != nil {
+		if err := s.wipeGuard(); err != nil {
+			return false, fmt.Errorf("schema epoch mismatch (found %d, want %d) requires a rebuild: %w", userVersion, schemaUserVersion, err)
+		}
 	}
-	if !hasLegacy {
-		return nil
-	}
-	slog.Warn("dropping legacy toktop schema; goose will rebuild from scratch", "data_dir", s.dataDir)
-	return dropAllTables(ctx, s.writeDB)
+	slog.Warn("schema epoch mismatch; wiping and rebuilding from transcripts",
+		"data_dir", s.dataDir, "found", userVersion, "want", schemaUserVersion)
+	return false, wipeSchema(ctx, s.writeDB)
 }
 
-func tableExists(ctx context.Context, db *sql.DB, name string) (bool, error) {
+// schemaEmpty reports whether the database holds no schema objects at all,
+// using the same non-sqlite_% predicate wipeSchema drops by — so any state a
+// wipe could produce or leave behind is classified consistently.
+func schemaEmpty(ctx context.Context, db *sql.DB) (bool, error) {
 	var count int
-	row := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name)
+	row := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`)
 	if err := row.Scan(&count); err != nil {
-		return false, fmt.Errorf("check table %s: %w", name, err)
+		return false, fmt.Errorf("count schema objects: %w", err)
 	}
-	return count > 0, nil
+	return count == 0, nil
 }
 
-func anyLegacyTable(ctx context.Context, db *sql.DB) (bool, error) {
-	candidates := []string{"metadata", "source_roots", "raw_events", "sessions", "turns", "tool_calls"}
-	for _, name := range candidates {
-		ok, err := tableExists(ctx, db, name)
-		if err != nil {
-			return false, err
-		}
-		if ok {
-			return true, nil
-		}
+// wipeSchema drops every schema object and clears the epoch stamp in one
+// transaction, so the wipe is all-or-nothing: a crash mid-wipe rolls back to
+// the intact pre-wipe state (still mismatched, retried on the next Open), and
+// a committed wipe is unambiguously stamped 0 until the rebuild completes.
+// Indexes and triggers drop with their tables.
+//
+// Foreign keys must be off for the drops: a dropped table's implicit DELETE
+// fires FK actions on its referencing tables, whose preparation resolves
+// every FK they declare — including ones to already-dropped parents ("no such
+// table"). Deferring doesn't help (actions are not deferred), and the pragma
+// is a no-op inside a transaction, so toggle it around one on the writer
+// connection (a single-connection pool; the toggle is connection state, so a
+// crash leaves nothing behind).
+func wipeSchema(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("disable foreign keys for wipe: %w", err)
 	}
-	return false, nil
-}
-
-func dropAllTables(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, `
-		SELECT name
+	defer func() { _, _ = db.ExecContext(ctx, `PRAGMA foreign_keys = ON`) }()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin schema wipe: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `PRAGMA user_version = 0`); err != nil {
+		return fmt.Errorf("clear schema epoch: %w", err)
+	}
+	// sqlite_master order is creation order, so FTS5 virtual tables precede
+	// their shadow tables: dropping the virtual table first takes its shadows
+	// with it and the later IF EXISTS drops no-op.
+	rows, err := tx.QueryContext(ctx, `
+		SELECT name, type
 		FROM sqlite_master
 		WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'
 	`)
 	if err != nil {
-		return fmt.Errorf("list legacy tables: %w", err)
+		return fmt.Errorf("list schema objects: %w", err)
 	}
-	var names []string
+	type object struct{ name, kind string }
+	var objects []object
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var o object
+		if err := rows.Scan(&o.name, &o.kind); err != nil {
 			_ = rows.Close()
-			return fmt.Errorf("scan legacy table: %w", err)
+			return fmt.Errorf("scan schema object: %w", err)
 		}
-		names = append(names, name)
+		objects = append(objects, o)
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
-		return fmt.Errorf("iterate legacy tables: %w", err)
+		return fmt.Errorf("iterate schema objects: %w", err)
 	}
 	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close legacy tables: %w", err)
+		return fmt.Errorf("close schema objects: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
-		return fmt.Errorf("disable foreign keys for legacy drop: %w", err)
-	}
-	for _, name := range names {
-		if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS `+quoteIdent(name)); err != nil {
-			return fmt.Errorf("drop legacy table %s: %w", name, err)
+	for _, o := range objects {
+		drop := `DROP TABLE IF EXISTS `
+		if o.kind == "view" {
+			drop = `DROP VIEW IF EXISTS `
+		}
+		if _, err := tx.ExecContext(ctx, drop+quoteIdent(o.name)); err != nil {
+			return fmt.Errorf("drop %s %s: %w", o.kind, o.name, err)
 		}
 	}
-	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
-		return fmt.Errorf("re-enable foreign keys: %w", err)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit schema wipe: %w", err)
 	}
 	return nil
 }

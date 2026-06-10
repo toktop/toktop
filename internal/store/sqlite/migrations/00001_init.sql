@@ -105,6 +105,7 @@ CREATE TABLE sessions(
     total_output_tokens  INTEGER NOT NULL DEFAULT 0,
     cache_read_tokens    INTEGER NOT NULL DEFAULT 0,
     cache_write_tokens   INTEGER NOT NULL DEFAULT 0,
+    cache_write_long_tokens INTEGER NOT NULL DEFAULT 0,
     parser_version       TEXT NOT NULL,
     -- last_turn_id / last_turn_status / last_turn_at are denormalized from
     -- the most recent turn (by turn_index). Populated at SaveIngest time so
@@ -137,6 +138,7 @@ CREATE TABLE turns(
     total_output_tokens      INTEGER NOT NULL DEFAULT 0,
     cache_read_tokens        INTEGER NOT NULL DEFAULT 0,
     cache_write_tokens       INTEGER NOT NULL DEFAULT 0,
+    cache_write_long_tokens  INTEGER NOT NULL DEFAULT 0,
     created_at               TEXT NOT NULL,
     updated_at               TEXT NOT NULL,
     UNIQUE(session_id, turn_index)
@@ -158,6 +160,7 @@ CREATE TABLE subagent_runs(
     total_output_tokens  INTEGER NOT NULL DEFAULT 0,
     cache_read_tokens    INTEGER NOT NULL DEFAULT 0,
     cache_write_tokens   INTEGER NOT NULL DEFAULT 0,
+    cache_write_long_tokens INTEGER NOT NULL DEFAULT 0,
     created_at           TEXT NOT NULL,
     updated_at           TEXT NOT NULL
 );
@@ -185,6 +188,7 @@ CREATE TABLE invocations(
     output_tokens          INTEGER NOT NULL DEFAULT 0,
     cache_read_tokens      INTEGER NOT NULL DEFAULT 0,
     cache_write_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_write_long_tokens INTEGER NOT NULL DEFAULT 0,
     context_window_tokens  INTEGER,
     started_at             TEXT,
     ended_at               TEXT,

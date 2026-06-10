@@ -73,7 +73,7 @@ func (s *Store) loadInvocationsForTurns(ctx context.Context, turnIDs []string) (
 			       COALESCE(model, ''),
 			       COALESCE(started_at, ''), COALESCE(ended_at, ''), latency_ms,
 			       COALESCE(stop_reason, ''), status,
-			       input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, COALESCE(context_window_tokens, 0),
+			       input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_write_long_tokens, COALESCE(context_window_tokens, 0),
 			       COALESCE(raw_event_id, '')
 			FROM invocations
 			WHERE turn_id IN (`+placeholders+`)
@@ -91,7 +91,7 @@ func (s *Store) loadInvocationsForTurns(ctx context.Context, turnIDs []string) (
 				&inv.Model,
 				&startedAt, &endedAt, &inv.LatencyMs,
 				&inv.StopReason, &inv.Status,
-				&inv.Tokens.Input, &inv.Tokens.Output, &inv.Tokens.CacheRead, &inv.Tokens.CacheWrite, &inv.ContextWindowTokens,
+				&inv.Tokens.Input, &inv.Tokens.Output, &inv.Tokens.CacheRead, &inv.Tokens.CacheWrite, &inv.Tokens.CacheWriteLong, &inv.ContextWindowTokens,
 				&inv.RawEventID,
 			); err != nil {
 				return fmt.Errorf("scan invocation: %w", err)
@@ -179,7 +179,7 @@ func (s *Store) loadSubagentsForTurns(ctx context.Context, turnIDs []string) (ma
 			SELECT parent_turn_id, id, COALESCE(parent_tool_call_id, ''), COALESCE(agent_name, ''), COALESCE(agent_type, ''), COALESCE(model, ''),
 			       COALESCE(transcript_path, ''),
 			       COALESCE(started_at, ''), COALESCE(ended_at, ''), duration_ms, status,
-			       total_input_tokens, total_output_tokens, cache_read_tokens, cache_write_tokens
+			       total_input_tokens, total_output_tokens, cache_read_tokens, cache_write_tokens, cache_write_long_tokens
 			FROM subagent_runs
 			WHERE parent_turn_id IN (`+placeholders+`)
 			ORDER BY parent_turn_id, created_at
@@ -195,7 +195,7 @@ func (s *Store) loadSubagentsForTurns(ctx context.Context, turnIDs []string) (ma
 				&run.ParentTurnID, &run.ID, &run.ParentToolCallID, &run.AgentName, &run.AgentType, &run.Model,
 				&run.TranscriptPath,
 				&startedAt, &endedAt, &run.DurationMs, &run.Status,
-				&run.Tokens.Input, &run.Tokens.Output, &run.Tokens.CacheRead, &run.Tokens.CacheWrite,
+				&run.Tokens.Input, &run.Tokens.Output, &run.Tokens.CacheRead, &run.Tokens.CacheWrite, &run.Tokens.CacheWriteLong,
 			); err != nil {
 				return fmt.Errorf("scan subagent_run: %w", err)
 			}

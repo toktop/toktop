@@ -30,7 +30,7 @@ tool calls: 26397
 input tokens: 14.8M
 output tokens: 41.3M
 cache read tokens: 3.9B
-cache write tokens: 187.7M
+cache write tokens: 187.7M (5m 120.4M · 1h 67.3M)
 parse errors: 0
 
 $ toktop mcps unused
@@ -40,7 +40,11 @@ node_repl  0      0      0      0             user     ~/.codex/config.toml
 ```
 
 Human-readable output abbreviates token counts (`14.8M`, `3.9B`); `--format json` and the
-HTTP API keep raw integers.
+HTTP API keep raw integers. Cache-write totals with a long-lived subset also show their
+TTL split — `(5m … · 1h …)` — because Anthropic bills the long-lived (1h) cache tier
+higher than the 5m default; totals without one (codex has no cache writes; sessions that
+only write the default 5m tier) show just the total. The `cache_write_long_tokens` field
+carries the 1h subset in JSON.
 
 ---
 

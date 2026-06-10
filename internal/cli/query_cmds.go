@@ -11,8 +11,6 @@ import (
 	"strings"
 
 	"toktop.unceas.dev/internal/httpapi"
-	"toktop.unceas.dev/internal/paths"
-	"toktop.unceas.dev/internal/store/sqlite"
 	"toktop.unceas.dev/internal/textutil"
 	"toktop.unceas.dev/internal/trace"
 )
@@ -258,7 +256,7 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "Status: %s\n", turn.Status)
 	fmt.Fprintf(stdout, "Tokens: input %s  output %s  cache read %s  cache write %s\n",
 		textutil.FormatCount(turn.Tokens.Input), textutil.FormatCount(turn.Tokens.Output),
-		textutil.FormatCount(turn.Tokens.CacheRead), textutil.FormatCount(turn.Tokens.CacheWrite))
+		textutil.FormatCount(turn.Tokens.CacheRead), textutil.FormatCacheWrite(turn.Tokens.CacheWrite, turn.Tokens.CacheWriteLong))
 	fmt.Fprintf(stdout, "Transcript: %s\n", turn.TranscriptPath)
 	fmt.Fprintf(stdout, "User: %s\n", turn.UserMessage)
 	if turn.AssistantFinal != "" {
@@ -419,7 +417,7 @@ func runSummary(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	fmt.Fprintf(stdout, "input tokens: %s\n", textutil.FormatCount(summary.InputTokens))
 	fmt.Fprintf(stdout, "output tokens: %s\n", textutil.FormatCount(summary.OutputTokens))
 	fmt.Fprintf(stdout, "cache read tokens: %s\n", textutil.FormatCount(summary.CacheReadTokens))
-	fmt.Fprintf(stdout, "cache write tokens: %s\n", textutil.FormatCount(summary.CacheWriteTokens))
+	fmt.Fprintf(stdout, "cache write tokens: %s\n", textutil.FormatCacheWrite(summary.CacheWriteTokens, summary.CacheWriteLongTokens))
 	fmt.Fprintf(stdout, "parse errors: %d\n", summary.ParseErrors)
 	return 0
 }
@@ -447,7 +445,7 @@ func runSearch(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		fmt.Fprintln(stderr, "usage: toktop search [flags] <query>")
 		return 2
 	}
-	store, err := sqlite.Open(ctx, paths.DataDirUnder(home))
+	store, err := openStore(ctx, home)
 	if err != nil {
 		cliErrf(stderr, "open store: %v", err)
 		return 1

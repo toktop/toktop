@@ -662,7 +662,7 @@ func runProfilePrune(ctx context.Context, home, profile string, dryRun bool, tok
 	default:
 		fmt.Fprintf(stderr, "toktop: no live server at %s; running a local prune (sqlite only; event-log pruning is left to the daemon)\n", addr)
 	}
-	store, err := sqlite.Open(ctx, paths.DataDirUnder(home))
+	store, err := openStore(ctx, home)
 	if err != nil {
 		cliErr(stderr, err)
 		return 1
@@ -782,7 +782,7 @@ func runDBStats(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		cliErr(stderr, err)
 		return 1
 	}
-	store, err := sqlite.Open(ctx, paths.DataDirUnder(home))
+	store, err := openStore(ctx, home)
 	if err != nil {
 		cliErr(stderr, err)
 		return 1
@@ -817,7 +817,7 @@ func resolveHome(stderr io.Writer) (string, bool) {
 }
 
 func openService(ctx context.Context, home string) (*query.Service, *sqlite.Store, error) {
-	store, err := sqlite.Open(ctx, paths.DataDirUnder(home))
+	store, err := openStore(ctx, home)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open store: %w", err)
 	}

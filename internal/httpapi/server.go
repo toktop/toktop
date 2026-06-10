@@ -30,6 +30,10 @@ type Options struct {
 	Token   string
 	Logger  *slog.Logger
 
+	// WipeGuard gates the store's destructive schema-epoch rebuild; see
+	// sqlite.WipeGuard. nil leaves the wipe unguarded.
+	WipeGuard sqlite.WipeGuard
+
 	ConfigLoader *config.Loader
 
 	// IdleShutdownAfter, when > 0, makes the server self-stop (via OnIdle) after
@@ -157,7 +161,7 @@ func (g replayGuardedStore) Prune(ctx context.Context, before time.Time, keepN i
 }
 
 func NewServer(ctx context.Context, opts Options) (*Server, error) {
-	store, err := sqlite.Open(ctx, opts.DataDir)
+	store, err := sqlite.Open(ctx, opts.DataDir, opts.WipeGuard)
 	if err != nil {
 		return nil, err
 	}

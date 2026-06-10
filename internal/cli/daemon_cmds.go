@@ -15,7 +15,6 @@ import (
 	"toktop.unceas.dev/internal/httpapi"
 	"toktop.unceas.dev/internal/paths"
 	"toktop.unceas.dev/internal/runtime"
-	"toktop.unceas.dev/internal/store/sqlite"
 )
 
 func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -75,6 +74,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	server, err := httpapi.NewServer(ctx, httpapi.Options{
 		DataDir:           paths.DataDirUnder(home),
 		Token:             token,
+		WipeGuard:         storeWipeGuard(home),
 		ConfigLoader:      loader,
 		IdleShutdownAfter: idleShutdownFor(snap.IdleStop),
 		OnIdle:            cancelServe,
@@ -268,7 +268,7 @@ func runDaemonLoop(ctx context.Context, args []string, serveAPIDefault bool, std
 	}
 	defer release()
 
-	store, err := sqlite.Open(ctx, paths.DataDirUnder(home))
+	store, err := openStore(ctx, home)
 	if err != nil {
 		cliErrf(stderr, "open store: %v", err)
 		return 1
@@ -298,6 +298,7 @@ func runDaemonLoop(ctx context.Context, args []string, serveAPIDefault bool, std
 		server, err := httpapi.NewServer(ctx, httpapi.Options{
 			DataDir:           paths.DataDirUnder(home),
 			Token:             token,
+			WipeGuard:         storeWipeGuard(home),
 			ConfigLoader:      loader,
 			IdleShutdownAfter: idleShutdownFor(snap.IdleStop),
 			OnIdle:            cancelLoop,

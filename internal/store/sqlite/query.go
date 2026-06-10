@@ -213,7 +213,7 @@ const sessionsBaseQuery = `
 	       COALESCE(sessions.started_at, ''), COALESCE(sessions.ended_at, ''),
 	       sessions.status, sessions.total_turns, sessions.total_tool_calls,
 	       sessions.total_input_tokens, sessions.total_output_tokens,
-	       sessions.cache_read_tokens, sessions.cache_write_tokens
+	       sessions.cache_read_tokens, sessions.cache_write_tokens, sessions.cache_write_long_tokens
 	FROM sessions
 	JOIN sources ON sources.id = sessions.source_id
 	LEFT JOIN projects ON projects.id = sessions.project_id
@@ -247,7 +247,7 @@ func scanSessions(rows *sql.Rows) ([]trace.Session, error) {
 			&startedAt, &endedAt,
 			&session.Status, &session.TurnCount, &session.ToolCallCount,
 			&session.Tokens.Input, &session.Tokens.Output,
-			&session.Tokens.CacheRead, &session.Tokens.CacheWrite,
+			&session.Tokens.CacheRead, &session.Tokens.CacheWrite, &session.Tokens.CacheWriteLong,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
@@ -270,7 +270,7 @@ const turnsBaseQuery = `
 	       turns.status, COALESCE(turns.failure_reason, ''),
 	       turns.invocation_count, turns.tool_call_count, turns.subagent_count,
 	       turns.total_input_tokens, turns.total_output_tokens,
-	       turns.cache_read_tokens, turns.cache_write_tokens
+	       turns.cache_read_tokens, turns.cache_write_tokens, turns.cache_write_long_tokens
 	FROM turns
 	JOIN sessions ON sessions.id = turns.session_id
 	JOIN sources ON sources.id = sessions.source_id
@@ -309,7 +309,7 @@ func scanTurns(rows *sql.Rows) ([]trace.Turn, error) {
 			&startedAt, &endedAt, &turn.DurationMs,
 			&turn.Status, &turn.FailureReason,
 			&turn.InvocationCount, &turn.ToolCallCount, &turn.SubagentCount,
-			&turn.Tokens.Input, &turn.Tokens.Output, &turn.Tokens.CacheRead, &turn.Tokens.CacheWrite,
+			&turn.Tokens.Input, &turn.Tokens.Output, &turn.Tokens.CacheRead, &turn.Tokens.CacheWrite, &turn.Tokens.CacheWriteLong,
 		); err != nil {
 			return nil, fmt.Errorf("scan turn: %w", err)
 		}
@@ -326,7 +326,7 @@ func (s *Store) loadAllSubagentRuns(ctx context.Context) ([]trace.SubagentRun, e
 		       COALESCE(agent_name, ''), COALESCE(agent_type, ''), COALESCE(model, ''),
 		       COALESCE(transcript_path, ''),
 		       COALESCE(started_at, ''), COALESCE(ended_at, ''), duration_ms, status,
-		       total_input_tokens, total_output_tokens, cache_read_tokens, cache_write_tokens
+		       total_input_tokens, total_output_tokens, cache_read_tokens, cache_write_tokens, cache_write_long_tokens
 		FROM subagent_runs
 		ORDER BY created_at
 	`)
@@ -343,7 +343,7 @@ func (s *Store) loadAllSubagentRuns(ctx context.Context) ([]trace.SubagentRun, e
 			&run.AgentName, &run.AgentType, &run.Model,
 			&run.TranscriptPath,
 			&startedAt, &endedAt, &run.DurationMs, &run.Status,
-			&run.Tokens.Input, &run.Tokens.Output, &run.Tokens.CacheRead, &run.Tokens.CacheWrite,
+			&run.Tokens.Input, &run.Tokens.Output, &run.Tokens.CacheRead, &run.Tokens.CacheWrite, &run.Tokens.CacheWriteLong,
 		); err != nil {
 			return nil, fmt.Errorf("scan subagent_run: %w", err)
 		}

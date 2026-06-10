@@ -3,11 +3,13 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,7 +56,7 @@ func runIngest(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return 2
 	}
 
-	store, err := sqlite.Open(ctx, paths.DataDirUnder(home))
+	store, err := openStore(ctx, home)
 	if err != nil {
 		cliErrf(stderr, "open store: %v", err)
 		return 1
@@ -148,7 +150,7 @@ func runAgePrune(ctx context.Context, home, olderThan string, dryRun bool, stdou
 		cliErrf(stderr, "invalid --raw-events-older-than: %v", err)
 		return 2
 	}
-	store, err := sqlite.Open(ctx, paths.DataDirUnder(home))
+	store, err := openStore(ctx, home)
 	if err != nil {
 		cliErrf(stderr, "open store: %v", err)
 		return 1
@@ -183,8 +185,35 @@ func (r *rootList) Set(value string) error {
 	return nil
 }
 
+// openStore opens the per-home SQLite store with the daemon-aware wipe guard.
+// Every CLI open goes through here so the store's destructive schema-epoch
+// rebuild can never run underneath a live daemon.
+func openStore(ctx context.Context, home string) (*sqlite.Store, error) {
+	return sqlite.Open(ctx, paths.DataDirUnder(home), storeWipeGuard(home))
+}
+
+// storeWipeGuard refuses the schema-epoch wipe while another process —
+// typically a still-running daemon built from an older binary — holds the
+// daemon lock and therefore has the database open. Wiping underneath it would
+// race live DDL, and its next reconcile would repopulate the rebuilt schema
+// with old-parser rows and current file fingerprints, silently defeating the
+// rebuild. The guard is pid-aware, so a daemon opening its own store passes.
+func storeWipeGuard(home string) sqlite.WipeGuard {
+	return func() error {
+		pid, held := daemonLockedElsewhere(home)
+		if !held {
+			return nil
+		}
+		holder := "a running toktop daemon"
+		if pid != 0 {
+			holder += " (pid " + strconv.Itoa(pid) + ")"
+		}
+		return errors.New(holder + " has this database open; stop it first: toktop daemon stop")
+	}
+}
+
 func loadIndex(ctx context.Context, home string) (trace.Index, error) {
-	store, err := sqlite.Open(ctx, paths.DataDirUnder(home))
+	store, err := openStore(ctx, home)
 	if err != nil {
 		return trace.Index{}, err
 	}

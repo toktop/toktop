@@ -71,6 +71,12 @@ type Tokens struct {
 	Output     int `json:"output_tokens,omitzero"`
 	CacheRead  int `json:"cache_read_tokens,omitzero"`
 	CacheWrite int `json:"cache_write_tokens,omitzero"`
+	// CacheWriteLong is the subset of CacheWrite written with a long-lived
+	// cache TTL, which providers bill at a premium over their default tier
+	// (for Claude Code: Anthropic's ephemeral_1h vs the 5m default). Parsers
+	// guarantee CacheWriteLong <= CacheWrite; the short subset is the
+	// difference. Providers without tiered cache writes leave it 0.
+	CacheWriteLong int `json:"cache_write_long_tokens,omitzero"`
 }
 
 func (t *Tokens) Add(other Tokens) {
@@ -78,6 +84,7 @@ func (t *Tokens) Add(other Tokens) {
 	t.Output += other.Output
 	t.CacheRead += other.CacheRead
 	t.CacheWrite += other.CacheWrite
+	t.CacheWriteLong += other.CacheWriteLong
 }
 
 type Session struct {

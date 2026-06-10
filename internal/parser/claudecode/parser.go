@@ -14,7 +14,7 @@ import (
 	"toktop.unceas.dev/internal/trace"
 )
 
-const ParserVersion = "claudecode/2"
+const ParserVersion = "claudecode/3"
 
 type ParseResult struct {
 	Session     trace.Session
@@ -39,6 +39,11 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events iter.Seq2[so
 	turns := make([]trace.Turn, 0)
 	var current *turnBuilder
 	var parseErrors []trace.ParseError
+	// Session-scoped message dedupe: maps a message.id to the invocation it
+	// produced, so repeated lines of one API response are recognized both
+	// within a turn (continuations) and across turns (rewind/fork history
+	// replays, or a queued user prompt splitting one response over a flush).
+	seenMsg := make(map[string]msgRef)
 
 	flush := func() {
 		if current == nil {
@@ -90,14 +95,14 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events iter.Seq2[so
 				continue
 			}
 			flush()
-			current = newTurnBuilder(&session, sourceRootID, len(turns)+1, text, when)
+			current = newTurnBuilder(&session, sourceRootID, len(turns)+1, text, when, seenMsg)
 		case "assistant":
 			if current == nil {
 				// Assistant content before any user turn (resumed/forked/sidechain
 				// transcripts, or transcripts opening with assistant content). Build a
 				// turn with an empty user message so leading invocations/tool calls and
 				// their tokens are captured rather than silently dropped.
-				current = newTurnBuilder(&session, sourceRootID, len(turns)+1, "", when)
+				current = newTurnBuilder(&session, sourceRootID, len(turns)+1, "", when, seenMsg)
 			}
 			current.recordAssistantMessage(msg, when, rawEvent)
 		}
@@ -117,14 +122,24 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events iter.Seq2[so
 	return result, nil
 }
 
+// msgRef locates the invocation a message.id maps to: the turn it lives in
+// (trace.Turn.Index) and its position in that turn's Invocations slice.
+type msgRef struct {
+	turnIndex int
+	invIndex  int
+}
+
 type turnBuilder struct {
 	session      *trace.Session
 	sourceRootID string
 	turn         trace.Turn
 	toolByUseID  map[string]int
+	// seenMsg is shared across all turns of the session (owned by
+	// ParseEvents). See recordAssistantMessage.
+	seenMsg map[string]msgRef
 }
 
-func newTurnBuilder(session *trace.Session, sourceRootID string, index int, userText string, when time.Time) *turnBuilder {
+func newTurnBuilder(session *trace.Session, sourceRootID string, index int, userText string, when time.Time, seenMsg map[string]msgRef) *turnBuilder {
 	turnID := trace.TurnID(trace.SessionID(sourceRootID, session.TranscriptPath), index)
 	return &turnBuilder{
 		session:      session,
@@ -143,6 +158,7 @@ func newTurnBuilder(session *trace.Session, sourceRootID string, index int, user
 			Status:         trace.StatusUnknown,
 		},
 		toolByUseID: make(map[string]int),
+		seenMsg:     seenMsg,
 	}
 }
 
@@ -152,38 +168,71 @@ func (b *turnBuilder) recordAssistantMessage(msg message, when time.Time, rawEve
 		b.turn.AssistantFinal = msg.text()
 	}
 
-	invocationIndex := len(b.turn.Invocations) + 1
-	invocationID := trace.InvocationID(b.turn.ID, invocationIndex)
-	rawHash := rawEvent.Hash()
-	rawEventID := trace.RawEventID(b.sourceRootID, rawEvent.SourceFile, rawEvent.LineNo, rawHash)
-	tokens := trace.Tokens{
-		Input:      msg.Usage.InputTokens,
-		Output:     msg.Usage.OutputTokens,
-		CacheRead:  msg.Usage.CacheReadInputTokens,
-		CacheWrite: msg.Usage.CacheCreationInputTokens,
+	// Claude Code writes one JSONL line per content block of an API response,
+	// every line repeating the same message.id with an identical usage object
+	// and stop_reason (verified across real transcripts: zero variance between
+	// lines of one id, ~55% of assistant lines are repeats). One message is one
+	// invocation with one usage: a line whose id was already seen in THIS turn
+	// is a continuation that only extends the invocation's end time and
+	// contributes its content blocks; one seen in an EARLIER turn — rewind/fork
+	// history replays, or a queued user prompt splitting a response over a
+	// flush — gets a structural zero-token invocation, its usage having counted
+	// once for the session. Messages without an id (synthetic or pre-id
+	// transcript shapes) never hit the map and keep per-line counting.
+	seen, dup := b.seenMsg[msg.ID]
+	continuation := dup && seen.turnIndex == b.turn.Index
+	toolUses := msg.toolUses()
+	if continuation {
+		inv := &b.turn.Invocations[seen.invIndex]
+		inv.EndedAt = shared.LaterTime(inv.EndedAt, when)
+		if len(toolUses) == 0 {
+			return
+		}
 	}
-	invocation := trace.Invocation{
-		ID:         invocationID,
-		Provider:   b.turn.Provider,
-		TurnID:     b.turn.ID,
-		Index:      invocationIndex,
-		Model:      msg.Model,
-		StartedAt:  when,
-		EndedAt:    when,
-		StopReason: msg.StopReason,
-		Status:     invocationStatusFor(msg),
-		Tokens:     tokens,
-		RawEventID: rawEventID,
-	}
-	b.turn.Invocations = append(b.turn.Invocations, invocation)
-	b.turn.Tokens.Add(tokens)
+	rawEventID := trace.RawEventID(b.sourceRootID, rawEvent.SourceFile, rawEvent.LineNo, rawEvent.Hash())
 
-	for _, partial := range msg.toolUses() {
+	index := seen.invIndex
+	if !continuation {
+		index = len(b.turn.Invocations)
+		var tokens trace.Tokens
+		if !dup {
+			tokens = trace.Tokens{
+				Input:      msg.Usage.InputTokens,
+				Output:     msg.Usage.OutputTokens,
+				CacheRead:  msg.Usage.CacheReadInputTokens,
+				CacheWrite: msg.Usage.CacheCreationInputTokens,
+				// Clamped: a malformed line whose 1h tier exceeds the cache-creation
+				// total would otherwise persist long > total, and every consumer
+				// deriving the 5m subset as total - long would surface a negative.
+				CacheWriteLong: min(msg.Usage.CacheCreation.Ephemeral1h, msg.Usage.CacheCreationInputTokens),
+			}
+			b.turn.Tokens.Add(tokens)
+		}
+		b.turn.Invocations = append(b.turn.Invocations, trace.Invocation{
+			ID:         trace.InvocationID(b.turn.ID, index+1),
+			Provider:   b.turn.Provider,
+			TurnID:     b.turn.ID,
+			Index:      index + 1,
+			Model:      msg.Model,
+			StartedAt:  when,
+			EndedAt:    when,
+			StopReason: msg.StopReason,
+			Status:     invocationStatusFor(msg),
+			Tokens:     tokens,
+			RawEventID: rawEventID,
+		})
+		if msg.ID != "" {
+			b.seenMsg[msg.ID] = msgRef{turnIndex: b.turn.Index, invIndex: index}
+		}
+	}
+	invocationID := b.turn.Invocations[index].ID
+
+	for _, partial := range toolUses {
 		callIndex := len(b.turn.ToolCalls) + 1
 		toolCall := trace.ToolCall{
 			ID:            trace.ToolCallID(b.turn.ID, partial.UseID, callIndex),
 			TurnID:        b.turn.ID,
-			InvocationID:  invocation.ID,
+			InvocationID:  invocationID,
 			CallIndex:     callIndex,
 			Kind:          shared.ClassifyToolKind(partial.Name),
 			Name:          partial.Name,
@@ -270,6 +319,7 @@ type envelope struct {
 }
 
 type message struct {
+	ID         string          `json:"id"`
 	Role       string          `json:"role"`
 	Content    json.RawMessage `json:"content"`
 	Model      string          `json:"model"`
@@ -285,6 +335,12 @@ type usage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	// CacheCreation breaks the cache-creation total into TTL tiers. Anthropic
+	// bills ephemeral_1h higher than ephemeral_5m; the 5m subset is the total
+	// minus the 1h tier, so only the 1h tier needs to be carried.
+	CacheCreation struct {
+		Ephemeral1h int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
 }
 
 type contentBlock struct {

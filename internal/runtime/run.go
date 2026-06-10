@@ -455,4 +455,3 @@ func (s *Service) printf(format string, args ...any) {
 	}
 	_, _ = fmt.Fprintf(s.cfg.Stdout, format, args...)
 }
-

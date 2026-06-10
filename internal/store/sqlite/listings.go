@@ -79,16 +79,17 @@ type Filter struct {
 }
 
 type Summary struct {
-	Sessions         int `json:"sessions"`
-	Turns            int `json:"turns"`
-	Invocations      int `json:"invocations"`
-	ToolCalls        int `json:"tool_calls"`
-	InputTokens      int `json:"input_tokens"`
-	OutputTokens     int `json:"output_tokens"`
-	CacheReadTokens  int `json:"cache_read_tokens"`
-	CacheWriteTokens int `json:"cache_write_tokens"`
-	ParseErrors      int `json:"parse_errors"`
-	RawEvents        int `json:"raw_events"`
+	Sessions             int `json:"sessions"`
+	Turns                int `json:"turns"`
+	Invocations          int `json:"invocations"`
+	ToolCalls            int `json:"tool_calls"`
+	InputTokens          int `json:"input_tokens"`
+	OutputTokens         int `json:"output_tokens"`
+	CacheReadTokens      int `json:"cache_read_tokens"`
+	CacheWriteTokens     int `json:"cache_write_tokens"`
+	CacheWriteLongTokens int `json:"cache_write_long_tokens"`
+	ParseErrors          int `json:"parse_errors"`
+	RawEvents            int `json:"raw_events"`
 }
 
 type LiveSessionItem struct {
@@ -135,12 +136,13 @@ func (s *Store) SummaryFiltered(ctx context.Context, f Filter) (Summary, error) 
 			       COALESCE(SUM(total_output_tokens), 0),
 			       COALESCE(SUM(cache_read_tokens), 0),
 			       COALESCE(SUM(cache_write_tokens), 0),
+			       COALESCE(SUM(cache_write_long_tokens), 0),
 			       COALESCE(SUM(invocation_count), 0),
 			       COALESCE(SUM(tool_call_count), 0)
 			FROM turns
 			`+turnWhere, turnArgs...).Scan(
 			&summary.Turns, &summary.InputTokens, &summary.OutputTokens,
-			&summary.CacheReadTokens, &summary.CacheWriteTokens,
+			&summary.CacheReadTokens, &summary.CacheWriteTokens, &summary.CacheWriteLongTokens,
 			&summary.Invocations, &summary.ToolCalls,
 		)
 	}()

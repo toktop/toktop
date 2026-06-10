@@ -501,9 +501,9 @@ func insertSessions(ctx context.Context, tx *sql.Tx, sourceID string, rootIDs ma
 			external_session_id, transcript_path, started_at, ended_at, status,
 			total_turns, total_tool_calls,
 			total_input_tokens, total_output_tokens,
-			cache_read_tokens, cache_write_tokens,
+			cache_read_tokens, cache_write_tokens, cache_write_long_tokens,
 			parser_version, created_at, updated_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("prepare sessions: %w", err)
@@ -520,7 +520,7 @@ func insertSessions(ctx context.Context, tx *sql.Tx, sourceID string, rootIDs ma
 			timeText(session.StartedAt), timeText(session.EndedAt), session.Status,
 			session.TurnCount, session.ToolCallCount,
 			session.Tokens.Input, session.Tokens.Output,
-			session.Tokens.CacheRead, session.Tokens.CacheWrite,
+			session.Tokens.CacheRead, session.Tokens.CacheWrite, session.Tokens.CacheWriteLong,
 			parserVersion, now, now,
 		)
 		if err != nil {
@@ -565,16 +565,16 @@ func insertTurnsAndChildren(ctx context.Context, tx *sql.Tx, index trace.Index, 
 		user_message, assistant_final, summary,
 		started_at, ended_at, duration_ms, status, failure_reason,
 		invocation_count, tool_call_count, subagent_count,
-		total_input_tokens, total_output_tokens, cache_read_tokens, cache_write_tokens,
+		total_input_tokens, total_output_tokens, cache_read_tokens, cache_write_tokens, cache_write_long_tokens,
 		created_at, updated_at)`
-	if err := execRows(ctx, tx, turnPrefix, placeholders(21), 21, len(turns), "", func(i int) []any {
+	if err := execRows(ctx, tx, turnPrefix, placeholders(22), 22, len(turns), "", func(i int) []any {
 		turn := &turns[i]
 		return []any{
 			turn.ID, turn.SessionID, sqlNullStr(sessionProject[turn.SessionID]), turn.Index,
 			turn.UserMessage, turn.AssistantFinal, turn.Summary,
 			timeText(turn.StartedAt), timeText(turn.EndedAt), turn.DurationMs, turn.Status, turn.FailureReason,
 			turn.InvocationCount, turn.ToolCallCount, turn.SubagentCount,
-			turn.Tokens.Input, turn.Tokens.Output, turn.Tokens.CacheRead, turn.Tokens.CacheWrite,
+			turn.Tokens.Input, turn.Tokens.Output, turn.Tokens.CacheRead, turn.Tokens.CacheWrite, turn.Tokens.CacheWriteLong,
 			now, now,
 		}
 	}); err != nil {
@@ -584,14 +584,14 @@ func insertTurnsAndChildren(ctx context.Context, tx *sql.Tx, index trace.Index, 
 	const invPrefix = `INSERT INTO invocations(
 		id, turn_id, session_id, subagent_run_id, invocation_index,
 		provider, model,
-		input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, context_window_tokens,
+		input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_write_long_tokens, context_window_tokens,
 		started_at, ended_at, latency_ms, stop_reason, status, raw_event_id, created_at)`
-	if err := execRows(ctx, tx, invPrefix, placeholders(19), 19, len(invs), "", func(i int) []any {
+	if err := execRows(ctx, tx, invPrefix, placeholders(20), 20, len(invs), "", func(i int) []any {
 		inv := invs[i].row
 		return []any{
 			inv.ID, invs[i].turnID, inv.SessionID, sqlNullStr(inv.SubagentRunID), inv.Index,
 			inv.Provider, inv.Model,
-			inv.Tokens.Input, inv.Tokens.Output, inv.Tokens.CacheRead, inv.Tokens.CacheWrite, sqlNullInt(inv.ContextWindowTokens),
+			inv.Tokens.Input, inv.Tokens.Output, inv.Tokens.CacheRead, inv.Tokens.CacheWrite, inv.Tokens.CacheWriteLong, sqlNullInt(inv.ContextWindowTokens),
 			timeText(inv.StartedAt), timeText(inv.EndedAt), inv.LatencyMs, inv.StopReason, inv.Status, sqlNullStr(inv.RawEventID), now,
 		}
 	}); err != nil {
@@ -638,9 +638,9 @@ func insertSubagentRuns(ctx context.Context, tx *sql.Tx, runs []trace.SubagentRu
 		INSERT INTO subagent_runs(
 			id, parent_turn_id, parent_tool_call_id, agent_name, agent_type, model, transcript_path,
 			started_at, ended_at, duration_ms, status,
-			total_input_tokens, total_output_tokens, cache_read_tokens, cache_write_tokens,
+			total_input_tokens, total_output_tokens, cache_read_tokens, cache_write_tokens, cache_write_long_tokens,
 			created_at, updated_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return fmt.Errorf("prepare subagent_runs: %w", err)
@@ -651,7 +651,7 @@ func insertSubagentRuns(ctx context.Context, tx *sql.Tx, runs []trace.SubagentRu
 			run.ID, run.ParentTurnID, sqlNullStr(run.ParentToolCallID),
 			run.AgentName, run.AgentType, run.Model, run.TranscriptPath,
 			timeText(run.StartedAt), timeText(run.EndedAt), run.DurationMs, run.Status,
-			run.Tokens.Input, run.Tokens.Output, run.Tokens.CacheRead, run.Tokens.CacheWrite,
+			run.Tokens.Input, run.Tokens.Output, run.Tokens.CacheRead, run.Tokens.CacheWrite, run.Tokens.CacheWriteLong,
 			now, now,
 		)
 		if err != nil {

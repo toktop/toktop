@@ -67,7 +67,7 @@ func printSessionDetail(stdout io.Writer, detail sessionDetail) {
 	fmt.Fprintf(stdout, "Tool calls: %d\n", session.ToolCallCount)
 	fmt.Fprintf(stdout, "Tokens: input %s  output %s  cache read %s  cache write %s\n",
 		textutil.FormatCount(session.Tokens.Input), textutil.FormatCount(session.Tokens.Output),
-		textutil.FormatCount(session.Tokens.CacheRead), textutil.FormatCount(session.Tokens.CacheWrite))
+		textutil.FormatCount(session.Tokens.CacheRead), textutil.FormatCacheWrite(session.Tokens.CacheWrite, session.Tokens.CacheWriteLong))
 
 	for _, turn := range detail.Turns {
 		fmt.Fprintf(stdout, "\nTurn %d  %s  status=%s\n", turn.Index, turn.ID, turn.Status)
