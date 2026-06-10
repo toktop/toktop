@@ -50,13 +50,15 @@ carries the 1h subset in JSON.
 
 ## Install
 
+**macOS / Linux**
+
 ```bash
-# macOS / Linux
 curl -fsSL https://toktop.unceas.dev/install.sh | sh
 ```
 
+**Windows (PowerShell)**
+
 ```powershell
-# Windows (PowerShell)
 irm https://toktop.unceas.dev/install.ps1 | iex
 ```
 
