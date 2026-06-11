@@ -15,8 +15,9 @@ import (
 
 // SetKey validates+normalizes value for key, then writes it into config.json,
 // preserving other keys via a temp-file + rename atomic write. Keys are
-// "redact" or "roots.<provider>" (provider must be registered). Invalid values
-// are rejected (never written) so a bad value can't break hot reload / startup.
+// redact, autostart, idle_stop, timezone, addr, interval, or "roots.<provider>"
+// (provider must be registered). Invalid values are rejected (never written) so
+// a bad value can't break hot reload / startup.
 func SetKey(path, key, value string) error {
 	m, err := readFileMap(path)
 	if err != nil {
@@ -24,7 +25,7 @@ func SetKey(path, key, value string) error {
 	}
 	switch {
 	case key == "redact":
-		policy, err := redact.PolicyFromFlag(value)
+		policy, err := redact.PolicyFromString(value)
 		if err != nil {
 			return err
 		}
@@ -79,7 +80,9 @@ func SetKey(path, key, value string) error {
 	return writeFileMap(path, m)
 }
 
-// UnsetKey removes key from config.json, reverting it to env/default.
+// UnsetKey removes key from config.json. Scalar keys revert to their built-in
+// defaults; "roots.<provider>" reverts to discovery (the provider's upstream
+// env convention such as CLAUDE_CONFIG_DIR/CODEX_HOME, then its default root).
 func UnsetKey(path, key string) error {
 	m, err := readFileMap(path)
 	if err != nil {
@@ -109,9 +112,9 @@ func UnsetKey(path, key string) error {
 	return writeFileMap(path, m)
 }
 
-// FileHasKey reports whether config.json declares key ("redact" or
-// "roots.<provider>"). Returns (false, err) on a parse error so callers can
-// surface file_error instead of silently defaulting.
+// FileHasKey reports whether config.json declares key (any SetKey key, e.g.
+// "redact" or "roots.<provider>"). Returns (false, err) on a parse error so
+// callers can surface file_error instead of silently defaulting.
 func FileHasKey(path, key string) (bool, error) {
 	m, err := readFileMap(path)
 	if err != nil {
@@ -148,8 +151,8 @@ func setRoots(m map[string]any, provider string, paths []string) {
 }
 
 // RootsSource returns where a provider's roots resolve from for a non-serving
-// CLI invocation (no --root flag): the Kind of the first resolved root
-// (env/file/default), or "default" when none resolve.
+// CLI invocation (no explicit override roots): the Kind of the first resolved
+// root (env/file/default), or "default" when none resolve.
 func RootsSource(cfgPath, provider string) (string, error) {
 	fileRoots, err := fileRootsFor(cfgPath, provider)
 	if err != nil {

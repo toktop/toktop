@@ -37,10 +37,11 @@ type Provider interface {
 	TranscriptExt() string
 
 	// ResolveRoots resolves discovery roots across the precedence chain
-	// flag(--root) > env > config-file > default, exposing each root's origin
-	// Kind. flag and file are the --root values and this provider's config.json
-	// roots respectively.
-	ResolveRoots(flag, file []string) []SourceRoot
+	// explicit > env > config-file > default, exposing each root's origin Kind.
+	// explicit is caller-supplied override roots (already-resolved roots a
+	// caller passes back in — no CLI flag feeds it); file is this provider's
+	// config.json roots.
+	ResolveRoots(explicit, file []string) []SourceRoot
 
 	Ingest(ctx context.Context, roots []string, policy redact.Policy, known map[string]source.Fingerprint, sink BatchSink) (Summary, error)
 
@@ -201,9 +202,9 @@ func PresentProviders(rootsByProvider map[string][]string) []string {
 
 // ResolveRoots resolves a named provider's roots; returns nil for unknown
 // providers.
-func ResolveRoots(name string, flag, file []string) []SourceRoot {
+func ResolveRoots(name string, explicit, file []string) []SourceRoot {
 	if p, ok := registry[name]; ok {
-		return p.ResolveRoots(flag, file)
+		return p.ResolveRoots(explicit, file)
 	}
 	return nil
 }
@@ -238,8 +239,9 @@ func RootPaths(roots []SourceRoot) []string {
 	return out
 }
 
-// DiscoverRootPaths returns resolved root paths for name given only explicit
-// (--root) roots, no config-file layer. Kept for callers without config.
+// DiscoverRootPaths returns resolved root paths for name given only
+// caller-supplied explicit roots, no config-file layer. Kept for callers
+// without config.
 func DiscoverRootPaths(name string, roots []string) []string {
 	if !HasProvider(name) {
 		return roots

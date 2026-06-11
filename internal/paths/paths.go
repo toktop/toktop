@@ -21,8 +21,8 @@ func Home() (string, error) {
 	return filepath.Join(home, appDirName), nil
 }
 
-// ConfigDir returns the directory holding configuration files (api-token):
-// <home>/config.
+// ConfigDir returns the directory holding configuration files (config.json,
+// api-token): <home>/config.
 func ConfigDir() (string, error) {
 	home, err := Home()
 	if err != nil {
@@ -42,13 +42,13 @@ func DataDir() (string, error) {
 }
 
 // ConfigDirUnder returns the config directory for an explicit home root, used by
-// commands that accept a --home override.
+// callers that have already resolved home (TOKTOP_HOME or the default).
 func ConfigDirUnder(home string) string {
 	return filepath.Join(home, "config")
 }
 
 // DataDirUnder returns the data directory for an explicit home root, used by
-// commands that accept a --home override.
+// callers that have already resolved home (TOKTOP_HOME or the default).
 func DataDirUnder(home string) string {
 	return filepath.Join(home, "data")
 }

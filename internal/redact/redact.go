@@ -36,18 +36,19 @@ type Result struct {
 
 const redactionFailedPlaceholder = "[REDACTED:scan-failed]"
 
-// PolicyFromFlag parses a redact value ("on"/"off" plus tolerant aliases) into a
-// Policy. An empty string defaults to enabled. Shared by the config loader and
-// the config-set validation so both interpret values identically.
-func PolicyFromFlag(flag string) (Policy, error) {
-	on, ok := textutil.ParseOnOff(flag)
+// PolicyFromString parses a redact config value ("on"/"off" plus tolerant
+// aliases) into a Policy. An empty string defaults to enabled. Shared by the
+// config loader and the config-set validation so both interpret values
+// identically.
+func PolicyFromString(value string) (Policy, error) {
+	on, ok := textutil.ParseOnOff(value)
 	if !ok {
 		// An empty string defaults to enabled (the documented redact default);
 		// any other unrecognized value is an error.
-		if strings.TrimSpace(flag) == "" {
+		if strings.TrimSpace(value) == "" {
 			return Policy{Enabled: true}, nil
 		}
-		return Policy{}, fmt.Errorf("redact: invalid value %q (want on|off)", flag)
+		return Policy{}, fmt.Errorf("redact: invalid value %q (want on|off)", value)
 	}
 	if on {
 		return Policy{Enabled: true}, nil

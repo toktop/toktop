@@ -23,14 +23,15 @@ type SessionFile struct {
 	ProjectPath string
 }
 
-// DiscoverRoots resolves the effective roots given only explicit (--root) roots
-// (no config-file layer). Preserved for callers that don't carry config.
+// DiscoverRoots resolves the effective roots given only caller-supplied
+// explicit roots (no config-file layer). Preserved for callers that don't
+// carry config.
 func DiscoverRoots(explicit []string) []SourceRoot {
 	return resolveRoots(explicit, nil)
 }
 
-func resolveRoots(flag, file []string) []SourceRoot {
-	if r := ingest.UniqueSourceRoots(flag, "manual"); len(r) > 0 {
+func resolveRoots(explicit, file []string) []SourceRoot {
+	if r := ingest.UniqueSourceRoots(explicit, "manual"); len(r) > 0 {
 		return r
 	}
 

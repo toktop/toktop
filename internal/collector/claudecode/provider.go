@@ -20,10 +20,10 @@ func (provider) WatchSubdir() string { return "projects" }
 
 func (provider) TranscriptExt() string { return ".jsonl" }
 
-func (provider) ResolveRoots(flag, file []string) []ingest.SourceRoot {
+func (provider) ResolveRoots(explicit, file []string) []ingest.SourceRoot {
 	// resolveRoots returns []SourceRoot, which is an alias of []ingest.SourceRoot
 	// (see discover.go), so no conversion is needed.
-	return resolveRoots(flag, file)
+	return resolveRoots(explicit, file)
 }
 
 func (provider) Ingest(ctx context.Context, roots []string, policy redact.Policy, known map[string]source.Fingerprint, sink ingest.BatchSink) (ingest.Summary, error) {

@@ -17,7 +17,7 @@ const autostartWaitTimeout = 5 * time.Second
 
 // ensureDaemon makes a daemon reachable at addr before a live command connects.
 // It returns nil (no-op) when auto-start is disabled, when addr is not the
-// default unix socket (the user pointed --addr elsewhere — we don't manage it),
+// default unix socket (the `addr` config key points elsewhere — we don't manage it),
 // or when a daemon is already reachable. Otherwise it spawns a detached
 // `toktop daemon serve` and waits for the socket to accept connections. On failure
 // it returns an error; callers fall back to their existing no-daemon behavior.

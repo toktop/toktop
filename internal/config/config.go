@@ -108,7 +108,7 @@ func (l *Loader) Reload() error {
 		return fmt.Errorf("config: parse %s: %w", l.path, err)
 	}
 
-	policy, err := redact.PolicyFromFlag(l.v.GetString("redact"))
+	policy, err := redact.PolicyFromString(l.v.GetString("redact"))
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
