@@ -244,6 +244,15 @@ toktop hooks status                               # what's installed
 toktop hooks uninstall --sources=claude-code
 ```
 
+**Claude Code hooks fire immediately; Codex hooks must be trusted first.** Codex treats a
+third-party (unmanaged) hook as *untrusted* the first time it sees it and **only runs hooks
+you have approved** — so after `hooks install --sources=codex` you must trust the toktop
+observer hook in Codex before any callbacks fire (until then Codex falls back to transcript
+watching, which lags a little). Codex tracks a `trusted_hash` per hook, so it re-prompts
+whenever the hook command changes — re-approve it after a toktop upgrade that rewrites the
+hook entry. `toktop hooks status` only reports that the entry is *installed*, not that Codex
+has *trusted* it.
+
 **Emit a custom live event** into a running daemon (e.g. from a script):
 
 ```bash

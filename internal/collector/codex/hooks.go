@@ -13,6 +13,15 @@ import (
 // provider implements the optional ingest.HookInstaller seam: codex owns its
 // hooks-file location, event list, entry schema, and event→status map.
 var _ ingest.HookInstaller = provider{}
+var _ ingest.HookInstallNoter = provider{}
+
+// HookInstallNote warns that codex, unlike claude-code, will not run a freshly
+// installed third-party (unmanaged) hook until the user trusts it: codex marks a
+// first-seen hook untrusted and only runs trusted ones, and re-prompts whenever
+// the hook command changes (it tracks a trusted_hash per hook).
+func (provider) HookInstallNote() string {
+	return "codex treats this as an untrusted hook and won't run it until you trust it in codex; re-trust it after any toktop upgrade that rewrites the hook entry."
+}
 
 func (provider) HookConfigPath(scope string) (string, string, error) {
 	switch scope {

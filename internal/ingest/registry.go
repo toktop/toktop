@@ -76,6 +76,17 @@ type HookInstaller interface {
 	HookEventStatus(eventName string) (status string, ok bool)
 }
 
+// HookInstallNoter is an optional companion to HookInstaller: a provider that
+// must tell the user something after a successful install — e.g. a manual trust
+// step the provider requires before the hook will actually run — implements it.
+// The CLI prints the note verbatim after writing the hook file; an empty string
+// prints nothing. Kept separate from HookInstaller so providers with no such
+// step (claude-code, whose hooks run as soon as they are written) need not
+// implement it.
+type HookInstallNoter interface {
+	HookInstallNote() string
+}
+
 // HookInstallerFor returns the HookInstaller for name when the provider supports
 // hooks.
 func HookInstallerFor(name string) (HookInstaller, bool) {

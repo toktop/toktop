@@ -249,6 +249,11 @@ func runHookInstall(_ context.Context, sourceName, scope, endpoint, home string,
 	spool := filepath.Join(paths.DataDirUnder(home), "hooks", "spool")
 	_ = os.MkdirAll(spool, 0o700)
 	fmt.Fprintf(stdout, "installed toktop observer hooks source=%s in %s\nspool dir: %s\n", sourceName, path, spool)
+	if noter, ok := hi.(ingest.HookInstallNoter); ok {
+		if note := noter.HookInstallNote(); note != "" {
+			fmt.Fprintf(stdout, "→ %s\n", note)
+		}
+	}
 	return 0
 }
 
