@@ -65,7 +65,7 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		"  toktop status --session <id>         # one session by id or external id",
 		"  toktop status --sources claude-code --since 24h",
 	)
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	if code := checkPaging(limit, offset, stderr); code >= 0 {
@@ -197,7 +197,7 @@ func runStream(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		"  toktop stream claude-code:ID,codex:OTHER     # several sessions at once",
 	)
 
-	flagArgs, positional := partitionArgs(args, valueFlagSet(fs))
+	flagArgs, positional, _ := partitionArgs(args, valueFlagSet(fs))
 	if code := parseFlags(fs, flagArgs, stdout); code >= 0 {
 		return code
 	}
@@ -291,7 +291,7 @@ func runProjects(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	fs.StringVar(&format, "format", format, "table|json|ndjson|csv")
 	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
 	setFlagUsage(fs, "usage: toktop projects [flags]", "List projects with session / turn / tool-call counts.")
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	srcTokens, err := resolveFilterTokens(sources)
@@ -340,7 +340,7 @@ func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs.Var(&sessions, "session", "session id or external session id filter; may be repeated or comma-separated")
 	fs.Var(&statuses, "status", "turn status filter; may be repeated or comma-separated")
 	setFlagUsage(fs, "usage: toktop tools [flags]", "Roll up tool-call usage (call / turn / failed counts per tool).")
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	svc, store, err := openService(ctx, home)
@@ -400,10 +400,14 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		[]subcmdDoc{{"unused", "list declared MCP servers with zero observed calls (no filters)"}},
 		"Roll up MCP server usage. The availability column counts turns where the server was observed available.")
 
-	// Detect the `unused` subcommand with the command's own value-flag vocabulary,
-	// so a value flag whose argument is "unused" (e.g. `mcps --sources unused`) is
-	// not mistaken for the subcommand.
-	args, unused := extractSubcommand(args, valueFlagSet(fs), "unused")
+	// Dispatch the `unused` subcommand with the command's own value-flag
+	// vocabulary, so a value flag whose argument is "unused" (e.g.
+	// `mcps --sources unused`) is not mistaken for the subcommand.
+	_, rest, firstPos, unused := firstLeafSubcommand(args, valueFlagSet(fs), "unused")
+	if !unused && firstPos != "" {
+		cliErrf(stderr, "unknown mcps subcommand %q (want unused, or flags to list)", firstPos)
+		return 2
+	}
 	if unused {
 		// `unused` takes no filters, so it parses with a minimal flag set that
 		// rejects the filter flags above.
@@ -411,7 +415,7 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		uf.SetOutput(stderr)
 		uf.StringVar(&format, "format", format, "table|json|ndjson|csv")
 		setFlagUsage(uf, "usage: toktop mcps unused [--format ...]", "List declared MCP servers with zero observed calls. Accepts no filters.")
-		if code := parseFlags(uf, args, stdout); code >= 0 {
+		if code := parseFlagsNoPositionals(uf, rest, stdout, stderr); code >= 0 {
 			return code
 		}
 		svc, store, err := openService(ctx, home)
@@ -427,7 +431,7 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		return writeFormatted(stdout, stderr, format, mcps, mcpCols, mcpRow)
 	}
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	svc, store, err := openService(ctx, home)
@@ -475,17 +479,21 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		[]subcmdDoc{{"unused", "list installed skills with zero inferred uses (no filters)"}},
 		"Roll up skill usage (installed skills + inferred-used counts).")
 
-	// Detect the `unused` subcommand with the command's own value-flag vocabulary,
-	// so a value flag whose argument is "unused" (e.g. `skills --sources unused`) is
-	// not mistaken for the subcommand.
-	args, unused := extractSubcommand(args, valueFlagSet(fs), "unused")
+	// Dispatch the `unused` subcommand with the command's own value-flag
+	// vocabulary, so a value flag whose argument is "unused" (e.g.
+	// `skills --sources unused`) is not mistaken for the subcommand.
+	_, rest, firstPos, unused := firstLeafSubcommand(args, valueFlagSet(fs), "unused")
+	if !unused && firstPos != "" {
+		cliErrf(stderr, "unknown skills subcommand %q (want unused, or flags to list)", firstPos)
+		return 2
+	}
 	if unused {
 		// `unused` takes no filters, so it parses with a minimal flag set.
 		uf := flag.NewFlagSet("skills unused", flag.ContinueOnError)
 		uf.SetOutput(stderr)
 		uf.StringVar(&format, "format", format, "table|json|ndjson|csv")
 		setFlagUsage(uf, "usage: toktop skills unused [--format ...]", "List installed skills with zero inferred uses. Accepts no filters.")
-		if code := parseFlags(uf, args, stdout); code >= 0 {
+		if code := parseFlagsNoPositionals(uf, rest, stdout, stderr); code >= 0 {
 			return code
 		}
 		svc, store, err := openService(ctx, home)
@@ -503,7 +511,7 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			return []string{item.Name, item.Scope, truncate(item.Description, 80), item.SourcePath}
 		})
 	}
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	svc, store, err := openService(ctx, home)
@@ -558,7 +566,7 @@ func runSuggestions(ctx context.Context, args []string, stdout, stderr io.Writer
 		cliErrf(stderr, "unknown suggestions subcommand %q (want recompute, or flags to list)", firstPos)
 		return 2
 	}
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	svc, store, err := openService(ctx, home)
@@ -583,58 +591,74 @@ func runSuggestions(ctx context.Context, args []string, stdout, stderr io.Writer
 	})
 }
 
+// retentionStatusFlagSet defines the `data retention status` flags, binding
+// --profile and --format. runRetention derives its dispatch value-flag set
+// from it, so keep every status flag here — a flag defined elsewhere would be
+// invisible to the dispatcher.
+func retentionStatusFlagSet(profile, format *string) *flag.FlagSet {
+	fs := flag.NewFlagSet("data retention status", flag.ContinueOnError)
+	fs.StringVar(profile, "profile", *profile, "privacy|balanced|archive")
+	fs.StringVar(format, "format", *format, "output format: table or json")
+	setFlagUsage(fs, "usage: toktop data retention status [--profile <p>] [--format table|json]",
+		"Show the effective retention windows for a profile (does not delete anything).")
+	return fs
+}
+
 func runRetention(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if printUsageForHelp(args, stdout, "usage: toktop data retention <status|profiles> [flags]") {
 		return 0
 	}
-	if len(args) == 0 {
+	// Subcommand keyword works regardless of where flags sit; the subcommand is
+	// always explicit (no default — a bare invocation is a usage error). The
+	// dispatch value-flag set is derived from the real status flag set so the
+	// two cannot drift apart.
+	sub, rest, firstPos, found := firstLeafSubcommand(args, valueFlagSet(retentionStatusFlagSet(new(string), new(string))), "status", "profiles")
+	if !found {
+		if firstPos != "" {
+			cliErrf(stderr, "unknown retention subcommand %q (want status|profiles)", firstPos)
+			return 2
+		}
 		fmt.Fprintln(stderr, "usage: toktop data retention <status|profiles> [flags]")
 		return 2
 	}
-	sub := args[0]
-	args = args[1:]
-	switch sub {
-	case "profiles":
-		if printUsageForHelp(args, stdout, "usage: toktop data retention profiles") {
+	if sub == "profiles" {
+		if printUsageForHelp(rest, stdout, "usage: toktop data retention profiles") {
 			return 0
+		}
+		if len(rest) > 0 {
+			cliErrf(stderr, "unexpected argument %q", rest[0])
+			return 2
 		}
 		fmt.Fprint(stdout, retention.FormatProfileList())
 		return 0
-	case "status":
-		profile := "balanced"
-		format := "table"
-		fs := flag.NewFlagSet("data retention status", flag.ContinueOnError)
-		fs.SetOutput(stderr)
-		fs.StringVar(&profile, "profile", profile, "privacy|balanced|archive")
-		fs.StringVar(&format, "format", format, "output format: table or json")
-		setFlagUsage(fs, "usage: toktop data retention status [--profile <p>] [--format table|json]",
-			"Show the effective retention windows for a profile (does not delete anything).")
-		if code := parseFlags(fs, args, stdout); code >= 0 {
-			return code
-		}
-		if err := validateFormat(format, "table", "json"); err != nil {
-			cliErr(stderr, err)
-			return 2
-		}
-		policy, err := retention.PolicyFor(retention.Profile(profile))
-		if err != nil {
-			cliErr(stderr, err)
-			return 2
-		}
-		if format == "json" {
-			return writeJSON(stdout, stderr, map[string]string{
-				"profile":      string(policy.Profile),
-				"raw":          textutil.FormatDuration(policy.RawAge),
-				"tool_outputs": textutil.FormatDuration(policy.ToolOutputAge),
-				"redact_after": textutil.FormatDuration(policy.RedactRawAfter),
-			})
-		}
-		fmt.Fprintf(stdout, "profile: %s\nraw: %s\ntool_outputs: %s\nredact_after: %s\n",
-			policy.Profile, textutil.FormatDuration(policy.RawAge), textutil.FormatDuration(policy.ToolOutputAge), textutil.FormatDuration(policy.RedactRawAfter))
-		return 0
 	}
-	cliErrf(stderr, "unknown retention subcommand %q (want status|profiles)", sub)
-	return 2
+	profile := "balanced"
+	format := "table"
+	fs := retentionStatusFlagSet(&profile, &format)
+	fs.SetOutput(stderr)
+	if code := parseFlagsNoPositionals(fs, rest, stdout, stderr); code >= 0 {
+		return code
+	}
+	if err := validateFormat(format, "table", "json"); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	policy, err := retention.PolicyFor(retention.Profile(profile))
+	if err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	if format == "json" {
+		return writeJSON(stdout, stderr, map[string]string{
+			"profile":      string(policy.Profile),
+			"raw":          textutil.FormatDuration(policy.RawAge),
+			"tool_outputs": textutil.FormatDuration(policy.ToolOutputAge),
+			"redact_after": textutil.FormatDuration(policy.RedactRawAfter),
+		})
+	}
+	fmt.Fprintf(stdout, "profile: %s\nraw: %s\ntool_outputs: %s\nredact_after: %s\n",
+		policy.Profile, textutil.FormatDuration(policy.RawAge), textutil.FormatDuration(policy.ToolOutputAge), textutil.FormatDuration(policy.RedactRawAfter))
+	return 0
 }
 
 // runProfilePrune applies a retention profile. It prefers the daemon (the sole
@@ -721,21 +745,28 @@ func runDB(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if printUsageForHelp(args, stdout, "usage: toktop db <stats|path> [flags]") {
 		return 0
 	}
-	// Subcommand keyword works regardless of where flags sit (e.g. `db --home X stats`).
-	sub, rest, firstPos, found := firstLeafSubcommand(args, map[string]bool{"home": true, "format": true}, "stats", "path")
+	// Subcommand keyword works regardless of where flags sit (e.g. `db --format
+	// json stats`); the subcommand is always explicit (no default — a bare
+	// invocation is a usage error). The dispatch value-flag set is derived from
+	// the real db-stats flag set so the two cannot drift apart.
+	sub, rest, firstPos, found := firstLeafSubcommand(args, valueFlagSet(dbStatsFlagSet(new(string))), "stats", "path")
 	if !found {
 		if firstPos != "" {
 			cliErrf(stderr, "unknown db subcommand %q (want stats|path)", firstPos)
 			return 2
 		}
-		return runDBStats(ctx, args, stdout, stderr)
+		fmt.Fprintln(stderr, "usage: toktop db <stats|path> [flags]")
+		return 2
 	}
 	switch sub {
 	case "stats":
 		return runDBStats(ctx, rest, stdout, stderr)
 	case "path":
-		if printUsageForHelp(rest, stdout, "usage: toktop db path") {
-			return 0
+		fs := flag.NewFlagSet("db path", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		setFlagUsage(fs, "usage: toktop db path", "Print the SQLite database path.")
+		if code := parseFlagsNoPositionals(fs, rest, stdout, stderr); code >= 0 {
+			return code
 		}
 		dataDir, err := paths.DataDir()
 		if err != nil {
@@ -759,17 +790,25 @@ type dbStatsReport struct {
 	Tables    []dbTableCount `json:"tables"`
 }
 
+// dbStatsFlagSet defines the `db stats` flags, binding --format to *format.
+// runDB derives its dispatch value-flag set from it, so keep every db-stats
+// flag here — a flag defined elsewhere would be invisible to the dispatcher.
+func dbStatsFlagSet(format *string) *flag.FlagSet {
+	fs := flag.NewFlagSet("db stats", flag.ContinueOnError)
+	fs.StringVar(format, "format", *format, "output format: table or json")
+	setFlagUsage(fs, "usage: toktop db stats [--format table|json]", "Show the DB file path, size, and per-table row counts.")
+	return fs
+}
+
 func runDBStats(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	home, ok := resolveHome(stderr)
 	if !ok {
 		return 1
 	}
 	format := "table"
-	fs := flag.NewFlagSet("db stats", flag.ContinueOnError)
+	fs := dbStatsFlagSet(&format)
 	fs.SetOutput(stderr)
-	fs.StringVar(&format, "format", format, "output format: table or json")
-	setFlagUsage(fs, "usage: toktop db stats [--format table|json]", "Show the DB file path, size, and per-table row counts.")
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	if err := validateFormat(format, "table", "json"); err != nil {
@@ -789,9 +828,18 @@ func runDBStats(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	}
 	defer store.Close()
 	report := dbStatsReport{Path: dbPath, SizeBytes: info.Size()}
-	for _, tbl := range []string{"sources", "source_roots", "raw_events", "sessions", "turns", "invocations", "tool_calls", "tool_outputs", "subagent_runs", "context_events", "turn_components", "rule_suggestions", "parse_errors"} {
+	// Enumerate tables from the live schema so new tables show up here without a
+	// hand-maintained list (which had drifted). Excluded: SQLite internals, the
+	// search_fts virtual table and its shadow tables (search_documents carries
+	// the searchable content), and goose's migration-bookkeeping table.
+	tables, err := listTables(ctx, store)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	for _, tbl := range tables {
 		var n int
-		if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM `+tbl).Scan(&n); err != nil {
+		if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM "`+tbl+`"`).Scan(&n); err != nil {
 			cliErrf(stderr, "count %s: %v", tbl, err)
 			return 1
 		}
@@ -805,6 +853,29 @@ func runDBStats(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintf(stdout, "%-18s %d\n", c.Name, c.Count)
 	}
 	return 0
+}
+
+// listTables returns the user tables in the open database, excluding SQLite
+// internals, the FTS5 virtual table and its shadow tables, and goose's
+// migration bookkeeping.
+func listTables(ctx context.Context, store *sqlite.Store) ([]string, error) {
+	rows, err := store.DB().QueryContext(ctx, `SELECT name FROM sqlite_master
+		WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+		  AND name NOT LIKE 'search_fts%' AND name != 'goose_db_version'
+		ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tables []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		tables = append(tables, name)
+	}
+	return tables, rows.Err()
 }
 
 func resolveHome(stderr io.Writer) (string, bool) {

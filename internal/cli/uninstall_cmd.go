@@ -37,7 +37,7 @@ func runUninstall(_ context.Context, args []string, stdout, stderr io.Writer) in
 		"",
 		"Project-scope hooks (if you ran `hooks install --scope project`) are per-project;",
 		"remove those with `toktop hooks uninstall --scope project` from each project first.")
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 

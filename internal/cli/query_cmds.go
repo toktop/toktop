@@ -52,7 +52,7 @@ func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		cliErrf(stderr, "unknown sessions subcommand %q (want inspect, or flags to list)", firstPos)
 		return 2
 	}
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	if code := checkPaging(limit, offset, stderr); code >= 0 {
@@ -167,7 +167,8 @@ func runTurns(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs.StringVar(&sortFlag, "sort", sortFlag, "started_desc|started_asc|tokens_desc|duration_desc")
 	setFlagUsage(fs, "usage: toktop turns [flags]   (turns inspect|timeline|components <id> for one)", "List turns, most-recent first; page with --limit/--offset.")
 	// Dispatch leaf subcommands regardless of where flags sit (e.g.
-	// `turns --home X inspect ID`); the keyword is the first positional.
+	// `turns --format json inspect ID`, or a leaf-only `--kind skill` before the
+	// keyword); the keyword is the first positional.
 	if sub, rest, firstPos, ok := firstLeafSubcommand(args, valueFlagSet(fs), "inspect", "timeline", "components"); ok {
 		switch sub {
 		case "inspect":
@@ -181,7 +182,7 @@ func runTurns(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		cliErrf(stderr, "unknown turns subcommand %q (want inspect|timeline|components, or flags to list)", firstPos)
 		return 2
 	}
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	if code := checkPaging(limit, offset, stderr); code >= 0 {
@@ -383,7 +384,7 @@ func runSummary(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	setFlagUsage(fs, "usage: toktop summary [flags]", "Show imported trace counts (raw events, sessions, turns, invocations, tool calls) and token totals.")
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	svc, store, err := openService(ctx, home)
@@ -497,7 +498,7 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs.StringVar(&format, "format", format, "output format: json or ndjson")
 	fs.StringVar(&output, "output", output, "output path or - for stdout")
 	setFlagUsage(fs, "usage: toktop export [flags]", "Export the full trace index as json or ndjson (to stdout or --output).")
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	index, err := loadIndex(ctx, home)

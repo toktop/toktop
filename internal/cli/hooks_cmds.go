@@ -61,7 +61,7 @@ examples:
 	fs.StringVar(&scope, "scope", scope, "user|project")
 	fs.BoolVar(&dryRun, "dry-run", dryRun, "show planned diff without writing")
 	fs.StringVar(&endpoint, "endpoint", endpoint, "toktop hook intake endpoint")
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	// Fold + validate every name up front (all must implement HookInstaller), so

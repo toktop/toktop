@@ -81,7 +81,7 @@ func NewRootCmd(info Info) *cobra.Command {
 		buildSimpleCmd("export", "Export the current trace index", runExport),
 		buildSimpleCmd("hooks", "Install/manage observer hooks (status | install | uninstall)", runHook),
 		buildSimpleCmd("sources", "List configured providers and discovery roots", runSources),
-		buildSimpleCmd("config", "Show effective configuration and its sources (get | path)", runConfig),
+		buildSimpleCmd("config", "Read or write configuration (get | path | set | unset)", runConfig),
 		buildSimpleCmd("db", "Database utilities (stats | path)", runDB),
 		buildSimpleCmd("uninstall", "Stop the daemon, remove observer hooks, and delete the home directory", runUninstall),
 	)

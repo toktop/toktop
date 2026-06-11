@@ -22,15 +22,20 @@ import (
 )
 
 func runSources(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 && args[0] == "list" {
-		args = args[1:]
-	}
 	format := "table"
 	fs := flag.NewFlagSet("sources", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, "output format: table|json|ndjson|csv")
 	setFlagUsage(fs, "usage: toktop sources [flags]", "List configured providers and their discovery roots (and whether each exists).")
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	// `list` is an optional alias for the default listing; accept it regardless
+	// of where flags sit, like every other keyworded command.
+	if _, rest, firstPos, ok := firstLeafSubcommand(args, valueFlagSet(fs), "list"); ok {
+		args = rest
+	} else if firstPos != "" {
+		cliErrf(stderr, "unknown sources subcommand %q (want list, or flags to list)", firstPos)
+		return 2
+	}
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	type sourceRoot struct {
@@ -93,7 +98,7 @@ func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		fs := flag.NewFlagSet("config path", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		setFlagUsage(fs, "usage: toktop config path", "Print the resolved home / config / data / api-token / config-file paths.")
-		if code := parseFlags(fs, rest, stdout); code >= 0 {
+		if code := parseFlagsNoPositionals(fs, rest, stdout, stderr); code >= 0 {
 			return code
 		}
 		fmt.Fprintf(stdout, "home_dir: %s\n", home)
@@ -307,7 +312,7 @@ func runEmit(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&status, "status", status, "status: active|awaiting_confirmation|success|failed")
 	fs.StringVar(&reason, "reason", reason, "free-form reason/message")
 	setFlagUsage(fs, "usage: toktop emit --type <event_type> [flags]", "Write one live event into a running daemon (POST /v1/events).")
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	if strings.TrimSpace(evType) == "" {
@@ -384,7 +389,7 @@ func runDaemonControl(ctx context.Context, method, path string, args []string, s
 		fs.StringVar(&triggerPath, "path", triggerPath, "transcript path (required for --mode file)")
 		fs.BoolVar(&sync, "sync", sync, "wait for the ingest to finish")
 	}
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	home, _ := paths.Home()

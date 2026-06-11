@@ -32,6 +32,20 @@ func parseFlags(fs *flag.FlagSet, args []string, stdout io.Writer) int {
 	return -1
 }
 
+// parseFlagsNoPositionals is parseFlags for commands that take no positional
+// arguments: a leftover positional (a typo'd subcommand, a stray word) is an
+// error instead of being silently ignored.
+func parseFlagsNoPositionals(fs *flag.FlagSet, args []string, stdout io.Writer, stderr io.Writer) int {
+	if code := parseFlags(fs, args, stdout); code >= 0 {
+		return code
+	}
+	if fs.NArg() > 0 {
+		cliErrf(stderr, "unexpected argument %q", fs.Arg(0))
+		return 2
+	}
+	return -1
+}
+
 func printUsageForHelp(args []string, stdout io.Writer, usage string) bool {
 	if len(args) > 0 && isHelpArg(args[0]) {
 		fmt.Fprintln(stdout, usage)

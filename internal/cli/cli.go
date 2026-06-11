@@ -37,7 +37,7 @@ func runIngest(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs.SetOutput(stderr)
 	fs.Var(&sourcesFlag, "sources", "providers to import (default: auto-detected on-disk providers); may be repeated or comma-separated")
 	setFlagUsage(fs, "usage: toktop ingest [flags]", "One-shot import of provider transcripts into the local store (idempotent).")
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	loader, err := configFor(ctx, home)
@@ -125,7 +125,7 @@ func runPrune(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	setFlagUsage(fs, "usage: toktop data prune (--profile <p> | --raw-events-older-than <dur>) [--dry-run]",
 		"Prune stored data either by retention profile (full lifecycle) or by an ad-hoc",
 		"raw-events age cutoff. Exactly one of --profile / --raw-events-older-than is required.")
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	switch {
@@ -282,7 +282,7 @@ func runInit(_ context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	setFlagUsage(fs, "usage: toktop init", "Create the local config and data directories under the resolved home.")
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 
@@ -312,7 +312,7 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs.SetOutput(stderr)
 	fs.Var(&sourcesFlag, "sources", "providers to check (default: auto-detected on-disk providers); may be repeated or comma-separated")
 	setFlagUsage(fs, "usage: toktop doctor [flags]", "Check local environment readiness (dirs, DB, sqlite/fts5, per-provider hooks/roots).")
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 

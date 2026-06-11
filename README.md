@@ -334,7 +334,8 @@ honored during root discovery.
 ```bash
 toktop export                        # full trace index as JSON (--format ndjson, --output file)
 toktop data prune --help             # age out old raw events / tool outputs
-toktop data retention                # show retention profiles
+toktop data retention status         # effective retention windows for one profile
+toktop data retention profiles       # list the retention profiles
 toktop db stats                      # database size / row counts
 toktop db path                       # path to the SQLite file
 ```

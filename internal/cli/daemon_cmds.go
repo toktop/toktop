@@ -29,7 +29,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs.StringVar(&token, "token", token, "bearer token for TCP; auto-generated to ~/.toktop/config/api-token when empty (unix socket needs none)")
 	fs.BoolVar(&noAuth, "no-auth", noAuth, "disable bearer token enforcement (TCP loopback only)")
 	setFlagUsage(fs, "usage: toktop serve [flags]", "Start the local HTTP API v1 server (no transcript watching; use `daemon serve` for that).")
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	loader, err := configFor(ctx, home)
@@ -165,6 +165,13 @@ func runDaemon(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	case "trigger":
 		return runDaemonControl(ctx, "POST", "/v1/daemon:trigger", rest, stdout, stderr)
 	case "stop":
+		if printUsageForHelp(rest, stdout, "usage: toktop daemon stop") {
+			return 0
+		}
+		if len(rest) > 0 {
+			cliErrf(stderr, "unexpected argument %q", rest[0])
+			return 2
+		}
 		return runDaemonStop(stdout, stderr)
 	}
 	cliErrf(stderr, "unknown daemon subcommand %q (want run|serve|stop|status|pause|resume|trigger)", sub)
@@ -232,7 +239,7 @@ func runDaemonLoop(ctx context.Context, args []string, serveAPIDefault bool, std
 	fs.Var(&sourcesFlag, "sources", "providers to watch/import (default: auto-detected on-disk providers); may be repeated or comma-separated")
 	fs.StringVar(&token, "token", token, "bearer token (serve)")
 	fs.BoolVar(&noAuth, "no-auth", noAuth, "disable bearer token enforcement (serve, loopback only)")
-	if code := parseFlags(fs, args, stdout); code >= 0 {
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
 	if serveAPIDefault && once {
