@@ -363,16 +363,6 @@ CREATE TRIGGER search_documents_au AFTER UPDATE ON search_documents BEGIN
     VALUES (new.rowid, new.kind, new.id, new.source_id, new.session_id, new.turn_id, new.source_file, new.text);
 END;
 
-CREATE TABLE symbols(
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_kind TEXT NOT NULL,
-    entity_id   TEXT NOT NULL,
-    symbol      TEXT NOT NULL,
-    symbol_kind TEXT,
-    created_at  TEXT NOT NULL,
-    UNIQUE(entity_kind, entity_id, symbol)
-);
-
 -- Indexes
 CREATE INDEX idx_raw_events_source        ON raw_events(source_id);
 CREATE INDEX idx_raw_events_time          ON raw_events(event_time);
@@ -429,9 +419,6 @@ CREATE INDEX idx_rule_suggestions_scope   ON rule_suggestions(scope_kind, scope_
 
 CREATE INDEX idx_parse_errors_source      ON parse_errors(source_id);
 
-CREATE INDEX idx_symbols_symbol           ON symbols(symbol);
-CREATE INDEX idx_symbols_entity           ON symbols(entity_kind, entity_id);
-
 -- Time-range listing filters. ListTools/ListMCPs add `tool_calls.started_at >= ?`
 -- and ListSkills/componentAvailability add `turn_components.created_at >= ?` when a
 -- --since bound is set; the leading column satisfies the range and the trailing
@@ -454,8 +441,6 @@ DROP INDEX IF EXISTS idx_sessions_effective_age;
 DROP INDEX IF EXISTS idx_raw_events_effective_time;
 DROP INDEX IF EXISTS idx_turn_components_created;
 DROP INDEX IF EXISTS idx_tool_calls_started;
-DROP INDEX IF EXISTS idx_symbols_entity;
-DROP INDEX IF EXISTS idx_symbols_symbol;
 DROP INDEX IF EXISTS idx_parse_errors_source;
 DROP INDEX IF EXISTS idx_rule_suggestions_scope;
 DROP INDEX IF EXISTS idx_rule_suggestions_rule;
@@ -492,7 +477,6 @@ DROP INDEX IF EXISTS idx_raw_events_session;
 DROP INDEX IF EXISTS idx_raw_events_time;
 DROP INDEX IF EXISTS idx_raw_events_source;
 
-DROP TABLE IF EXISTS symbols;
 DROP TABLE IF EXISTS search_fts;
 DROP TABLE IF EXISTS parse_errors;
 DROP TABLE IF EXISTS rule_suggestions;
@@ -508,7 +492,6 @@ DROP TABLE IF EXISTS turns;
 DROP TABLE IF EXISTS sessions;
 DROP TABLE IF EXISTS projects;
 DROP TABLE IF EXISTS ingest_offsets;
-DROP TABLE IF EXISTS raw_payloads;
 DROP TABLE IF EXISTS raw_events;
 DROP TABLE IF EXISTS source_roots;
 DROP TABLE IF EXISTS sources;

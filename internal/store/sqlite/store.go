@@ -33,7 +33,7 @@ const dbFileName = "toktop.db"
 // Must stay nonzero: 0 is both the implicit value of a fresh database file and
 // the in-progress-wipe marker wipeSchema sets, so 0 always means "no schema
 // built at this epoch".
-const schemaUserVersion = 2
+const schemaUserVersion = 3
 
 var writerCacheKiB, readerCacheKiB, sqliteMmapBytes = memoryBudget(memory.TotalMemory())
 
