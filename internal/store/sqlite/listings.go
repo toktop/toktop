@@ -79,12 +79,32 @@ type Filter struct {
 	SortBy   string
 }
 
+// Activity-time expressions: when an entity actually started or ended its work.
+// They resolve to '' only for an entity with no recorded activity at all, so a
+// DESC sort puts an activity-less row last (oldest) instead of first. Used for
+// every recency sort and "last activity" display, and for range-filtering the
+// entities that are built from timestamped events and so effectively always
+// carry a real time — a turn/tool call/invocation derives its time from a
+// timestamped message, so the '' branch only guards malformed input, where
+// sorting that row last is still the correct outcome.
 const (
-	sessionEffectiveTimeExpr    = "COALESCE(NULLIF(sessions.started_at, ''), NULLIF(sessions.ended_at, ''), sessions.created_at)"
-	turnEffectiveTimeExpr       = "COALESCE(NULLIF(turns.started_at, ''), NULLIF(turns.ended_at, ''), turns.created_at)"
-	rawEventEffectiveTimeExpr   = "COALESCE(NULLIF(raw_events.event_time, ''), raw_events.imported_at)"
-	toolCallEffectiveTimeExpr   = "COALESCE(NULLIF(tool_calls.started_at, ''), NULLIF(tool_calls.ended_at, ''), tool_calls.created_at)"
-	invocationEffectiveTimeExpr = "COALESCE(NULLIF(invocations.started_at, ''), NULLIF(invocations.ended_at, ''), invocations.created_at)"
+	sessionActivityTimeExpr    = "COALESCE(NULLIF(sessions.started_at, ''), NULLIF(sessions.ended_at, ''), '')"
+	turnActivityTimeExpr       = "COALESCE(NULLIF(turns.started_at, ''), NULLIF(turns.ended_at, ''), '')"
+	toolCallActivityTimeExpr   = "COALESCE(NULLIF(tool_calls.started_at, ''), NULLIF(tool_calls.ended_at, ''), '')"
+	invocationActivityTimeExpr = "COALESCE(NULLIF(invocations.started_at, ''), NULLIF(invocations.ended_at, ''), '')"
+)
+
+// Effective-time expressions: activity time floored at the import timestamp
+// (created_at / imported_at). Only the two entities that can legitimately exist
+// with no activity timestamp need this — a session from an empty transcript and
+// a raw event line without an event_time — and only for retention/redaction and
+// since/until range filtering, where collapsing to '' would make the row look
+// infinitely old and prune/redact in-retention content. Never sort by these: the
+// import floor would make an activity-less row masquerade as the most recent
+// (see retention.go RedactNormalized, sessionWhere, rawEventWhere).
+const (
+	sessionEffectiveTimeExpr  = "COALESCE(NULLIF(sessions.started_at, ''), NULLIF(sessions.ended_at, ''), sessions.created_at)"
+	rawEventEffectiveTimeExpr = "COALESCE(NULLIF(raw_events.event_time, ''), raw_events.imported_at)"
 )
 
 type Summary struct {
@@ -276,12 +296,12 @@ func (s *Store) ListProjects(ctx context.Context, f Filter) ([]ProjectListItem, 
 		       COALESCE(COUNT(DISTINCT sessions.id), 0),
 		       COALESCE(SUM(sessions.total_turns), 0),
 		       COALESCE(SUM(sessions.total_tool_calls), 0),
-		       COALESCE(MAX(`+sessionEffectiveTimeExpr+`), '')
+		       COALESCE(MAX(`+sessionActivityTimeExpr+`), '')
 		FROM projects
 		LEFT JOIN sessions ON sessions.project_id = projects.id
 		`+clause+`
 		GROUP BY projects.id
-		ORDER BY MAX(`+sessionEffectiveTimeExpr+`) DESC, projects.name
+		ORDER BY MAX(`+sessionActivityTimeExpr+`) DESC, projects.name
 	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
@@ -316,7 +336,7 @@ type ModelListItem struct {
 func (s *Store) ListModels(ctx context.Context, f Filter) ([]ModelListItem, error) {
 	f = f.normalized()
 	var args []any
-	wheres := f.joinedTurnWhere(&args, invocationEffectiveTimeExpr)
+	wheres := f.joinedTurnWhere(&args, invocationActivityTimeExpr)
 	clause := whereClause(wheres)
 	rows, err := s.reader().QueryContext(ctx, `
 		SELECT COALESCE(invocations.provider, ''), COALESCE(invocations.model, ''),
@@ -324,7 +344,7 @@ func (s *Store) ListModels(ctx context.Context, f Filter) ([]ModelListItem, erro
 		       COUNT(DISTINCT invocations.turn_id),
 		       COALESCE(SUM(invocations.input_tokens), 0),
 		       COALESCE(SUM(invocations.output_tokens), 0),
-		       COALESCE(MAX(`+invocationEffectiveTimeExpr+`), '')
+		       COALESCE(MAX(`+invocationActivityTimeExpr+`), '')
 		FROM invocations
 		JOIN turns ON turns.id = invocations.turn_id
 		JOIN sessions ON sessions.id = invocations.session_id
@@ -352,14 +372,14 @@ func (s *Store) ListModels(ctx context.Context, f Filter) ([]ModelListItem, erro
 func (s *Store) ListTools(ctx context.Context, f Filter) ([]ToolListItem, error) {
 	f = f.normalized()
 	var args []any
-	wheres := f.joinedTurnWhere(&args, toolCallEffectiveTimeExpr)
+	wheres := f.joinedTurnWhere(&args, toolCallActivityTimeExpr)
 	clause := whereClause(wheres)
 	rows, err := s.reader().QueryContext(ctx, `
 		SELECT tool_kind, tool_name, COALESCE(mcp_server, ''),
 		       COUNT(*),
 		       COUNT(DISTINCT tool_calls.turn_id),
 		       COALESCE(SUM(CASE WHEN tool_calls.status = 'failed' THEN 1 ELSE 0 END), 0),
-		       COALESCE(MAX(`+toolCallEffectiveTimeExpr+`), '')
+		       COALESCE(MAX(`+toolCallActivityTimeExpr+`), '')
 		FROM tool_calls
 		JOIN turns ON turns.id = tool_calls.turn_id
 		JOIN sessions ON sessions.id = tool_calls.session_id
@@ -387,7 +407,7 @@ func (s *Store) ListTools(ctx context.Context, f Filter) ([]ToolListItem, error)
 func (s *Store) listMCPsCore(ctx context.Context, f Filter) ([]MCPListItem, error) {
 	f = f.normalized()
 	var args []any
-	wheres := f.joinedTurnWhere(&args, toolCallEffectiveTimeExpr)
+	wheres := f.joinedTurnWhere(&args, toolCallActivityTimeExpr)
 	clause := whereClause(append([]string{`tool_calls.tool_kind = 'mcp'`}, wheres...))
 	// When the caller scoped the query (source/session/project/since/until),
 	// only return MCP servers actually observed in that scope; otherwise the
@@ -403,7 +423,7 @@ func (s *Store) listMCPsCore(ctx context.Context, f Filter) ([]MCPListItem, erro
 				       COUNT(*) AS calls,
 				       COUNT(DISTINCT tool_calls.mcp_tool) AS tools,
 				       COUNT(DISTINCT tool_calls.turn_id) AS turns,
-			       MAX(`+toolCallEffectiveTimeExpr+`) AS last_used
+			       MAX(`+toolCallActivityTimeExpr+`) AS last_used
 			FROM tool_calls
 			JOIN turns ON turns.id = tool_calls.turn_id
 				JOIN sessions ON sessions.id = tool_calls.session_id
@@ -507,7 +527,7 @@ func (s *Store) ListSkills(ctx context.Context, f Filter) ([]SkillListItem, erro
 				SELECT sessions.source_id AS source_id,
 				       turn_components.component_name AS name,
 				       COUNT(*) AS count,
-				       MAX(`+turnEffectiveTimeExpr+`) AS last_used
+				       MAX(`+turnActivityTimeExpr+`) AS last_used
 				FROM turn_components
 			JOIN turns ON turns.id = turn_components.turn_id
 				JOIN sessions ON sessions.id = turns.session_id
@@ -768,11 +788,11 @@ func (f Filter) turnWhere() (string, []any) {
 		wheres = append(wheres, inClause("turns.status", ids, &args))
 	}
 	if !f.Since.IsZero() {
-		wheres = append(wheres, turnEffectiveTimeExpr+" >= ?")
+		wheres = append(wheres, turnActivityTimeExpr+" >= ?")
 		args = append(args, timeBound(f.Since))
 	}
 	if !f.Until.IsZero() {
-		wheres = append(wheres, turnEffectiveTimeExpr+" < ?")
+		wheres = append(wheres, turnActivityTimeExpr+" < ?")
 		args = append(args, timeBound(f.Until))
 	}
 	return whereClause(wheres), args
@@ -838,7 +858,7 @@ func (f Filter) joinedTurnWhere(args *[]any, timeColumn string) []string {
 		wheres = append(wheres, inClause("turns.status", ids, args))
 	}
 	if timeColumn == "" {
-		timeColumn = turnEffectiveTimeExpr
+		timeColumn = turnActivityTimeExpr
 	}
 	if !f.Since.IsZero() {
 		wheres = append(wheres, timeColumn+" >= ?")
@@ -926,7 +946,7 @@ func (f Filter) turnOrderBy() string {
 	case "duration":
 		return order("turns.duration_ms", f.SortDesc)
 	default:
-		return order(turnEffectiveTimeExpr, f.SortDesc) + ", turns.turn_index"
+		return order(turnActivityTimeExpr, f.SortDesc) + ", turns.turn_index"
 	}
 }
 
@@ -935,7 +955,7 @@ func (f Filter) sessionOrderBy() string {
 	case "turns":
 		return order("sessions.total_turns", f.SortDesc)
 	default:
-		return order(sessionEffectiveTimeExpr, f.SortDesc) + ", sessions.id"
+		return order(sessionActivityTimeExpr, f.SortDesc) + ", sessions.id"
 	}
 }
 

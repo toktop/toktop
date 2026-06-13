@@ -248,4 +248,3 @@ func workflowStatus(turns []trace.Turn, agents []AgentRun, finalPresent bool) st
 		return "completed"
 	}
 }
-

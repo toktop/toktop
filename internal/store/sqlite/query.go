@@ -286,7 +286,7 @@ func (s *Store) loadAllTurns(ctx context.Context, since time.Time) ([]trace.Turn
 		)`
 		args = append(args, timeBound(since))
 	}
-	q += ` ORDER BY ` + turnEffectiveTimeExpr + `, turns.turn_index, turns.id`
+	q += ` ORDER BY ` + turnActivityTimeExpr + `, turns.turn_index, turns.id`
 	rows, err := s.reader().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("load turns: %w", err)
