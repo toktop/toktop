@@ -163,6 +163,20 @@ func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tools)
 }
 
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	filter, err := parseFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_filter", err.Error())
+		return
+	}
+	models, err := s.service.ListModels(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "list_models_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, models)
+}
+
 func (s *Server) handleMCPs(w http.ResponseWriter, r *http.Request) {
 	filter, err := parseFilter(r)
 	if err != nil {

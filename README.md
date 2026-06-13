@@ -126,7 +126,7 @@ Claude Code / Codex transcripts (JSONL)
         │  collect + parse (per provider)
         ▼
    provider-neutral trace index
-   sessions → turns → invocations → tool calls   (+ MCP servers, skills, context events)
+   sessions → turns → invocations → tool calls   (+ MCP servers, skills)
         │  store
         ▼
    local SQLite (+ FTS5 full-text index)  ──►  CLI · HTTP API v1 · live SSE stream
@@ -158,7 +158,7 @@ All analytics read the local SQLite DB directly (no daemon required).
 | `toktop sources` | Configured providers and their discovery roots |
 
 **Shared filter flags** (on `summary`, `sessions`, `turns`, `mcps`, `skills`, `tools`,
-`status`):
+`models`, `projects`, `status`):
 
 ```
 --sources claude-code,codex     # provider filter (repeatable / comma-separated)
@@ -291,7 +291,7 @@ via config `addr=tcp://host:port`; off loopback it **requires a bearer token** r
 | `GET /v1/summary` | Counts + token totals |
 | `GET /v1/sessions` · `/v1/sessions/{id}` | List / one session |
 | `GET /v1/turns` · `/{id}` · `/{id}/timeline` · `/{id}/components` | Turns + per-turn detail |
-| `GET /v1/projects` · `/v1/tools` | Project / tool rollups |
+| `GET /v1/projects` · `/v1/tools` · `/v1/models` | Project / tool / model rollups |
 | `GET /v1/mcps` · `/v1/mcps/unused` · `/v1/skills` · `/v1/skills/unused` | MCP / skill usage |
 | `GET /v1/search` | Full-text search (`q`, `limit`, `kind`, `source`) |
 | `GET /v1/suggestions` · `POST /v1/suggestions:recompute` | Rule findings |
@@ -338,7 +338,7 @@ honored during root discovery.
 ## Data lifecycle & privacy
 
 ```bash
-toktop export                        # full trace index as JSON (--since 24h, --format ndjson, --output file)
+toktop export                        # full trace index as JSON (--since 24h, --format ndjson, --output file, --max-output-bytes N)
 toktop data prune --help             # age out old raw events and redact normalized rows
 toktop data retention status         # effective retention windows for one profile
 toktop data retention profiles       # list the retention profiles
