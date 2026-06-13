@@ -16,6 +16,9 @@ var _ ingest.HookInstaller = provider{}
 func (provider) HookConfigPath(scope string) (string, string, error) {
 	switch scope {
 	case "user", "":
+		if roots := configDirEnvRoots(); len(roots) > 0 {
+			return filepath.Join(roots[0], "settings.json"), "settings", nil
+		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", "", err

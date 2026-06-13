@@ -71,6 +71,17 @@ func (s *Service) GetSession(ctx context.Context, id string) (trace.Session, err
 	return sess, nil
 }
 
+func (s *Service) FindSessions(ctx context.Context, id string) ([]trace.Session, error) {
+	sessions, err := s.store.FindSessions(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if len(sessions) == 0 {
+		return nil, ErrNotFound
+	}
+	return sessions, nil
+}
+
 func (s *Service) SessionTurns(ctx context.Context, sessionID string) ([]trace.Turn, error) {
 	return s.store.TurnsForSession(ctx, sessionID)
 }
@@ -81,6 +92,10 @@ func (s *Service) ListProjects(ctx context.Context, f sqlite.Filter) ([]sqlite.P
 
 func (s *Service) ListTools(ctx context.Context, f sqlite.Filter) ([]sqlite.ToolListItem, error) {
 	return s.store.ListTools(ctx, f)
+}
+
+func (s *Service) ListModels(ctx context.Context, f sqlite.Filter) ([]sqlite.ModelListItem, error) {
+	return s.store.ListModels(ctx, f)
 }
 
 func (s *Service) ListMCPs(ctx context.Context, f sqlite.Filter) ([]sqlite.MCPListItem, error) {
@@ -112,11 +127,11 @@ func (s *Service) Suggestions(ctx context.Context, ruleID string) ([]trace.Sugge
 }
 
 func (s *Service) RecomputeSuggestions(ctx context.Context, now time.Time) ([]trace.Suggestion, error) {
-	// Load the full history: three of the four rules (ToolOutputDominates,
-	// RetryLoop, LongSessionDegradation) ignore `now` and scan the whole index, so
-	// a windowed load silently hid older signals here while the CLI's full-history
-	// path still surfaced them. MCPUnused30d applies its own 30-day cutoff, so a
-	// full load does not widen it.
+	// Load the full history: ToolOutputDominates, RetryLoop, and
+	// LongSessionDegradation ignore `now` and scan the whole index, so a windowed
+	// load silently hid older signals here while the CLI's full-history path still
+	// surfaced them. MCPUnused30d applies its own 30-day cutoff, so a full load
+	// does not widen it.
 	index, err := s.store.LoadIndex(ctx, time.Time{})
 	if err != nil {
 		return nil, err
@@ -129,7 +144,8 @@ func (s *Service) RecomputeSuggestions(ctx context.Context, now time.Time) ([]tr
 }
 
 // Snapshot loads the trace index for export. A zero since loads everything; a
-// non-zero since scopes it to sessions/turns started at or after that time.
+// non-zero since selects sessions by effective time and includes all turns for
+// those sessions.
 func (s *Service) Snapshot(ctx context.Context, since time.Time) (trace.Index, error) {
 	return s.store.LoadIndex(ctx, since)
 }
@@ -146,16 +162,9 @@ func mapNotFound(err error) error {
 // makePage builds a page envelope whose Limit/Offset mirror the effective
 // pagination the store actually applied. defaultLimit must match the value the
 // corresponding store query passes to Filter.pagination so the reported Limit
-// is truthful; the 500 ceiling mirrors the store's clamp.
+// is truthful.
 func makePage[T any](items []T, total int, f sqlite.Filter, defaultLimit int) Page[T] {
-	limit := f.Limit
-	if limit <= 0 {
-		limit = defaultLimit
-	}
-	if limit > 500 {
-		limit = 500
-	}
-	offset := max(f.Offset, 0)
+	limit, offset := sqlite.EffectivePagination(f, defaultLimit)
 	next := min(offset+len(items), total)
 	return Page[T]{Items: items, Total: total, Limit: limit, Offset: offset, NextOffset: next}
 }

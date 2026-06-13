@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,9 +12,23 @@ import (
 	"strings"
 
 	"toktop.unceas.dev/internal/httpapi"
+	"toktop.unceas.dev/internal/query"
 	"toktop.unceas.dev/internal/textutil"
 	"toktop.unceas.dev/internal/trace"
 )
+
+// reportLookupErr prints a not-found message for query.ErrNotFound and the
+// underlying error otherwise, so a real backend failure (locked DB, query/scan
+// error, context deadline) is surfaced instead of being masked as a missing
+// entity. It always returns 1 for the caller to return.
+func reportLookupErr(stderr io.Writer, kind, id string, err error) int {
+	if errors.Is(err, query.ErrNotFound) {
+		cliErrf(stderr, "%s not found: %s", kind, id)
+	} else {
+		cliErrf(stderr, "look up %s %s: %v", kind, id, err)
+	}
+	return 1
+}
 
 // Read/query commands: the list + single-entity views over the trace store
 // (sessions, turns, summary, search, export). Their shared helpers (parseFlags,
@@ -58,13 +73,10 @@ func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	if code := checkPaging(limit, offset, stderr); code >= 0 {
 		return code
 	}
-
-	svc, store, err := openService(ctx, home)
-	if err != nil {
+	if err := validateListFormat(format); err != nil {
 		cliErr(stderr, err)
-		return 1
+		return 2
 	}
-	defer store.Close()
 	filter, err := parseFilterFlags(since, until, sortFlag, "started", "turns")
 	if err != nil {
 		cliErr(stderr, err)
@@ -76,6 +88,12 @@ func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		cliErr(stderr, err)
 		return 2
 	}
+	svc, store, err := openService(ctx, home)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	defer store.Close()
 	page, err := svc.ListSessions(ctx, filter)
 	if err != nil {
 		cliErr(stderr, err)
@@ -102,42 +120,66 @@ func runSession(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	if code := parseFlags(fs, args, stdout); code >= 0 {
 		return code
 	}
+	if err := validateFormat(format, "table", "json"); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
 	if fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "usage: toktop sessions inspect [flags] <session_id>")
 		return 2
 	}
 	sessionID := fs.Arg(0)
 
-	index, err := loadIndex(ctx, home)
+	svc, store, err := openService(ctx, home)
 	if err != nil {
-		cliErrf(stderr, "load index: %v", err)
+		cliErr(stderr, err)
 		return 1
 	}
-	session, ok := findSession(index, sessionID)
-	if !ok {
-		cliErrf(stderr, "session not found: %s", sessionID)
-		return 1
+	defer store.Close()
+	matches, err := svc.FindSessions(ctx, sessionID)
+	if err != nil {
+		return reportLookupErr(stderr, "session", sessionID, err)
 	}
-	// A provider UUID can back several internal sessions (e.g. a resumed/branched
-	// session). findSession picks one; surface the ambiguity instead of hiding it.
-	if dupes := sessionsWithExternalID(index, sessionID); len(dupes) > 1 {
-		shown, more := dupes, ""
-		if len(shown) > 6 {
-			more = fmt.Sprintf(" +%d more", len(shown)-6)
-			shown = shown[:6]
-		}
-		fmt.Fprintf(stderr, "note: external id %s maps to %d sessions (%s%s); showing %s — use an internal session id to disambiguate\n",
-			sessionID, len(dupes), strings.Join(shown, ", "), more, session.ID)
+	session := selectSessionMatch(sessionID, matches, stderr)
+	turns, err := svc.SessionTurns(ctx, session.ID)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
 	}
 	detail := sessionDetail{
 		Session: session,
-		Turns:   turnsForSession(index, session.ID),
+		Turns:   turns,
 	}
 	if format == "json" {
 		return writeJSON(stdout, stderr, detail)
 	}
 	printSessionDetail(stdout, detail)
 	return 0
+}
+
+func selectSessionMatch(id string, matches []trace.Session, stderr io.Writer) trace.Session {
+	if len(matches) == 0 {
+		return trace.Session{}
+	}
+	for _, session := range matches {
+		if session.ID == id {
+			return session
+		}
+	}
+	session := matches[0]
+	if len(matches) > 1 {
+		shown := make([]string, 0, min(len(matches), 6))
+		for i := 0; i < len(matches) && i < 6; i++ {
+			shown = append(shown, matches[i].ID)
+		}
+		more := ""
+		if len(matches) > len(shown) {
+			more = fmt.Sprintf(" +%d more", len(matches)-len(shown))
+		}
+		fmt.Fprintf(stderr, "note: external id %s maps to %d sessions (%s%s); showing %s - use an internal session id to disambiguate\n",
+			id, len(matches), strings.Join(shown, ", "), more, session.ID)
+	}
+	return session
 }
 
 func runTurns(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -188,13 +230,10 @@ func runTurns(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if code := checkPaging(limit, offset, stderr); code >= 0 {
 		return code
 	}
-
-	svc, store, err := openService(ctx, home)
-	if err != nil {
+	if err := validateListFormat(format); err != nil {
 		cliErr(stderr, err)
-		return 1
+		return 2
 	}
-	defer store.Close()
 	filter, err := parseFilterFlags(since, until, sortFlag, "started", "tokens", "duration")
 	if err != nil {
 		cliErr(stderr, err)
@@ -206,6 +245,12 @@ func runTurns(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		cliErr(stderr, err)
 		return 2
 	}
+	svc, store, err := openService(ctx, home)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	defer store.Close()
 	page, err := svc.ListTurns(ctx, filter)
 	if err != nil {
 		cliErr(stderr, err)
@@ -232,21 +277,25 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if code := parseFlags(fs, args, stdout); code >= 0 {
 		return code
 	}
+	if err := validateFormat(format, "table", "json"); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
 	if fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "usage: toktop turns inspect [flags] <turn_id>")
 		return 2
 	}
 	turnID := fs.Arg(0)
 
-	index, err := loadIndex(ctx, home)
+	svc, store, err := openService(ctx, home)
 	if err != nil {
-		cliErrf(stderr, "load index: %v", err)
+		cliErr(stderr, err)
 		return 1
 	}
-	turn, ok := findTurn(index, turnID)
-	if !ok {
-		cliErrf(stderr, "turn not found: %s", turnID)
-		return 1
+	defer store.Close()
+	turn, err := svc.GetTurn(ctx, turnID)
+	if err != nil {
+		return reportLookupErr(stderr, "turn", turnID, err)
 	}
 	if format == "json" {
 		return writeJSON(stdout, stderr, turn)
@@ -286,6 +335,10 @@ func runTurnComponents(ctx context.Context, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "usage: toktop turns components [flags] <turn_id>")
 		return 2
 	}
+	if err := validateListFormat(format); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
 	turnID := fs.Arg(0)
 	switch kind {
 	case "", trace.ComponentKindBuiltinTool, trace.ComponentKindMCPServer, trace.ComponentKindMCPTool, trace.ComponentKindSkill:
@@ -302,8 +355,7 @@ func runTurnComponents(ctx context.Context, args []string, stdout, stderr io.Wri
 	// Report a missing turn instead of a silent empty list, matching the
 	// `turns inspect` / `turns timeline` behavior.
 	if _, err := svc.GetTurn(ctx, turnID); err != nil {
-		cliErrf(stderr, "turn not found: %s", turnID)
-		return 1
+		return reportLookupErr(stderr, "turn", turnID, err)
 	}
 	components, err := svc.ListComponents(ctx, turnID)
 	if err != nil {
@@ -341,6 +393,10 @@ func runTurnTimeline(ctx context.Context, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stderr, "usage: toktop turns timeline [flags] <turn_id>")
 		return 2
 	}
+	if err := validateListFormat(format); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
 	svc, store, err := openService(ctx, home)
 	if err != nil {
 		cliErr(stderr, err)
@@ -349,19 +405,14 @@ func runTurnTimeline(ctx context.Context, args []string, stdout, stderr io.Write
 	defer store.Close()
 	turn, err := svc.GetTurn(ctx, fs.Arg(0))
 	if err != nil {
-		cliErrf(stderr, "turn not found: %s", fs.Arg(0))
-		return 1
+		return reportLookupErr(stderr, "turn", fs.Arg(0), err)
 	}
 	timeline := httpapi.BuildTimeline(turn)
 	if format == "json" {
 		return writeJSON(stdout, stderr, timeline)
 	}
 	return writeFormatted(stdout, stderr, format, timeline.Entries, []string{"at", "kind", "label", "status", "duration_ms", "tokens", "detail"}, func(e httpapi.TimelineEntry) []string {
-		tokens := textutil.FormatCount(e.Tokens)
-		if e.Tokens == 0 && e.TokenEstimate > 0 {
-			tokens = "~" + textutil.FormatCount(e.TokenEstimate) // estimated (carries confidence in JSON)
-		}
-		return []string{formatTime(e.At), e.Kind, e.Label, emptyDash(e.Status), strconv.FormatInt(e.DurationMs, 10), tokens, oneLine(e.Detail, 80)}
+		return []string{formatTime(e.At), e.Kind, e.Label, emptyDash(e.Status), strconv.FormatInt(e.DurationMs, 10), textutil.FormatCount(e.Tokens), oneLine(e.Detail, 80)}
 	})
 }
 
@@ -387,12 +438,10 @@ func runSummary(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
-	svc, store, err := openService(ctx, home)
-	if err != nil {
+	if err := validateFormat(format, "table", "json"); err != nil {
 		cliErr(stderr, err)
-		return 1
+		return 2
 	}
-	defer store.Close()
 	filter, err := parseFilterFlags(since, until, "")
 	if err != nil {
 		cliErr(stderr, err)
@@ -402,6 +451,12 @@ func runSummary(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		cliErr(stderr, err)
 		return 2
 	}
+	svc, store, err := openService(ctx, home)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	defer store.Close()
 	summary, err := svc.Summary(ctx, filter)
 	if err != nil {
 		cliErr(stderr, err)
@@ -438,6 +493,10 @@ func runSearch(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	if code := parseFlags(fs, args, stdout); code >= 0 {
 		return code
 	}
+	if err := validateFormat(format, "table", "json"); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
 	if limit < 1 {
 		cliErrf(stderr, "--limit must be >= 1")
 		return 2
@@ -446,13 +505,17 @@ func runSearch(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		fmt.Fprintln(stderr, "usage: toktop search [flags] <query>")
 		return 2
 	}
+	terms, filters, err := splitSearchTokens(fs.Args())
+	if err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
 	store, err := openStore(ctx, home)
 	if err != nil {
 		cliErrf(stderr, "open store: %v", err)
 		return 1
 	}
 	defer store.Close()
-	terms, filters := splitSearchTokens(fs.Args())
 	results, err := store.Search(ctx, strings.Join(terms, " "), limit, filters["kind"], filters["source"])
 	if err != nil {
 		cliErrf(stderr, "search: %v", err)
@@ -467,7 +530,7 @@ func runSearch(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	return 0
 }
 
-func splitSearchTokens(args []string) ([]string, map[string]string) {
+func splitSearchTokens(args []string) ([]string, map[string]string, error) {
 	terms := make([]string, 0, len(args))
 	filters := make(map[string]string)
 	for _, arg := range args {
@@ -483,7 +546,22 @@ func splitSearchTokens(args []string) ([]string, map[string]string) {
 		}
 		terms = append(terms, arg)
 	}
-	return terms, filters
+	if source := filters["source"]; source != "" {
+		tokens, err := resolveFilterTokens(rootList{source})
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(tokens) == 0 {
+			return nil, nil, fmt.Errorf("empty source filter %q", source)
+		}
+		filters["source"] = query.ResolveSourceFilter(tokens[0])
+	}
+	switch kind := filters["kind"]; kind {
+	case "", "turn", "tool_call":
+	default:
+		return nil, nil, fmt.Errorf("unknown search kind %q (want turn or tool_call)", kind)
+	}
+	return terms, filters, nil
 }
 
 func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -493,38 +571,59 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 	format := "json"
 	output := "-"
+	since := ""
+	maxOutputBytes := 0
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, "output format: json or ndjson")
 	fs.StringVar(&output, "output", output, "output path or - for stdout")
-	setFlagUsage(fs, "usage: toktop export [flags]", "Export the full trace index as json or ndjson (to stdout or --output).")
+	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
+	fs.IntVar(&maxOutputBytes, "max-output-bytes", maxOutputBytes, "clip tool-call outputs larger than N bytes to head+tail (0 = no clipping; full bytes stay in the transcript)")
+	setFlagUsage(fs, "usage: toktop export [flags]", "Export the trace index as json or ndjson (to stdout or --output).")
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
-	index, err := loadIndex(ctx, home)
+	if err := validateFormat(format, "json", "ndjson"); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	filter, err := parseFilterFlags(since, "", "")
+	if err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	index, err := loadIndex(ctx, home, filter.Since)
 	if err != nil {
 		cliErrf(stderr, "load index: %v", err)
 		return 1
 	}
-	var payload []byte
+	trace.ClipToolCalls(index.Turns, maxOutputBytes)
+	w := stdout
+	var file *os.File
+	if output != "-" {
+		file, err = os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			cliErrf(stderr, "write export: %v", err)
+			return 1
+		}
+		defer file.Close()
+		w = file
+	}
 	switch format {
 	case "json":
-		payload, err = json.MarshalIndent(index, "", "  ")
+		encoder := json.NewEncoder(w)
+		encoder.SetIndent("", "  ")
+		err = encoder.Encode(index)
 	case "ndjson":
-		payload, err = marshalNDJSON(index)
-	default:
-		cliErrf(stderr, "unsupported export format %q", format)
-		return 2
+		err = writeNDJSONIndex(w, index)
 	}
 	if err != nil {
 		cliErrf(stderr, "marshal export: %v", err)
 		return 1
 	}
-	payload = append(payload, '\n')
-	if output == "-" {
-		_, err = stdout.Write(payload)
-	} else {
-		err = os.WriteFile(output, payload, 0o600)
+	if file != nil {
+		err = file.Close()
+		file = nil
 	}
 	if err != nil {
 		cliErrf(stderr, "write export: %v", err)

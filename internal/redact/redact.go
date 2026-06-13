@@ -22,18 +22,6 @@ const (
 	CategoryDatabaseURL Category = "database-url-password"
 )
 
-type Hit struct {
-	Category Category
-
-	Hash string
-}
-
-type Result struct {
-	Original string
-	Redacted string
-	Hits     []Hit
-}
-
 const redactionFailedPlaceholder = "[REDACTED:scan-failed]"
 
 // PolicyFromString parses a redact config value ("on"/"off" plus tolerant
@@ -56,17 +44,17 @@ func PolicyFromString(value string) (Policy, error) {
 	return Disabled, nil
 }
 
-func Apply(text string) Result {
+func Apply(text string) string {
 	if text == "" {
-		return Result{}
+		return ""
 	}
 
 	hits, ok := scanPooled(text)
 	if !ok {
-		return Result{Original: text, Redacted: redactionFailedPlaceholder}
+		return redactionFailedPlaceholder
 	}
 	if len(hits) == 0 {
-		return Result{Original: text, Redacted: text}
+		return text
 	}
 
 	// Replace by unique match string, longest first, replacing every occurrence.
@@ -104,11 +92,7 @@ func Apply(text string) Result {
 		redacted = strings.ReplaceAll(redacted, r.match, r.placeholder)
 	}
 
-	out := make([]Hit, len(hits))
-	for i, h := range hits {
-		out[i] = Hit{Category: h.Category, Hash: h.Hash}
-	}
-	return Result{Original: text, Redacted: redacted, Hits: out}
+	return redacted
 }
 
 type internalHit struct {
@@ -204,7 +188,7 @@ var toktopRules = []struct {
 	re       *regexp.Regexp
 }{
 	{CategoryEnvSecret, regexp.MustCompile(`(?im)^\s*[A-Z][A-Z0-9_]*?_(?:SECRET|TOKEN|PASSWORD|KEY)\s*=\s*\S+`)},
-	{CategoryCookie, regexp.MustCompile(`(?i)Cookie:\s*[^\r\n]{1,400}`)},
+	{CategoryCookie, regexp.MustCompile(`(?i)Cookie:\s*[^\r\n]+`)},
 	{CategoryDatabaseURL, regexp.MustCompile(`(?i)(?:postgres|postgresql|mysql|mongodb)(?:\+[a-z]+)?://[^:\s/@]+:[^@\s/]+@`)},
 }
 

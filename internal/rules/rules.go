@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
+	"toktop.unceas.dev/internal/handoff"
 	"toktop.unceas.dev/internal/trace"
 )
 
@@ -43,7 +45,71 @@ func All() []Rule {
 		ToolOutputDominates{},
 		RetryLoop{},
 		LongSessionDegradation{},
+		WorkflowInterrupted{},
 	}
+}
+
+// WorkflowInterrupted flags a session where subagents ran but no final synthesis
+// was recorded — the cross-agent-recovery scenario. It recommends building a
+// handoff package rather than re-running the agents. Confidence is inferred: the
+// absence of a final message is a heuristic for "interrupted before wrap-up".
+type WorkflowInterrupted struct{}
+
+func (WorkflowInterrupted) ID() string { return "workflow_interrupted" }
+
+func (WorkflowInterrupted) Evaluate(_ context.Context, index trace.Index, _ time.Time) []trace.Suggestion {
+	type agg struct {
+		agentRuns     int
+		completedRuns int
+		lastIndex     int
+		lastHasFinal  bool
+		lastFailed    bool
+	}
+	bySession := map[string]*agg{}
+	var order []string
+	for ti := range index.Turns {
+		turn := &index.Turns[ti]
+		a, ok := bySession[turn.SessionID]
+		if !ok {
+			a = &agg{lastIndex: -1}
+			bySession[turn.SessionID] = a
+			order = append(order, turn.SessionID)
+		}
+		for _, call := range turn.ToolCalls {
+			if handoff.IsAgentTool(call.Name) {
+				a.agentRuns++
+				if call.Status == trace.StatusSuccess {
+					a.completedRuns++
+				}
+			}
+		}
+		// Track the session's ending by the highest turn index: the interrupted
+		// signal is the closing turn never producing a synthesis, not whether any
+		// earlier turn did.
+		if turn.Index >= a.lastIndex {
+			a.lastIndex = turn.Index
+			a.lastHasFinal = strings.TrimSpace(turn.AssistantFinal) != ""
+			a.lastFailed = turn.Status == trace.StatusFailed
+		}
+	}
+	var out []trace.Suggestion
+	for _, sid := range order {
+		a := bySession[sid]
+		if a.agentRuns == 0 || (a.lastHasFinal && !a.lastFailed) {
+			continue
+		}
+		ev, _ := json.Marshal(map[string]any{"session_id": sid, "agent_runs": a.agentRuns, "completed_runs": a.completedRuns, "last_turn_failed": a.lastFailed})
+		out = append(out, trace.Suggestion{
+			RuleID:         "workflow_interrupted",
+			Severity:       SeverityWarn,
+			Confidence:     trace.ConfidenceInferred,
+			ScopeKind:      "session",
+			ScopeID:        sid,
+			EvidenceJSON:   string(ev),
+			Recommendation: fmt.Sprintf("%d agent run(s) completed but the session did not end with a final synthesis; run `toktop handoff create --session %s` to package the results for recovery instead of re-running the agents.", a.completedRuns, sid),
+		})
+	}
+	return out
 }
 
 func Run(ctx context.Context, index trace.Index, now time.Time) []trace.Suggestion {

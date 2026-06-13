@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"toktop.unceas.dev/internal/ingest"
+	"toktop.unceas.dev/internal/textutil"
 	"toktop.unceas.dev/internal/trace"
 )
 
@@ -30,12 +30,8 @@ func (provider) HookConfigPath(scope string) (string, string, error) {
 		// behavior. This deliberately differs from resolveRoots, which treats
 		// CODEX_HOME as a single path; kept identical to the old codexHooksPath so
 		// hooks install is byte-for-byte unchanged.
-		if env := os.Getenv("CODEX_HOME"); env != "" {
-			for part := range strings.SplitSeq(env, ",") {
-				if p := strings.TrimSpace(part); p != "" {
-					return filepath.Join(filepath.Clean(p), "hooks.json"), "hooks", nil
-				}
-			}
+		if parts := textutil.SplitTrim(os.Getenv("CODEX_HOME")); len(parts) > 0 {
+			return filepath.Join(filepath.Clean(parts[0]), "hooks.json"), "hooks", nil
 		}
 		home, err := os.UserHomeDir()
 		if err != nil {

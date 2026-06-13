@@ -40,19 +40,36 @@ func Ingest(ctx context.Context, roots []SourceRoot, redactPolicy redact.Policy,
 
 func codexMetadata(ctx context.Context, roots []SourceRoot, fingerprints map[string]source.Fingerprint) (ingest.Result, bool, error) {
 	meta := trace.Index{GeneratedAt: time.Now().UTC(), Source: "codex", ParserVersion: codexparser.ParserVersion, SourceRoots: ingest.RootPaths(roots)}
-	attachDeclaredMCPServers(ctx, &meta, roots)
-	if len(meta.MCPServers) == 0 {
+	if !attachDeclaredMCPServers(ctx, &meta, roots) {
 		return ingest.Result{}, false, nil
 	}
 	trace.InternIndexStrings(&meta)
-	return ingest.Result{Index: meta, ProcessedFiles: []string{}, Fingerprints: fingerprints}, true, nil
+	// Codex authoritatively covers both kinds this round: it scanned MCP servers and
+	// has no skills concept (the authoritative skill set is empty), so both reconcile
+	// — matching the pre-decouple behavior of deleting any stray rows for this source.
+	return ingest.Result{
+		Index:                   meta,
+		ProcessedFiles:          []string{},
+		Fingerprints:            fingerprints,
+		AuthoritativeSkills:     true,
+		AuthoritativeMCPServers: true,
+	}, true, nil
 }
 
-func attachDeclaredMCPServers(ctx context.Context, index *trace.Index, roots []SourceRoot) {
-	found, err := scanDeclaredMCPServers(ctx, roots)
+// attachDeclaredMCPServers appends scanned MCP servers to the metadata index. It
+// returns false — skipping the whole metadata round, so no reconcile/delete runs
+// — when the scan errored or was incomplete, because the metadata-only save path
+// deletes stored rows absent from the scan and a partial scan is not authority.
+func attachDeclaredMCPServers(ctx context.Context, index *trace.Index, roots []SourceRoot) bool {
+	found, complete, err := scanDeclaredMCPServers(ctx, roots)
 	if err != nil {
 		slog.Warn("codex mcp scan failed", "err", err)
-		return
+		return false
+	}
+	if !complete {
+		slog.Warn("skip codex mcp metadata reconcile: scan incomplete")
+		return false
 	}
 	index.MCPServers = append(index.MCPServers, found...)
+	return true
 }

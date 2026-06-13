@@ -24,6 +24,19 @@ const (
 	StatusPending              = "pending"
 )
 
+func StatusValues() []string {
+	return []string{
+		StatusUnknown,
+		StatusActive,
+		StatusCompleted,
+		StatusInterrupted,
+		StatusSuccess,
+		StatusFailed,
+		StatusAwaitingConfirmation,
+		StatusPending,
+	}
+}
+
 const (
 	ToolKindBuiltin = "builtin"
 	ToolKindMCP     = "mcp"
@@ -51,9 +64,6 @@ type Index struct {
 	Sessions       []Session       `json:"sessions,omitzero"`
 	Turns          []Turn          `json:"turns,omitzero"`
 	Invocations    []Invocation    `json:"invocations,omitzero"`
-	SubagentRuns   []SubagentRun   `json:"subagent_runs,omitzero"`
-	ToolOutputs    []ToolOutput    `json:"tool_outputs,omitzero"`
-	ContextEvents  []ContextEvent  `json:"context_events,omitzero"`
 	TurnComponents []TurnComponent `json:"turn_components,omitzero"`
 	Skills         []Skill         `json:"skills,omitzero"`
 	MCPServers     []MCPServer     `json:"mcp_servers,omitzero"`
@@ -63,7 +73,6 @@ type Index struct {
 	TurnCount       int `json:"turn_count"`
 	InvocationCount int `json:"invocation_count"`
 	ToolCallCount   int `json:"tool_call_count"`
-	SubagentCount   int `json:"subagent_count"`
 }
 
 type Tokens struct {
@@ -114,22 +123,17 @@ type Turn struct {
 	Index           int       `json:"index"`
 	UserMessage     string    `json:"user_message,omitzero"`
 	AssistantFinal  string    `json:"assistant_final,omitzero"`
-	Summary         string    `json:"summary,omitzero"`
 	StartedAt       time.Time `json:"started_at,omitzero"`
 	EndedAt         time.Time `json:"ended_at,omitzero"`
 	DurationMs      int64     `json:"duration_ms,omitzero"`
 	Status          string    `json:"status"`
-	FailureReason   string    `json:"failure_reason,omitzero"`
 	InvocationCount int       `json:"invocation_count"`
 	ToolCallCount   int       `json:"tool_call_count"`
-	SubagentCount   int       `json:"subagent_count"`
 	Tokens          Tokens    `json:"tokens"`
 
-	ToolCalls     []ToolCall      `json:"tool_calls,omitzero"`
-	Invocations   []Invocation    `json:"invocations,omitzero"`
-	SubagentRuns  []SubagentRun   `json:"subagent_runs,omitzero"`
-	Components    []TurnComponent `json:"components,omitzero"`
-	ContextEvents []ContextEvent  `json:"context_events,omitzero"`
+	ToolCalls   []ToolCall      `json:"tool_calls,omitzero"`
+	Invocations []Invocation    `json:"invocations,omitzero"`
+	Components  []TurnComponent `json:"components,omitzero"`
 }
 
 type Invocation struct {
@@ -137,12 +141,10 @@ type Invocation struct {
 	Provider            string    `json:"provider"`
 	SessionID           string    `json:"session_id"`
 	TurnID              string    `json:"turn_id"`
-	SubagentRunID       string    `json:"subagent_run_id,omitzero"`
 	Index               int       `json:"index"`
 	Model               string    `json:"model,omitzero"`
 	StartedAt           time.Time `json:"started_at,omitzero"`
 	EndedAt             time.Time `json:"ended_at,omitzero"`
-	LatencyMs           int64     `json:"latency_ms,omitzero"`
 	StopReason          string    `json:"stop_reason,omitzero"`
 	Status              string    `json:"status"`
 	ContextWindowTokens int       `json:"context_window_tokens,omitzero"`
@@ -155,7 +157,6 @@ type ToolCall struct {
 	TurnID           string    `json:"turn_id"`
 	SessionID        string    `json:"session_id"`
 	InvocationID     string    `json:"invocation_id,omitzero"`
-	SubagentRunID    string    `json:"subagent_run_id,omitzero"`
 	CallIndex        int       `json:"call_index"`
 	Kind             string    `json:"kind"`
 	Name             string    `json:"name"`
@@ -164,7 +165,6 @@ type ToolCall struct {
 	UseID            string    `json:"use_id,omitzero"`
 	Input            string    `json:"input,omitzero"`
 	Output           string    `json:"output,omitzero"`
-	OutputRef        string    `json:"output_ref,omitzero"`
 	OutputBytes      int64     `json:"output_bytes,omitzero"`
 	Status           string    `json:"status"`
 	Error            string    `json:"error,omitzero"`
@@ -173,50 +173,6 @@ type ToolCall struct {
 	DurationMs       int64     `json:"duration_ms,omitzero"`
 	RawUseEventID    string    `json:"raw_use_event_id,omitzero"`
 	RawResultEventID string    `json:"raw_result_event_id,omitzero"`
-}
-
-type ToolOutput struct {
-	ID             string    `json:"id"`
-	SourceFile     string    `json:"source_file,omitzero"`
-	ContentText    string    `json:"content_text,omitzero"`
-	ContentHash    string    `json:"content_hash"`
-	SizeBytes      int64     `json:"size_bytes"`
-	RetentionClass string    `json:"retention_class"`
-	CreatedAt      time.Time `json:"created_at,omitzero"`
-}
-
-type SubagentRun struct {
-	ID               string    `json:"id"`
-	ParentTurnID     string    `json:"parent_turn_id"`
-	ParentToolCallID string    `json:"parent_tool_call_id,omitzero"`
-	AgentName        string    `json:"agent_name,omitzero"`
-	AgentType        string    `json:"agent_type,omitzero"`
-	Model            string    `json:"model,omitzero"`
-	TranscriptPath   string    `json:"transcript_path,omitzero"`
-	StartedAt        time.Time `json:"started_at,omitzero"`
-	EndedAt          time.Time `json:"ended_at,omitzero"`
-	DurationMs       int64     `json:"duration_ms,omitzero"`
-	Status           string    `json:"status"`
-	Tokens           Tokens    `json:"tokens"`
-
-	Invocations []Invocation `json:"invocations,omitzero"`
-	ToolCalls   []ToolCall   `json:"tool_calls,omitzero"`
-}
-
-type ContextEvent struct {
-	ID            string     `json:"id"`
-	SessionID     string     `json:"session_id,omitzero"`
-	TurnID        string     `json:"turn_id,omitzero"`
-	InvocationID  string     `json:"invocation_id,omitzero"`
-	SubagentRunID string     `json:"subagent_run_id,omitzero"`
-	ComponentType string     `json:"component_type"`
-	ComponentName string     `json:"component_name,omitzero"`
-	SourcePath    string     `json:"source_path,omitzero"`
-	SourceHash    string     `json:"source_hash,omitzero"`
-	Phase         string     `json:"phase,omitzero"`
-	TokenEstimate int        `json:"token_estimate,omitzero"`
-	Evidence      string     `json:"evidence,omitzero"`
-	Confidence    Confidence `json:"confidence"`
 }
 
 type TurnComponent struct {
@@ -232,6 +188,7 @@ type TurnComponent struct {
 
 type Skill struct {
 	ID            string          `json:"id"`
+	SourceID      string          `json:"source_id,omitzero"`
 	Name          string          `json:"name"`
 	Scope         string          `json:"scope"`
 	SourcePath    string          `json:"source_path,omitzero"`
@@ -249,6 +206,7 @@ type Skill struct {
 
 type MCPServer struct {
 	ID         string `json:"id"`
+	SourceID   string `json:"source_id,omitzero"`
 	Name       string `json:"name"`
 	Scope      string `json:"scope"`
 	Transport  string `json:"transport"`

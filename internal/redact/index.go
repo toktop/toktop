@@ -2,6 +2,7 @@ package redact
 
 import (
 	"context"
+	"fmt"
 
 	"toktop.unceas.dev/internal/collector"
 	"toktop.unceas.dev/internal/trace"
@@ -13,33 +14,18 @@ type Policy struct {
 
 var Disabled = Policy{}
 
-func (p Policy) ApplyToIndex(ctx context.Context, idx *trace.Index) {
+func (p Policy) ApplyToIndex(ctx context.Context, idx *trace.Index) error {
 	if !p.Enabled || idx == nil {
-		return
+		return nil
 	}
 
-	_, _ = collector.SafeMapErr(ctx, idx.Turns, func(t *trace.Turn) (struct{}, error) {
+	if _, err := collector.SafeMapErr(ctx, idx.Turns, func(t *trace.Turn) (struct{}, error) {
 		redactTurn(t)
 		return struct{}{}, nil
-	})
-	_, _ = collector.SafeMapErr(ctx, idx.SubagentRuns, func(r *trace.SubagentRun) (struct{}, error) {
-		for j := range r.ToolCalls {
-			redactToolCall(&r.ToolCalls[j])
-		}
-		return struct{}{}, nil
-	})
-	// Tool outputs and context-event evidence are persisted-as-served too
-	// (insertToolOutputs/insertContextEvents write these raw), so they must be
-	// redacted at the same source. ContentText is raw tool output; Evidence is
-	// usually a short label but can still echo free text.
-	_, _ = collector.SafeMapErr(ctx, idx.ToolOutputs, func(o *trace.ToolOutput) (struct{}, error) {
-		o.ContentText = applyKeepEmpty(o.ContentText)
-		return struct{}{}, nil
-	})
-	_, _ = collector.SafeMapErr(ctx, idx.ContextEvents, func(e *trace.ContextEvent) (struct{}, error) {
-		e.Evidence = applyKeepEmpty(e.Evidence)
-		return struct{}{}, nil
-	})
+	}); err != nil {
+		return fmt.Errorf("redact turns: %w", err)
+	}
+	return nil
 }
 
 // redactTurn rewrites the projected text fields in place so the values that are
@@ -50,7 +36,6 @@ func (p Policy) ApplyToIndex(ctx context.Context, idx *trace.Index) {
 func redactTurn(turn *trace.Turn) {
 	turn.UserMessage = applyKeepEmpty(turn.UserMessage)
 	turn.AssistantFinal = applyKeepEmpty(turn.AssistantFinal)
-	turn.Summary = applyKeepEmpty(turn.Summary)
 	for i := range turn.ToolCalls {
 		redactToolCall(&turn.ToolCalls[i])
 	}
@@ -66,5 +51,5 @@ func applyKeepEmpty(text string) string {
 	if text == "" {
 		return ""
 	}
-	return Apply(text).Redacted
+	return Apply(text)
 }

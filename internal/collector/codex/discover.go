@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -61,14 +62,19 @@ func DiscoverSessions(ctx context.Context, roots []SourceRoot) ([]SessionFile, e
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("stat %s: %w", sessionsDir, err)
+			slog.Warn("skip unreadable codex sessions root", "path", sessionsDir, "err", err)
+			continue
 		}
 		if !info.IsDir() {
 			continue
 		}
 		err = filepath.WalkDir(sessionsDir, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
-				return walkErr
+				slog.Warn("skip unreadable codex session path", "path", path, "err", walkErr)
+				if entry != nil && entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
 			}
 			if err := ctx.Err(); err != nil {
 				return err
@@ -80,7 +86,11 @@ func DiscoverSessions(ctx context.Context, roots []SourceRoot) ([]SessionFile, e
 			return nil
 		})
 		if err != nil {
-			return nil, fmt.Errorf("walk %s: %w", sessionsDir, err)
+			if cerr := ctx.Err(); cerr != nil {
+				return nil, fmt.Errorf("discover sessions cancelled: %w", cerr)
+			}
+			slog.Warn("skip codex sessions root after walk error", "path", sessionsDir, "err", err)
+			continue
 		}
 	}
 	slices.SortFunc(sessions, func(a, b SessionFile) int {

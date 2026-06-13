@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"slices"
@@ -16,7 +17,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"toktop.unceas.dev/internal/config"
 	"toktop.unceas.dev/internal/liveevent"
 	"toktop.unceas.dev/internal/paths"
 	"toktop.unceas.dev/internal/query"
@@ -71,11 +71,25 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	if code := checkPaging(limit, offset, stderr); code >= 0 {
 		return code
 	}
-	loader, lerr := configFor(ctx, home)
-	var snap *config.Snapshot
-	if lerr == nil {
-		snap = loader.Current()
+	if err := validateListFormat(format); err != nil {
+		cliErr(stderr, err)
+		return 2
 	}
+	srcTokens, serr := resolveFilterTokens(sources)
+	if serr != nil {
+		cliErr(stderr, serr)
+		return 2
+	}
+	if err := validateStatuses(statuses); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	loader, lerr := configFor(ctx, home)
+	if lerr != nil {
+		cliErr(stderr, lerr)
+		return 2
+	}
+	snap := loader.Current()
 	addr := clientAddr(snap)
 
 	cols := []string{"source", "session", "external", "status", "turns", "tools", "project", "last_activity"}
@@ -88,19 +102,8 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	// it is the same fresh, consistent snapshot /v1/stream and downstream SSE
 	// consumers see. The direct store read below omits that overlay (it can lag
 	// the broker), so it is used only when no daemon is reachable.
-	if err := ensureDaemon(ctx, home, addr, snap == nil || snap.Autostart, stderr); err != nil {
+	if err := ensureDaemon(ctx, home, addr, snap.Autostart, stderr); err != nil {
 		fmt.Fprintf(stderr, "toktop: %v\n", err)
-	}
-	srcTokens, serr := resolveFilterTokens(sources)
-	if serr != nil {
-		cliErr(stderr, serr)
-		return 2
-	}
-	// Validate --status up front so the daemon (server) path errors on a bad value
-	// too, not just the local-store fallback (applyMultiFilter).
-	if err := validateStatuses(statuses); err != nil {
-		cliErr(stderr, err)
-		return 2
 	}
 	q := url.Values{}
 	for _, v := range srcTokens {
@@ -201,11 +204,16 @@ func runStream(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	if code := parseFlags(fs, flagArgs, stdout); code >= 0 {
 		return code
 	}
-	loader, lerr := configFor(ctx, home)
-	var snap *config.Snapshot
-	if lerr == nil {
-		snap = loader.Current()
+	if err := validateFormat(format, "table", "ndjson", "csv"); err != nil {
+		cliErr(stderr, err)
+		return 2
 	}
+	loader, lerr := configFor(ctx, home)
+	if lerr != nil {
+		cliErr(stderr, lerr)
+		return 2
+	}
+	snap := loader.Current()
 	addr := clientAddr(snap)
 	targets, err := liveevent.ParseWatchTargets(positional)
 	if err != nil {
@@ -226,7 +234,7 @@ func runStream(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	// lock the daemon holds, which was the original "stream sees nothing" bug.
 	// With no daemon there is no producer and nothing to tail, so surface that
 	// plainly instead of silently reading a frozen on-disk log.
-	if err := ensureDaemon(ctx, home, addr, snap == nil || snap.Autostart, stderr); err != nil {
+	if err := ensureDaemon(ctx, home, addr, snap.Autostart, stderr); err != nil {
 		fmt.Fprintf(stderr, "toktop: %v\n", err)
 	}
 	err = streamFromServer(ctx, addr, clientToken(token, noAuth), targets, statusOnly, emit)
@@ -285,17 +293,32 @@ func runProjects(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		return 1
 	}
 	format := "table"
-	var sources rootList
+	since := ""
+	until := ""
+	var sources, projectFilter, sessions, statuses rootList
 	fs := flag.NewFlagSet("projects", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, "table|json|ndjson|csv")
 	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
+	fs.Var(&projectFilter, "project", "project id filter; may be repeated or comma-separated")
+	fs.Var(&sessions, "session", "session id or external session id filter; may be repeated or comma-separated")
+	fs.Var(&statuses, "status", "status filter; may be repeated or comma-separated")
+	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
+	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	setFlagUsage(fs, "usage: toktop projects [flags]", "List projects with session / turn / tool-call counts.")
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
-	srcTokens, err := resolveFilterTokens(sources)
+	if err := validateListFormat(format); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	filter, err := parseFilterFlags(since, until, "")
 	if err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	if err := applyMultiFilter(&filter, sources, projectFilter, sessions, statuses); err != nil {
 		cliErr(stderr, err)
 		return 2
 	}
@@ -305,10 +328,6 @@ func runProjects(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		return 1
 	}
 	defer store.Close()
-	filter := sqlite.Filter{}
-	for _, tok := range srcTokens {
-		filter.SourceIDs = append(filter.SourceIDs, query.ResolveSourceFilter(tok))
-	}
 	projects, err := svc.ListProjects(ctx, filter)
 	if err != nil {
 		cliErr(stderr, err)
@@ -343,12 +362,10 @@ func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
-	svc, store, err := openService(ctx, home)
-	if err != nil {
+	if err := validateListFormat(format); err != nil {
 		cliErr(stderr, err)
-		return 1
+		return 2
 	}
-	defer store.Close()
 	filter, err := parseFilterFlags(since, until, "")
 	if err != nil {
 		cliErr(stderr, err)
@@ -358,6 +375,12 @@ func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		cliErr(stderr, err)
 		return 2
 	}
+	svc, store, err := openService(ctx, home)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	defer store.Close()
 	tools, err := svc.ListTools(ctx, filter)
 	if err != nil {
 		cliErr(stderr, err)
@@ -370,10 +393,63 @@ func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	})
 }
 
-var mcpCols = []string{"server", "calls", "tools", "turns", "availability", "scope", "config_path", "last_used"}
+func runModels(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	home, ok := resolveHome(stderr)
+	if !ok {
+		return 1
+	}
+	format := "table"
+	since := ""
+	until := ""
+	var sources, projects, sessions, statuses rootList
+	fs := flag.NewFlagSet("models", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&format, "format", format, "table|json|ndjson|csv")
+	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
+	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
+	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
+	fs.Var(&projects, "project", "project id filter; may be repeated or comma-separated")
+	fs.Var(&sessions, "session", "session id or external session id filter; may be repeated or comma-separated")
+	fs.Var(&statuses, "status", "turn status filter; may be repeated or comma-separated")
+	setFlagUsage(fs, "usage: toktop models [flags]", "Roll up model invocation usage (call / turn / token counts per model).")
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
+		return code
+	}
+	if err := validateListFormat(format); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	filter, err := parseFilterFlags(since, until, "")
+	if err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	if err := applyMultiFilter(&filter, sources, projects, sessions, statuses); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	svc, store, err := openService(ctx, home)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	defer store.Close()
+	models, err := svc.ListModels(ctx, filter)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	return writeFormatted(stdout, stderr, format, models, []string{"provider", "model", "calls", "turns", "input_tokens", "output_tokens", "last_used"}, func(item sqlite.ModelListItem) []string {
+		return []string{item.Provider, emptyDash(item.Model),
+			strconv.Itoa(item.CallCount), strconv.Itoa(item.TurnCount),
+			strconv.Itoa(item.InputTokens), strconv.Itoa(item.OutputTokens), formatTime(item.LastUsedAt)}
+	})
+}
+
+var mcpCols = []string{"source", "server", "calls", "tools", "turns", "availability", "scope", "config_path", "last_used"}
 
 func mcpRow(item sqlite.MCPListItem) []string {
-	return []string{item.Server, strconv.Itoa(item.CallCount), strconv.Itoa(item.ToolCount),
+	return []string{item.SourceID, item.Server, strconv.Itoa(item.CallCount), strconv.Itoa(item.ToolCount),
 		strconv.Itoa(item.TurnCount), strconv.Itoa(item.Availability),
 		item.Scope, item.ConfigPath, formatTime(item.LastUsedAt)}
 }
@@ -418,6 +494,10 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if code := parseFlagsNoPositionals(uf, rest, stdout, stderr); code >= 0 {
 			return code
 		}
+		if err := validateListFormat(format); err != nil {
+			cliErr(stderr, err)
+			return 2
+		}
 		svc, store, err := openService(ctx, home)
 		if err != nil {
 			cliErr(stderr, err)
@@ -434,12 +514,10 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
-	svc, store, err := openService(ctx, home)
-	if err != nil {
+	if err := validateListFormat(format); err != nil {
 		cliErr(stderr, err)
-		return 1
+		return 2
 	}
-	defer store.Close()
 	filter, err := parseFilterFlags(since, until, "")
 	if err != nil {
 		cliErr(stderr, err)
@@ -449,6 +527,12 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		cliErr(stderr, err)
 		return 2
 	}
+	svc, store, err := openService(ctx, home)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	defer store.Close()
 	mcps, err := svc.ListMCPs(ctx, filter)
 	if err != nil {
 		cliErr(stderr, err)
@@ -496,6 +580,10 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		if code := parseFlagsNoPositionals(uf, rest, stdout, stderr); code >= 0 {
 			return code
 		}
+		if err := validateListFormat(format); err != nil {
+			cliErr(stderr, err)
+			return 2
+		}
 		svc, store, err := openService(ctx, home)
 		if err != nil {
 			cliErr(stderr, err)
@@ -507,19 +595,17 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			cliErr(stderr, err)
 			return 1
 		}
-		return writeFormatted(stdout, stderr, format, skills, []string{"name", "scope", "description", "source_path"}, func(item sqlite.SkillListItem) []string {
-			return []string{item.Name, item.Scope, truncate(item.Description, 80), item.SourcePath}
+		return writeFormatted(stdout, stderr, format, skills, []string{"source", "name", "scope", "description", "source_path"}, func(item sqlite.SkillListItem) []string {
+			return []string{item.SourceID, item.Name, item.Scope, textutil.Truncate(item.Description, 80), item.SourcePath}
 		})
 	}
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
-	svc, store, err := openService(ctx, home)
-	if err != nil {
+	if err := validateListFormat(format); err != nil {
 		cliErr(stderr, err)
-		return 1
+		return 2
 	}
-	defer store.Close()
 	filter, err := parseFilterFlags(since, until, "")
 	if err != nil {
 		cliErr(stderr, err)
@@ -529,17 +615,23 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		cliErr(stderr, err)
 		return 2
 	}
+	svc, store, err := openService(ctx, home)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	defer store.Close()
 	skills, err := svc.ListSkills(ctx, filter)
 	if err != nil {
 		cliErr(stderr, err)
 		return 1
 	}
-	return writeFormatted(stdout, stderr, format, skills, []string{"name", "scope", "installed", "inferred_used", "last_used", "source_path"}, func(item sqlite.SkillListItem) []string {
+	return writeFormatted(stdout, stderr, format, skills, []string{"source", "name", "scope", "installed", "inferred_used", "last_used", "source_path"}, func(item sqlite.SkillListItem) []string {
 		installed := "no"
 		if item.Installed {
 			installed = "yes"
 		}
-		return []string{item.Name, item.Scope, installed, strconv.Itoa(item.InferredUsedCount), formatTime(item.LastUsedAt), item.SourcePath}
+		return []string{item.SourceID, item.Name, item.Scope, installed, strconv.Itoa(item.InferredUsedCount), formatTime(item.LastUsedAt), item.SourcePath}
 	})
 }
 
@@ -652,12 +744,11 @@ func runRetention(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return writeJSON(stdout, stderr, map[string]string{
 			"profile":      string(policy.Profile),
 			"raw":          textutil.FormatDuration(policy.RawAge),
-			"tool_outputs": textutil.FormatDuration(policy.ToolOutputAge),
 			"redact_after": textutil.FormatDuration(policy.RedactRawAfter),
 		})
 	}
-	fmt.Fprintf(stdout, "profile: %s\nraw: %s\ntool_outputs: %s\nredact_after: %s\n",
-		policy.Profile, textutil.FormatDuration(policy.RawAge), textutil.FormatDuration(policy.ToolOutputAge), textutil.FormatDuration(policy.RedactRawAfter))
+	fmt.Fprintf(stdout, "profile: %s\nraw: %s\nredact_after: %s\n",
+		policy.Profile, textutil.FormatDuration(policy.RawAge), textutil.FormatDuration(policy.RedactRawAfter))
 	return 0
 }
 
@@ -666,11 +757,12 @@ func runRetention(ctx context.Context, args []string, stdout, stderr io.Writer) 
 // falling back to a local sqlite-only prune when no daemon is up. Shared by the
 // consolidated `data prune --profile` path.
 func runProfilePrune(ctx context.Context, home, profile string, dryRun bool, token string, noAuth bool, stdout, stderr io.Writer) int {
-	var snap *config.Snapshot
-	if loader, lerr := configFor(ctx, home); lerr == nil {
-		snap = loader.Current()
+	loader, lerr := configFor(ctx, home)
+	if lerr != nil {
+		cliErr(stderr, lerr)
+		return 2
 	}
-	addr := clientAddr(snap)
+	addr := clientAddr(loader.Current())
 	policy, err := retention.PolicyFor(retention.Profile(profile))
 	if err != nil {
 		cliErr(stderr, err)
@@ -717,45 +809,56 @@ func printRetentionReport(w io.Writer, report retention.Report, eventLogHandled 
 	if !eventLogHandled {
 		eventLog = "skipped (no daemon)"
 	}
-	fmt.Fprintf(w, "profile: %s dry_run=%v\nraw_events: %d\ntool_outputs: %d\nnormalized_rows_redacted: %s\nevent_log_pruned: %s\n",
-		report.Profile, report.DryRun, report.RawEventsAffected, report.ToolOutputsAffected, normalized, eventLog)
+	fmt.Fprintf(w, "profile: %s dry_run=%v\nraw_events: %d\nnormalized_rows_redacted: %s\nevent_log_pruned: %s\n",
+		report.Profile, report.DryRun, report.RawEventsAffected, normalized, eventLog)
 }
 
 func runData(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if printUsageForHelp(args, stdout, "usage: toktop data <prune|retention> [flags]") {
 		return 0
 	}
-	if len(args) == 0 {
+	sub, rest, firstPos, found := firstLeafSubcommand(args, dataDispatchValueFlags(), "prune", "retention")
+	if !found {
+		if firstPos != "" {
+			cliErrf(stderr, "unknown data subcommand %q (want prune|retention)", firstPos)
+			return 2
+		}
 		fmt.Fprintln(stderr, "usage: toktop data <prune|retention> [flags]")
 		return 2
 	}
-	sub := args[0]
-	rest := args[1:]
 	switch sub {
 	case "prune":
 		return runPrune(ctx, rest, stdout, stderr)
 	case "retention":
 		return runRetention(ctx, rest, stdout, stderr)
 	}
-	cliErrf(stderr, "unknown data subcommand %q (want prune|retention)", sub)
 	return 2
 }
 
+// dataDispatchValueFlags derives runData's dispatch value-flag set from the real
+// leaf flag sets — prune ∪ retention status — so a flag renamed on either cannot
+// drift from the dispatcher (the convention the retention/hooks dispatches use).
+func dataDispatchValueFlags() map[string]bool {
+	flags := valueFlagSet(pruneFlagSet(new(string), new(string), new(string), new(bool), new(bool)))
+	maps.Copy(flags, valueFlagSet(retentionStatusFlagSet(new(string), new(string))))
+	return flags
+}
+
 func runDB(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if printUsageForHelp(args, stdout, "usage: toktop db <stats|path> [flags]") {
+	const usage = "usage: toktop db <stats|path|optimize|reindex|checkpoint> [flags]"
+	if printUsageForHelp(args, stdout, usage) {
 		return 0
 	}
 	// Subcommand keyword works regardless of where flags sit (e.g. `db --format
 	// json stats`); the subcommand is always explicit (no default — a bare
-	// invocation is a usage error). The dispatch value-flag set is derived from
-	// the real db-stats flag set so the two cannot drift apart.
-	sub, rest, firstPos, found := firstLeafSubcommand(args, valueFlagSet(dbStatsFlagSet(new(string))), "stats", "path")
+	// invocation is a usage error).
+	sub, rest, firstPos, found := firstLeafSubcommand(args, dbDispatchValueFlags(), "stats", "path", "optimize", "reindex", "checkpoint")
 	if !found {
 		if firstPos != "" {
-			cliErrf(stderr, "unknown db subcommand %q (want stats|path)", firstPos)
+			cliErrf(stderr, "unknown db subcommand %q (want stats|path|optimize|reindex|checkpoint)", firstPos)
 			return 2
 		}
-		fmt.Fprintln(stderr, "usage: toktop db <stats|path> [flags]")
+		fmt.Fprintln(stderr, usage)
 		return 2
 	}
 	switch sub {
@@ -775,19 +878,40 @@ func runDB(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintln(stdout, sqlite.DBPath(dataDir))
 		return 0
+	case "optimize":
+		return runDBOptimize(ctx, rest, stdout, stderr)
+	case "reindex":
+		return runDBReindex(ctx, rest, stdout, stderr)
+	case "checkpoint":
+		return runDBCheckpoint(ctx, rest, stdout, stderr)
 	}
 	return 2
 }
 
+// dbDispatchValueFlags derives runDB's dispatch value-flag set by unioning the
+// db subcommand flag sets that introduce value flags (stats: --format;
+// checkpoint: --format, --mode). optimize reuses --format; path and reindex take
+// none. Deriving from the real flag sets keeps the dispatcher from drifting when
+// a flag is renamed — any db subcommand that adds a *new* value flag must be
+// represented here.
+func dbDispatchValueFlags() map[string]bool {
+	flags := valueFlagSet(dbStatsFlagSet(new(string)))
+	maps.Copy(flags, valueFlagSet(dbCheckpointFlagSet(new(string), new(string))))
+	return flags
+}
+
 type dbTableCount struct {
 	Name  string `json:"name"`
-	Count int    `json:"count"`
+	Count int64  `json:"count"`
 }
 
 type dbStatsReport struct {
-	Path      string         `json:"path"`
-	SizeBytes int64          `json:"size_bytes"`
-	Tables    []dbTableCount `json:"tables"`
+	Path          string         `json:"path"`
+	SizeBytes     int64          `json:"size_bytes"`
+	WALSizeBytes  int64          `json:"wal_size_bytes"`
+	SHMSizeBytes  int64          `json:"shm_size_bytes"`
+	SearchFTSRows int64          `json:"search_fts_rows"`
+	Tables        []dbTableCount `json:"tables"`
 }
 
 // dbStatsFlagSet defines the `db stats` flags, binding --format to *format.
@@ -796,7 +920,7 @@ type dbStatsReport struct {
 func dbStatsFlagSet(format *string) *flag.FlagSet {
 	fs := flag.NewFlagSet("db stats", flag.ContinueOnError)
 	fs.StringVar(format, "format", *format, "output format: table or json")
-	setFlagUsage(fs, "usage: toktop db stats [--format table|json]", "Show the DB file path, size, and per-table row counts.")
+	setFlagUsage(fs, "usage: toktop db stats [--format table|json]", "Show the DB file path, sidecar sizes, FTS rows, and per-table row counts.")
 	return fs
 }
 
@@ -827,7 +951,16 @@ func runDBStats(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return 1
 	}
 	defer store.Close()
-	report := dbStatsReport{Path: dbPath, SizeBytes: info.Size()}
+	report := dbStatsReport{
+		Path:         dbPath,
+		SizeBytes:    info.Size(),
+		WALSizeBytes: sidecarSize(dbPath + "-wal"),
+		SHMSizeBytes: sidecarSize(dbPath + "-shm"),
+	}
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM search_fts`).Scan(&report.SearchFTSRows); err != nil {
+		cliErrf(stderr, "count search_fts: %v", err)
+		return 1
+	}
 	// Enumerate tables from the live schema so new tables show up here without a
 	// hand-maintained list (which had drifted). Excluded: SQLite internals, the
 	// search_fts virtual table and its shadow tables (search_documents carries
@@ -838,7 +971,7 @@ func runDBStats(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return 1
 	}
 	for _, tbl := range tables {
-		var n int
+		var n int64
 		if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM "`+tbl+`"`).Scan(&n); err != nil {
 			cliErrf(stderr, "count %s: %v", tbl, err)
 			return 1
@@ -849,10 +982,149 @@ func runDBStats(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return writeJSON(stdout, stderr, report)
 	}
 	fmt.Fprintf(stdout, "path: %s\nsize: %d bytes (%.2f MiB)\n", report.Path, report.SizeBytes, float64(report.SizeBytes)/1024/1024)
+	fmt.Fprintf(stdout, "wal: %d bytes (%.2f MiB)\n", report.WALSizeBytes, float64(report.WALSizeBytes)/1024/1024)
+	fmt.Fprintf(stdout, "shm: %d bytes (%.2f MiB)\n", report.SHMSizeBytes, float64(report.SHMSizeBytes)/1024/1024)
+	fmt.Fprintf(stdout, "search_fts rows: %d\n", report.SearchFTSRows)
 	for _, c := range report.Tables {
 		fmt.Fprintf(stdout, "%-18s %d\n", c.Name, c.Count)
 	}
 	return 0
+}
+
+func runDBOptimize(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	home, ok := resolveHome(stderr)
+	if !ok {
+		return 1
+	}
+	format := "table"
+	fs := flag.NewFlagSet("db optimize", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&format, "format", format, "output format: table or json")
+	setFlagUsage(fs, "usage: toktop db optimize [--format table|json]", "Run SQLite/FTS maintenance without rebuilding the projection.")
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
+		return code
+	}
+	if err := validateFormat(format, "table", "json"); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	store, err := openStore(ctx, home)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	defer store.Close()
+	result, err := store.Optimize(ctx)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	if format == "json" {
+		return writeJSON(stdout, stderr, result)
+	}
+	fmt.Fprintf(stdout, "checkpoint: busy=%t log=%d checkpointed=%d\n",
+		result.Checkpoint.Busy,
+		result.Checkpoint.LogFrames,
+		result.Checkpoint.CheckpointedFrames)
+	fmt.Fprintf(stdout, "search_fts optimized: %t\n", result.FTSOptimized)
+	return 0
+}
+
+func runDBReindex(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	home, ok := resolveHome(stderr)
+	if !ok {
+		return 1
+	}
+	fs := flag.NewFlagSet("db reindex", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	setFlagUsage(fs, "usage: toktop db reindex", "Rebuild the FTS search index from search_documents.")
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
+		return code
+	}
+	store, err := openStore(ctx, home)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	defer store.Close()
+	if err := store.RebuildSearchIndex(ctx); err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "search_fts reindexed")
+	return 0
+}
+
+// dbCheckpointFlagSet defines the `db checkpoint` flags, binding --format and
+// --mode. runDB derives part of its dispatch value-flag set from it, so keep
+// every db-checkpoint flag here.
+func dbCheckpointFlagSet(format, mode *string) *flag.FlagSet {
+	fs := flag.NewFlagSet("db checkpoint", flag.ContinueOnError)
+	fs.StringVar(format, "format", *format, "output format: table or json")
+	fs.StringVar(mode, "mode", *mode, "checkpoint mode: passive, full, restart, or truncate")
+	setFlagUsage(fs, "usage: toktop db checkpoint [--mode passive|full|restart|truncate] [--format table|json]", "Run a SQLite WAL checkpoint.")
+	return fs
+}
+
+func runDBCheckpoint(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	home, ok := resolveHome(stderr)
+	if !ok {
+		return 1
+	}
+	format := "table"
+	mode := "passive"
+	fs := dbCheckpointFlagSet(&format, &mode)
+	fs.SetOutput(stderr)
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
+		return code
+	}
+	if err := validateFormat(format, "table", "json"); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	normalizedMode, err := sqlite.NormalizeCheckpointMode(mode)
+	if err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	store, err := openStore(ctx, home)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	defer store.Close()
+	result, err := store.Checkpoint(ctx, normalizedMode)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	if format == "json" {
+		if writeJSON(stdout, stderr, result) != 0 {
+			return 1
+		}
+		if result.Busy {
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintf(stdout, "checkpoint: mode=%s busy=%t log=%d checkpointed=%d\n",
+		strings.ToLower(normalizedMode),
+		result.Busy,
+		result.LogFrames,
+		result.CheckpointedFrames)
+	if result.Busy {
+		fmt.Fprintln(stderr, "warning: checkpoint blocked by a concurrent reader/writer; WAL not reclaimed")
+		return 1
+	}
+	return 0
+}
+
+func sidecarSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 
 // listTables returns the user tables in the open database, excluding SQLite
@@ -924,17 +1196,10 @@ func parseFilterFlags(since, until, sort string, allowedSorts ...string) (sqlite
 	return filter, nil
 }
 
-// validStatusValues is the canonical set accepted by --status, mirrored from
-// internal/trace. An unknown --status used to return a silent empty set; now it
-// errors (exit 2) like --sources does.
-var validStatusValues = []string{
-	trace.StatusUnknown, trace.StatusActive, trace.StatusCompleted, trace.StatusInterrupted,
-	trace.StatusSuccess, trace.StatusFailed, trace.StatusAwaitingConfirmation, trace.StatusPending,
-}
-
 // validateStatuses rejects any --status token outside the canonical set, so the
 // daemon (server) path and the local-store path (applyMultiFilter) share one check.
 func validateStatuses(statuses rootList) error {
+	validStatusValues := trace.StatusValues()
 	for _, s := range splitFlagValues(statuses) {
 		if !slices.Contains(validStatusValues, s) {
 			return fmt.Errorf("unknown --status %q (want one of: %s)", s, strings.Join(validStatusValues, ", "))

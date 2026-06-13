@@ -204,16 +204,30 @@ func runDaemonStop(stdout, stderr io.Writer) int {
 		cliErr(stderr, err)
 		return 1
 	}
+	lockPID, held := daemonLockedElsewhere(home)
+	if daemonLockAuthoritative && !held {
+		// Only trust held==false where the lock probe is authoritative (unix). On
+		// Windows the probe is a no-op, so falling through to the signal attempt
+		// below — rather than declaring the daemon gone — keeps `daemon stop` from
+		// silently no-opping against a running daemon.
+		_ = os.Remove(pidPath)
+		fmt.Fprintln(stdout, "no daemon running (stale pidfile cleaned)")
+		return 0
+	}
+	if lockPID != 0 && lockPID != pid {
+		cliErrf(stderr, "pidfile pid %d does not match daemon lock owner pid %d; refusing to signal", pid, lockPID)
+		return 1
+	}
 	if err := proc.Signal(syscall.SIGTERM); err != nil {
 		_ = os.Remove(pidPath)
 		fmt.Fprintln(stdout, "daemon not running (stale pidfile cleaned)")
 		return 0
 	}
-	// The daemon's signal handler runs graceful shutdown, which removes the
-	// socket. Poll for it to confirm.
-	sock := paths.SocketPath(home)
+	// The daemon's signal handler releases the single-instance lock on graceful
+	// shutdown. Poll the lock, not the default unix socket: TCP daemons and
+	// daemon run (no API server) may never create that socket.
 	for range 50 {
-		if _, statErr := os.Stat(sock); os.IsNotExist(statErr) {
+		if _, held := daemonLockedElsewhere(home); !held {
 			fmt.Fprintln(stdout, "daemon stopped")
 			return 0
 		}

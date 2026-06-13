@@ -27,7 +27,7 @@ func RunFull(ctx context.Context, store *sqlite.Store, opts Options) (Summary, e
 	}
 
 	sink := func(ctx context.Context, batch Result) error {
-		return store.SaveIngestPartial(ctx, batch.Index, batch.RawEventList, batch.ProcessedFiles, batch.Fingerprints)
+		return store.SaveIngestPartial(ctx, batch.Index, batch.RawEventList, batch.ProcessedFiles, batch.Fingerprints, batch.AuthoritativeSkills, batch.AuthoritativeMCPServers)
 	}
 	summary, err := provider.Ingest(ctx, opts.Roots, opts.Policy, known, sink)
 	if err != nil {

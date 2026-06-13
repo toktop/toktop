@@ -3,8 +3,11 @@ package claudecode
 import (
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"time"
 
+	"toktop.unceas.dev/internal/collector"
 	"toktop.unceas.dev/internal/ingest"
 	claudeparser "toktop.unceas.dev/internal/parser/claudecode"
 	"toktop.unceas.dev/internal/redact"
@@ -42,44 +45,82 @@ func claudeMetadata(ctx context.Context, roots []SourceRoot, sessions []SessionF
 	userRoots := ingest.RootPaths(roots)
 	meta := trace.Index{GeneratedAt: time.Now().UTC(), Source: "claude-code", ParserVersion: claudeparser.ParserVersion, SourceRoots: userRoots}
 
-	// Derive the unique project-path set once and share it across both scans,
-	// instead of building meta.Sessions only to have each scan re-dedup it.
-	seen := make(map[string]struct{}, len(sessions))
+	// Derive the project-path set once and share it across both scans. Discovery
+	// paths are lossy fallbacks; ~/.claude.json carries declared project paths that
+	// may not have transcripts yet and also fixes hyphen-decoded project names.
 	projectPaths := make([]string, 0, len(sessions))
 	for _, sf := range sessions {
 		if sf.ProjectPath == "" {
 			continue
 		}
-		if _, ok := seen[sf.ProjectPath]; ok {
-			continue
-		}
-		seen[sf.ProjectPath] = struct{}{}
 		projectPaths = append(projectPaths, sf.ProjectPath)
 	}
+	var claudeUser *claudeUserConfig
+	if home, err := os.UserHomeDir(); err == nil {
+		path := filepath.Join(home, ".claude.json")
+		doc, found, ok := loadClaudeUserConfig(path)
+		if !ok {
+			// ~/.claude.json feeds project-path discovery for BOTH the skills and
+			// MCP scans (and declares user MCP servers). An unreadable/malformed one
+			// would make every scan a partial set, so reconciling either kind could
+			// delete stored rows for claude.json-declared projects. Skip the whole
+			// round — claude.json is a shared precondition for both kinds.
+			return ingest.Result{}, false, nil
+		}
+		if found {
+			claudeUser = &doc
+			projectPaths = append(projectPaths, doc.projectPaths()...)
+		}
+	}
+	projectPaths = collector.UniqueStrings(projectPaths)
 
-	attachInstalledSkills(ctx, &meta, userRoots, projectPaths)
-	attachDeclaredMCPServers(ctx, &meta, userRoots, projectPaths)
-	if len(meta.Skills) == 0 && len(meta.MCPServers) == 0 {
+	opts := scanOptions{UserRoots: userRoots, ProjectPaths: projectPaths, ClaudeUser: claudeUser}
+	// The skills (skill dirs) and MCP (.mcp.json/settings) scans have INDEPENDENT
+	// failure sources, so a failure of one must not suppress the other's reconcile.
+	// Each kind is reconciled only when its own scan was authoritative (complete).
+	authoritativeSkills := attachInstalledSkills(ctx, &meta, opts)
+	authoritativeMCP := attachDeclaredMCPServers(ctx, &meta, opts)
+	if !authoritativeSkills && !authoritativeMCP {
 		return ingest.Result{}, false, nil
 	}
 	trace.InternIndexStrings(&meta)
-	return ingest.Result{Index: meta, ProcessedFiles: []string{}, Fingerprints: fingerprints}, true, nil
+	return ingest.Result{
+		Index:                   meta,
+		ProcessedFiles:          []string{},
+		Fingerprints:            fingerprints,
+		AuthoritativeSkills:     authoritativeSkills,
+		AuthoritativeMCPServers: authoritativeMCP,
+	}, true, nil
 }
 
-func attachInstalledSkills(ctx context.Context, index *trace.Index, userRoots, projectPaths []string) {
-	found, err := scanInstalledSkills(ctx, scanOptions{UserRoots: userRoots, ProjectPaths: projectPaths})
+// attachInstalledSkills appends scanned skills to the metadata index. It returns
+// false — skipping the whole metadata round, so no reconcile/delete runs — when
+// the scan errored or was incomplete, because the metadata-only save path
+// deletes stored rows absent from the scan and a partial scan is not authority.
+func attachInstalledSkills(ctx context.Context, index *trace.Index, opts scanOptions) bool {
+	found, complete, err := scanInstalledSkills(ctx, opts)
 	if err != nil {
 		slog.Warn("skill scan failed", "err", err)
-		return
+		return false
+	}
+	if !complete {
+		slog.Warn("skip claude skill metadata reconcile: scan incomplete")
+		return false
 	}
 	index.Skills = append(index.Skills, found...)
+	return true
 }
 
-func attachDeclaredMCPServers(ctx context.Context, index *trace.Index, userRoots, projectPaths []string) {
-	found, err := scanDeclaredMCPServers(ctx, scanOptions{UserRoots: userRoots, ProjectPaths: projectPaths})
+func attachDeclaredMCPServers(ctx context.Context, index *trace.Index, opts scanOptions) bool {
+	found, complete, err := scanDeclaredMCPServers(ctx, opts)
 	if err != nil {
 		slog.Warn("mcp scan failed", "err", err)
-		return
+		return false
+	}
+	if !complete {
+		slog.Warn("skip claude mcp metadata reconcile: scan incomplete")
+		return false
 	}
 	index.MCPServers = append(index.MCPServers, found...)
+	return true
 }

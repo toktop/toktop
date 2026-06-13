@@ -3,6 +3,7 @@ package claudecode
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +11,7 @@ import (
 
 	"toktop.unceas.dev/internal/fsx"
 	"toktop.unceas.dev/internal/ingest"
+	"toktop.unceas.dev/internal/textutil"
 )
 
 // SourceRoot aliases the shared ingest.SourceRoot so the collector, ingest, and
@@ -56,13 +58,7 @@ func configDirEnvRoots() []string {
 	if env == "" {
 		return nil
 	}
-	var parts []string
-	for part := range strings.SplitSeq(env, ",") {
-		if strings.TrimSpace(part) != "" {
-			parts = append(parts, part)
-		}
-	}
-	return parts
+	return textutil.SplitTrim(env)
 }
 
 func homeDefaultRoots() []SourceRoot {
@@ -89,7 +85,8 @@ func DiscoverSessions(ctx context.Context, roots []SourceRoot) ([]SessionFile, e
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("stat %s: %w", projectsDir, err)
+			slog.Warn("skip unreadable claude projects root", "path", projectsDir, "err", err)
+			continue
 		}
 		if !info.IsDir() {
 			continue
@@ -97,7 +94,11 @@ func DiscoverSessions(ctx context.Context, roots []SourceRoot) ([]SessionFile, e
 
 		err = filepath.WalkDir(projectsDir, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
-				return walkErr
+				slog.Warn("skip unreadable claude project path", "path", path, "err", walkErr)
+				if entry != nil && entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
 			}
 			if err := ctx.Err(); err != nil {
 				return err
@@ -119,7 +120,11 @@ func DiscoverSessions(ctx context.Context, roots []SourceRoot) ([]SessionFile, e
 			return nil
 		})
 		if err != nil {
-			return nil, fmt.Errorf("walk %s: %w", projectsDir, err)
+			if cerr := ctx.Err(); cerr != nil {
+				return nil, fmt.Errorf("discover sessions cancelled: %w", cerr)
+			}
+			slog.Warn("skip claude projects root after walk error", "path", projectsDir, "err", err)
+			continue
 		}
 	}
 

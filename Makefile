@@ -32,8 +32,11 @@ fmt:
 vuln:
 	govulncheck -tags $(TAGS) ./...
 
-# Static-analysis + idiom + modernization lint. staticcheck catches bugs, dead
-# code, and simplifications; perfsprint catches fmt.Sprintf/Errorf that should be
+# Static-analysis + idiom + modernization lint. staticcheck catches the bug and
+# simplification class (SA*/S*); unused catches dead code — golangci-lint v2
+# splits the U1000 dead-code check out of staticcheck into its own `unused`
+# linter, so it must be enabled explicitly or unreferenced funcs/methods/vars
+# slip the gate; perfsprint catches fmt.Sprintf/Errorf that should be
 # strconv/errors; modernize flags outdated patterns that newer Go features
 # replace (manual loops -> slices.ContainsFunc, if-guards -> min/max,
 # interface{} -> any, for-i -> range int, …); usestdlibvars flags string/number
@@ -44,7 +47,7 @@ vuln:
 #   (or: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest)
 lint:
 	golangci-lint run --build-tags $(TAGS) --default=none \
-		-E staticcheck -E perfsprint -E modernize -E usestdlibvars ./...
+		-E staticcheck -E unused -E perfsprint -E modernize -E usestdlibvars ./...
 
 # Pre-release gate: vet, static-analysis/idiom lint, scan dependencies for known
 # CVEs, then build.

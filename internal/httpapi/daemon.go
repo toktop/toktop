@@ -2,8 +2,6 @@ package httpapi
 
 import (
 	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 
 	"toktop.unceas.dev/internal/runtime"
@@ -31,13 +29,8 @@ func (s *Server) handleDaemonIngest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "runtime not attached")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxDaemonRequestBytes))
-	if err != nil {
-		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
-			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body exceeds 64 KiB")
-			return
-		}
-		writeError(w, http.StatusBadRequest, "bad_body", err.Error())
+	body, ok := readBodyCapped(w, r, maxDaemonRequestBytes, "bad_body")
+	if !ok {
 		return
 	}
 	var req runtime.TriggerRequest

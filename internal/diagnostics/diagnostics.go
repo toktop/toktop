@@ -223,8 +223,8 @@ func checkRetention() CheckResult {
 		return CheckResult{Status: StatusWarn, Name: "retention", Detail: string(retention.ProfileBalanced), Message: err.Error()}
 	}
 	return CheckResult{Status: StatusInfo, Name: "retention", Detail: string(policy.Profile),
-		Message: fmt.Sprintf("raw=%s tool_outputs=%s redact_after=%s",
-			textutil.FormatDuration(policy.RawAge), textutil.FormatDuration(policy.ToolOutputAge), textutil.FormatDuration(policy.RedactRawAfter))}
+		Message: fmt.Sprintf("raw=%s redact_after=%s",
+			textutil.FormatDuration(policy.RawAge), textutil.FormatDuration(policy.RedactRawAfter))}
 }
 
 func checkHooks(installed bool) CheckResult {

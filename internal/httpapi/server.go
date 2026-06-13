@@ -61,8 +61,8 @@ type Server struct {
 	// emitMu serializes the Append+publish pair so monotonic event IDs are
 	// assigned and fanned out in the same order; without it concurrent emitters
 	// can publish out of ID order and an event can be lost on reconnect.
-	// Lock order, whenever more than one is held: emitMu → liveMu → eventsMu
-	// (Emit is the only multi-lock path). Never invert.
+	// Lock order, whenever more than one is held:
+	// lifecycleMu → emitMu → liveMu → eventsMu. Never invert.
 	emitMu sync.Mutex
 
 	eventsMu sync.Mutex
@@ -87,6 +87,9 @@ type Server struct {
 	runtime atomic.Pointer[runtime.Service]
 
 	cfgLoader *config.Loader
+
+	lifecycleMu sync.RWMutex
+	closed      atomic.Bool
 
 	// Hook spool writes are deferred to a single background goroutine
 	// (runSpoolWriter) off the request path, so handleHooksIntake never blocks on
@@ -120,10 +123,16 @@ type Server struct {
 	// reconnecting client's replay range outrun durable storage, which would
 	// silently drop the newest events. Advanced only by runEventPersister (single
 	// writer, FIFO), seeded to LastID at startup since the prior log is durable.
-	durableID   atomic.Uint64
-	persistCh   chan persistJob
-	persistDone chan struct{}
-	persistOnce sync.Once
+	durableID atomic.Uint64
+	// replayGap holds the smallest published event id known to be absent from the
+	// durable replay log, paired with the reason. Once set, reconnect replay over
+	// that range must emit a resync_required frame instead of pretending the event
+	// log is complete. id and reason live behind one atomic pointer so concurrent
+	// markers can't tear an id from a different marker's reason.
+	replayGapState atomic.Pointer[replayGapMark]
+	persistCh      chan persistJob
+	persistDone  chan struct{}
+	persistOnce  sync.Once
 }
 
 // persistJob is one durable event-log write deferred off the emit hot path.
@@ -226,8 +235,11 @@ func (s *Server) Close() error {
 	// to, so live events published just before shutdown still reach the replay
 	// log. Idempotent: Close runs on both the NewServer error path and the two
 	// ListenAndServe exit paths.
+	s.lifecycleMu.Lock()
+	s.closed.Store(true)
 	s.stopPersister()
 	s.stopSpooler()
+	s.lifecycleMu.Unlock()
 	s.eventsMu.Lock()
 	for sub := range s.events {
 		close(sub.ch)
@@ -356,6 +368,11 @@ func (s *Server) runEventPersister() {
 	for job := range s.persistCh {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := s.eventStore.AppendWithID(ctx, job.id, job.eventType, job.at, job.payload); err != nil {
+			// A transient failure (ctx timeout, fsync/disk hiccup) only marks a gap
+			// for THIS event — reconnect replay over its range emits resync_required.
+			// We do not latch a permanent block: a later event whose append succeeds
+			// advances durableID again, so durability self-recovers.
+			s.markReplayGap(job.id, "persist_failed")
 			s.logger.Warn("persist live event to replay log failed",
 				"event_id", job.id, "type", job.eventType, "err", err)
 		} else {
@@ -405,16 +422,52 @@ func (s *Server) stopPersister() {
 	})
 }
 
-// enqueueEventPersist hands a durable write to the background persister without
-// blocking the emit critical section. On overflow the event is still published
-// live over SSE; it just won't be in the replay log, so a reconnecting client
-// may need a /v1/status resync for it — consistent with the broker's
-// lossy-by-design delivery (see the emitCh drop path).
-func (s *Server) enqueueEventPersist(id uint64, eventType string, at time.Time, payload []byte) {
+// enqueueEventPersistLocked hands a durable write to the background persister
+// without blocking the emit critical section (callers hold lifecycleMu). On
+// overflow the event is still published live over SSE; it just won't be in the
+// replay log, so a reconnecting client may need a /v1/status resync for it —
+// consistent with the broker's lossy-by-design delivery (see the emitCh drop
+// path).
+func (s *Server) enqueueEventPersistLocked(id uint64, eventType string, at time.Time, payload []byte) {
 	select {
 	case s.persistCh <- persistJob{id: id, eventType: eventType, at: at, payload: payload}:
 	default:
+		s.markReplayGap(id, "persist_queue_full")
 		s.logger.Warn("event persist queue full; live event not written to replay log",
 			"event_id", id, "type", eventType)
 	}
+}
+
+// replayGapMark pairs a replay-gap id with the reason it was marked, stored
+// together behind one atomic so a concurrent marker can't leave the id from one
+// caller paired with the reason from another.
+type replayGapMark struct {
+	id     uint64
+	reason string
+}
+
+func (s *Server) markReplayGap(id uint64, reason string) {
+	if id == 0 {
+		return
+	}
+	for {
+		cur := s.replayGapState.Load()
+		if cur != nil && cur.id != 0 && cur.id <= id {
+			return
+		}
+		if s.replayGapState.CompareAndSwap(cur, &replayGapMark{id: id, reason: reason}) {
+			return
+		}
+	}
+}
+
+func (s *Server) replayGapInRange(after, until uint64) (uint64, string, bool) {
+	mark := s.replayGapState.Load()
+	if mark == nil || mark.id == 0 || mark.id <= after {
+		return 0, "", false
+	}
+	if until > 0 && mark.id > until {
+		return 0, "", false
+	}
+	return mark.id, mark.reason, true
 }

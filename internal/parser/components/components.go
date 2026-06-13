@@ -16,6 +16,7 @@ func FromTools(turnID string, tools []trace.ToolCall) []trace.TurnComponent {
 	result := make([]trace.TurnComponent, 0, len(tools))
 	seenSkills := make(map[string]struct{})
 	seenMCPServers := make(map[string]struct{})
+	seenMCPTools := make(map[string]struct{})
 	seenBuiltins := make(map[string]struct{})
 	for _, tool := range tools {
 		switch tool.Kind {
@@ -31,10 +32,15 @@ func FromTools(turnID string, tools []trace.ToolCall) []trace.TurnComponent {
 				})
 			}
 			if tool.MCPServer != "" && tool.MCPTool != "" {
+				name := tool.MCPServer + "." + tool.MCPTool
+				if _, ok := seenMCPTools[name]; ok {
+					break
+				}
+				seenMCPTools[name] = struct{}{}
 				result = append(result, trace.TurnComponent{
 					TurnID:        turnID,
 					ComponentKind: trace.ComponentKindMCPTool,
-					ComponentName: tool.MCPServer + "." + tool.MCPTool,
+					ComponentName: name,
 					Relation:      trace.RelationInvoked,
 					Confidence:    trace.ConfidenceObserved,
 				})

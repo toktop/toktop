@@ -15,6 +15,11 @@ import (
 	"toktop.unceas.dev/internal/paths"
 )
 
+// daemonLockAuthoritative reports whether a daemonLockedElsewhere held==false
+// result is trustworthy. The advisory flock probe is authoritative on unix, so
+// callers may treat held==false as proof no daemon is running.
+const daemonLockAuthoritative = true
+
 // acquireDaemonLock takes an exclusive, non-blocking advisory lock on the
 // per-home lock file and writes the current PID to the pidfile. The returned
 // release closes the lock and removes the pidfile; the underlying *os.File stays

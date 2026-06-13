@@ -47,15 +47,17 @@ func runSources(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	names := ingest.SortedProviders()
 	// Resolve through the config loader so config.json roots show up here too,
 	// consistent with `config get` and GET /v1/config.
-	home, _ := paths.Home()
+	home, ok := resolveHome(stderr)
+	if !ok {
+		return 1
+	}
 	loader, lerr := configFor(ctx, home)
+	if lerr != nil {
+		cliErr(stderr, lerr)
+		return 2
+	}
 	for _, name := range names {
-		var roots []string
-		if lerr == nil {
-			roots = loader.Current().Roots[name]
-		} else {
-			roots = ingest.DiscoverRootPaths(name, nil)
-		}
+		roots := loader.Current().Roots[name]
 		if len(roots) == 0 {
 			rows = append(rows, sourceRoot{Source: name})
 			continue
@@ -87,9 +89,12 @@ func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 	sub := args[0]
 	rest := args[1:]
-	home, _ := paths.Home()
-	configDir, _ := paths.ConfigDir()
-	dataDir, _ := paths.DataDir()
+	home, ok := resolveHome(stderr)
+	if !ok {
+		return 1
+	}
+	configDir := paths.ConfigDirUnder(home)
+	dataDir := paths.DataDirUnder(home)
 	tokenPath := paths.APITokenPathUnder(home)
 	cfgPath := filepath.Join(configDir, "config.json")
 
@@ -319,12 +324,16 @@ func runEmit(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: toktop emit --type <event_type> [--session --provider --status ...]")
 		return 2
 	}
-	home, _ := paths.Home()
-	var snap *config.Snapshot
-	if loader, lerr := configFor(ctx, home); lerr == nil {
-		snap = loader.Current()
+	home, ok := resolveHome(stderr)
+	if !ok {
+		return 1
 	}
-	addr := clientAddr(snap)
+	loader, lerr := configFor(ctx, home)
+	if lerr != nil {
+		cliErr(stderr, lerr)
+		return 2
+	}
+	addr := clientAddr(loader.Current())
 	body := map[string]any{"type": evType}
 	for k, v := range map[string]string{
 		"provider": provider, "session_id": session, "external_session_id": external,
@@ -392,12 +401,16 @@ func runDaemonControl(ctx context.Context, method, path string, args []string, s
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
-	home, _ := paths.Home()
-	var snap *config.Snapshot
-	if loader, lerr := configFor(ctx, home); lerr == nil {
-		snap = loader.Current()
+	home, ok := resolveHome(stderr)
+	if !ok {
+		return 1
 	}
-	addr := clientAddr(snap)
+	loader, lerr := configFor(ctx, home)
+	if lerr != nil {
+		cliErr(stderr, lerr)
+		return 2
+	}
+	addr := clientAddr(loader.Current())
 	var payload []byte
 	if path == "/v1/daemon:trigger" {
 		body := map[string]any{}
@@ -412,7 +425,11 @@ func runDaemonControl(ctx context.Context, method, path string, args []string, s
 		}
 		payload, _ = json.Marshal(body)
 	}
-	resp, err := apiRequest(ctx, method, addr, path, clientToken(token, noAuth), payload)
+	timeout := 10 * time.Second
+	if path == "/v1/daemon:trigger" && (sync || mode == "once") {
+		timeout = 0
+	}
+	resp, err := apiRequestWithTimeout(ctx, method, addr, path, clientToken(token, noAuth), payload, timeout)
 	if err != nil {
 		cliErrf(stderr, "daemon: %v", err)
 		return 1
@@ -483,15 +500,34 @@ func httpClientFor(addr string, timeout time.Duration) (*http.Client, string) {
 			},
 		}, "http://unix"
 	}
-	return &http.Client{Timeout: timeout}, "http://" + address
+	return &http.Client{Timeout: timeout}, "http://" + tcpClientHost(address)
+}
+
+func tcpClientHost(address string) string {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		if strings.HasPrefix(address, ":") {
+			return "127.0.0.1" + address
+		}
+		return address
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func apiRequest(ctx context.Context, method, addr, path, token string, body []byte) (*http.Response, error) {
+	return apiRequestWithTimeout(ctx, method, addr, path, token, body, 10*time.Second)
+}
+
+func apiRequestWithTimeout(ctx context.Context, method, addr, path, token string, body []byte, timeout time.Duration) (*http.Response, error) {
 	var reader io.Reader
 	if len(body) > 0 {
 		reader = bytes.NewReader(body)
 	}
-	client, base := httpClientFor(addr, 10*time.Second)
+	client, base := httpClientFor(addr, timeout)
 	url := strings.TrimSuffix(base, "/") + path
 	req, err := http.NewRequestWithContext(ctx, method, url, reader)
 	if err != nil {

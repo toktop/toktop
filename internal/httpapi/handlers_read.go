@@ -2,16 +2,20 @@ package httpapi
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"toktop.unceas.dev/internal/httpapi/internal/eventlog"
+	"toktop.unceas.dev/internal/ingest"
 	"toktop.unceas.dev/internal/liveevent"
 	"toktop.unceas.dev/internal/query"
 	"toktop.unceas.dev/internal/store/sqlite"
 	"toktop.unceas.dev/internal/textutil"
+	"toktop.unceas.dev/internal/trace"
 )
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -262,20 +266,40 @@ func parseFilter(r *http.Request) (sqlite.Filter, error) {
 	q := r.URL.Query()
 	var sourceIDs []string
 	for _, app := range queryValues(q, "source", "sources", "provider", "providers", "app", "apps") {
-
-		sourceIDs = append(sourceIDs, query.ResolveSourceFilter(app))
+		if query.LooksLikeSourceID(app) {
+			sourceIDs = append(sourceIDs, app)
+			continue
+		}
+		name := ingest.NormalizeName(app)
+		if !ingest.HasProvider(name) {
+			return sqlite.Filter{}, fmt.Errorf("unknown source %q", app)
+		}
+		sourceIDs = append(sourceIDs, query.ResolveSourceFilter(name))
+	}
+	statuses := textutil.DedupNonEmpty(queryValues(q, "status", "statuses"))
+	validStatuses := trace.StatusValues()
+	for _, status := range statuses {
+		if !slices.Contains(validStatuses, status) {
+			return sqlite.Filter{}, fmt.Errorf("unknown status %q", status)
+		}
 	}
 	filter := sqlite.Filter{
 		SourceIDs:  textutil.DedupNonEmpty(sourceIDs),
 		ProjectIDs: textutil.DedupNonEmpty(queryValues(q, "project", "projects")),
 		SessionIDs: textutil.DedupNonEmpty(queryValues(q, "session", "sessions")),
-		Statuses:   textutil.DedupNonEmpty(queryValues(q, "status", "statuses")),
+		Statuses:   statuses,
 		Limit:      atoiOr(q.Get("limit"), 0),
 		Offset:     atoiOr(q.Get("offset"), 0),
 		SortBy:     q.Get("sort_by"),
 	}
 	if order := q.Get("sort"); order != "" {
 		filter.SortBy, filter.SortDesc = query.ParseSort(order)
+		if !slices.Contains(validHTTPSorts, filter.SortBy) {
+			return sqlite.Filter{}, fmt.Errorf("invalid sort %q", order)
+		}
+	}
+	if filter.SortBy != "" && !slices.Contains(validHTTPSorts, filter.SortBy) {
+		return sqlite.Filter{}, fmt.Errorf("invalid sort_by %q", filter.SortBy)
 	}
 	now := time.Now().UTC()
 	if since := q.Get("since"); since != "" {
@@ -294,6 +318,8 @@ func parseFilter(r *http.Request) (sqlite.Filter, error) {
 	}
 	return filter, nil
 }
+
+var validHTTPSorts = []string{"started", "tokens", "duration", "turns"}
 
 func parseWatchTargets(r *http.Request) ([]liveevent.Target, error) {
 	return liveevent.ParseWatchTargets(queryValues(r.URL.Query(), "watch", "watches"))

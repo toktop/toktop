@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,57 +19,68 @@ type scanOptions struct {
 	UserRoots []string
 
 	ProjectPaths []string
+	ClaudeUser   *claudeUserConfig
 }
 
-func scanInstalledSkills(ctx context.Context, opts scanOptions) ([]trace.Skill, error) {
+// scanInstalledSkills returns the installed skills and whether the scan was
+// complete. complete is false when any existing skill root could not be read, so
+// the caller skips a metadata reconcile rather than deleting rows a transient
+// failure merely hid.
+func scanInstalledSkills(ctx context.Context, opts scanOptions) ([]trace.Skill, bool, error) {
 	if len(opts.UserRoots) == 0 {
 		opts.UserRoots = defaultClaudeUserRoots()
 	}
 	seen := make(map[string]struct{})
 	out := make([]trace.Skill, 0, 32)
+	complete := true
 
 	for _, root := range opts.UserRoots {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 
 		skills, err := scanSkillsRoot(filepath.Join(root, "skills"), "user")
 		if err != nil {
-			return nil, err
+			slog.Warn("skip unreadable claude skill root", "path", filepath.Join(root, "skills"), "err", err)
+			complete = false
+		} else {
+			collector.AppendUniqueSkills(&out, seen, skills...)
 		}
-		collector.AppendUniqueSkills(&out, seen, skills...)
 
 		pluginDirs, err := pluginCacheSkillsDirs(root)
 		if err != nil {
-			return nil, err
+			slog.Warn("skip claude plugin skill roots", "root", root, "err", err)
+			complete = false
+			continue
 		}
 		for _, dir := range pluginDirs {
 			if err := ctx.Err(); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			skills, err := scanSkillsRoot(dir, "user")
 			if err != nil {
-				return nil, err
+				slog.Warn("skip unreadable claude plugin skill root", "path", dir, "err", err)
+				complete = false
+				continue
 			}
 			collector.AppendUniqueSkills(&out, seen, skills...)
 		}
 	}
 
 	for _, project := range collector.UniqueStrings(opts.ProjectPaths) {
-		if project == "" {
-			continue
-		}
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		skills, err := scanSkillsRoot(filepath.Join(project, ".claude", "skills"), "project")
 		if err != nil {
-			return nil, err
+			slog.Warn("skip unreadable claude project skill root", "project", project, "err", err)
+			complete = false
+			continue
 		}
 		collector.AppendUniqueSkills(&out, seen, skills...)
 	}
 
-	return out, nil
+	return out, complete, nil
 }
 
 func pluginCacheSkillsDirs(root string) ([]string, error) {
@@ -107,7 +119,8 @@ func scanSkillsRoot(skillsDir, scope string) ([]trace.Skill, error) {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("stat skill entry %s: %w", entryPath, err)
+			slog.Warn("skip unreadable skill entry", "path", entryPath, "err", err)
+			continue
 		}
 		if !info.IsDir() {
 			continue
@@ -119,7 +132,8 @@ func scanSkillsRoot(skillsDir, scope string) ([]trace.Skill, error) {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("read %s: %w", path, err)
+			slog.Warn("skip unreadable skill file", "path", path, "err", err)
+			continue
 		}
 		meta := parseSkillFrontMatter(content)
 		out = append(out, trace.Skill{
@@ -143,13 +157,7 @@ func scanSkillsRoot(skillsDir, scope string) ([]trace.Skill, error) {
 }
 
 func validSkillName(name string) bool {
-	if name == "" || name == "." || name == ".." {
-		return false
-	}
-	if strings.HasPrefix(name, ".") {
-		return false
-	}
-	return true
+	return !strings.HasPrefix(name, ".")
 }
 
 type skillFrontMatter struct {

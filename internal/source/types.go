@@ -2,7 +2,6 @@ package source
 
 import (
 	"encoding/json"
-	"iter"
 	"time"
 
 	"toktop.unceas.dev/internal/trace"
@@ -44,17 +43,7 @@ type RawSession struct {
 }
 
 type Fingerprint struct {
-	Size    int64  `json:"size"`
-	MtimeNS int64  `json:"mtime_ns"`
-	Ino     uint64 `json:"inode_no"`
-}
-
-func (r RawSession) Events() iter.Seq2[RawEvent, error] {
-	return func(yield func(RawEvent, error) bool) {
-		for _, event := range r.RawEventList {
-			if !yield(event, nil) {
-				return
-			}
-		}
-	}
+	Size    int64 `json:"size"`
+	MtimeNS int64 `json:"mtime_ns"`
+	Ino     int64 `json:"inode_no"`
 }

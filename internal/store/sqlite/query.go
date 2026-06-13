@@ -9,23 +9,28 @@ import (
 	"toktop.unceas.dev/internal/trace"
 )
 
-// LoadIndex materializes the full trace index. A non-zero since bounds the
-// session/turn load to started_at >= since (covered by idx_sessions_started /
-// idx_turns_started), so callers that only need a recent window — the rules
-// recompute, a scoped export — do not scan the entire history every call. A zero
-// since loads everything.
+// LoadIndex materializes the trace index. A non-zero since selects sessions by
+// session effective time, then loads every turn for those sessions. That keeps
+// parent sessions and child turns coherent for scoped export/rule snapshots
+// instead of independently clipping turns by their own timestamps.
 func (s *Store) LoadIndex(ctx context.Context, since time.Time) (trace.Index, error) {
 	index := trace.Index{GeneratedAt: time.Now().UTC()}
 	if err := s.loadProvidersAndRoots(ctx, &index); err != nil {
 		return trace.Index{}, err
 	}
-	rawCount, err := s.scalarInt(ctx, `SELECT COUNT(*) FROM raw_events`)
+	rawCountQuery := `SELECT COUNT(*) FROM raw_events`
+	var rawCountArgs []any
+	if !since.IsZero() {
+		rawCountQuery += ` WHERE ` + rawEventEffectiveTimeExpr + ` >= ?`
+		rawCountArgs = append(rawCountArgs, timeBound(since))
+	}
+	rawCount, err := s.scalarInt(ctx, rawCountQuery, rawCountArgs...)
 	if err != nil {
 		return trace.Index{}, err
 	}
 	index.RawEventCount = rawCount
 
-	parseErrors, err := s.loadParseErrors(ctx)
+	parseErrors, err := s.loadParseErrors(ctx, since)
 	if err != nil {
 		return trace.Index{}, err
 	}
@@ -51,15 +56,9 @@ func (s *Store) LoadIndex(ctx context.Context, since time.Time) (trace.Index, er
 		index.TurnComponents = append(index.TurnComponents, turns[i].Components...)
 	}
 
-	subagents, err := s.loadAllSubagentRuns(ctx)
-	if err != nil {
-		return trace.Index{}, err
-	}
-	index.SubagentRuns = subagents
-
-	// MCP servers feed the mcp_unused_30d rule; skills / tool outputs / top-level
-	// context events round out /v1/export. These are config/metadata tables, not
-	// time-series, so they load in full regardless of `since`.
+	// MCP servers feed the mcp_unused_30d rule; skills round out /v1/export.
+	// These are config/metadata tables, not time-series, so they load in full
+	// regardless of `since`.
 	mcpServers, err := s.loadAllMCPServers(ctx)
 	if err != nil {
 		return trace.Index{}, err
@@ -72,22 +71,9 @@ func (s *Store) LoadIndex(ctx context.Context, since time.Time) (trace.Index, er
 	}
 	index.Skills = skills
 
-	toolOutputs, err := s.loadAllToolOutputs(ctx)
-	if err != nil {
-		return trace.Index{}, err
-	}
-	index.ToolOutputs = toolOutputs
-
-	contextEvents, err := s.loadAllContextEvents(ctx)
-	if err != nil {
-		return trace.Index{}, err
-	}
-	index.ContextEvents = contextEvents
-
 	index.SessionCount = len(sessions)
 	index.TurnCount = len(turns)
 	index.InvocationCount = len(index.Invocations)
-	index.SubagentCount = len(subagents)
 	count := 0
 	for _, turn := range turns {
 		count += len(turn.ToolCalls)
@@ -115,14 +101,7 @@ func (s *Store) GetTurn(ctx context.Context, turnID string) (trace.Turn, error) 
 }
 
 func (s *Store) GetSession(ctx context.Context, id string) (trace.Session, error) {
-	rows, err := s.reader().QueryContext(ctx, sessionsBaseQuery+`
-		WHERE sessions.id = ? OR sessions.external_session_id = ?
-		ORDER BY (sessions.id = ?) DESC, sessions.id
-		LIMIT 1`, id, id, id)
-	if err != nil {
-		return trace.Session{}, fmt.Errorf("query session: %w", err)
-	}
-	sessions, err := scanSessions(rows)
+	sessions, err := s.FindSessions(ctx, id)
 	if err != nil {
 		return trace.Session{}, err
 	}
@@ -130,6 +109,20 @@ func (s *Store) GetSession(ctx context.Context, id string) (trace.Session, error
 		return trace.Session{}, sql.ErrNoRows
 	}
 	return sessions[0], nil
+}
+
+func (s *Store) FindSessions(ctx context.Context, id string) ([]trace.Session, error) {
+	rows, err := s.reader().QueryContext(ctx, sessionsBaseQuery+`
+		WHERE sessions.id = ? OR sessions.external_session_id = ?
+		ORDER BY (sessions.id = ?) DESC, sessions.id`, id, id, id)
+	if err != nil {
+		return nil, fmt.Errorf("query session: %w", err)
+	}
+	sessions, err := scanSessions(rows)
+	if err != nil {
+		return nil, err
+	}
+	return sessions, nil
 }
 
 func (s *Store) TurnsForSession(ctx context.Context, sessionID string) ([]trace.Turn, error) {
@@ -183,13 +176,19 @@ func (s *Store) loadProvidersAndRoots(ctx context.Context, index *trace.Index) e
 	return nil
 }
 
-func (s *Store) loadParseErrors(ctx context.Context) ([]trace.ParseError, error) {
-	rows, err := s.reader().QueryContext(ctx, `
+func (s *Store) loadParseErrors(ctx context.Context, since time.Time) ([]trace.ParseError, error) {
+	q := `
 		SELECT source_id, COALESCE(source_root_id, ''), COALESCE(source_file, ''),
 		       COALESCE(line_no, 0), COALESCE(raw_event_id, ''), message, COALESCE(parser_version, '')
 		FROM parse_errors
-		ORDER BY id
-	`)
+	`
+	var args []any
+	if !since.IsZero() {
+		q += ` WHERE parse_errors.created_at >= ?`
+		args = append(args, timeBound(since))
+	}
+	q += ` ORDER BY id`
+	rows, err := s.reader().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("load parse errors: %w", err)
 	}
@@ -223,10 +222,10 @@ func (s *Store) loadAllSessions(ctx context.Context, since time.Time) ([]trace.S
 	q := sessionsBaseQuery
 	var args []any
 	if !since.IsZero() {
-		q += ` WHERE sessions.started_at >= ?`
+		q += ` WHERE ` + sessionEffectiveTimeExpr + ` >= ?`
 		args = append(args, timeBound(since))
 	}
-	q += ` ORDER BY sessions.started_at, sessions.id`
+	q += ` ORDER BY ` + sessionEffectiveTimeExpr + `, sessions.id`
 	rows, err := s.reader().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("load sessions: %w", err)
@@ -265,10 +264,9 @@ const turnsBaseQuery = `
 	       turns.turn_index,
 	       COALESCE(turns.user_message, ''),
 	       COALESCE(turns.assistant_final, ''),
-	       COALESCE(turns.summary, ''),
 	       COALESCE(turns.started_at, ''), COALESCE(turns.ended_at, ''), turns.duration_ms,
-	       turns.status, COALESCE(turns.failure_reason, ''),
-	       turns.invocation_count, turns.tool_call_count, turns.subagent_count,
+	       turns.status,
+	       turns.invocation_count, turns.tool_call_count,
 	       turns.total_input_tokens, turns.total_output_tokens,
 	       turns.cache_read_tokens, turns.cache_write_tokens, turns.cache_write_long_tokens
 	FROM turns
@@ -281,10 +279,14 @@ func (s *Store) loadAllTurns(ctx context.Context, since time.Time) ([]trace.Turn
 	q := turnsBaseQuery
 	var args []any
 	if !since.IsZero() {
-		q += ` WHERE turns.started_at >= ?`
+		q += ` WHERE turns.session_id IN (
+			SELECT sessions.id
+			FROM sessions
+			WHERE ` + sessionEffectiveTimeExpr + ` >= ?
+		)`
 		args = append(args, timeBound(since))
 	}
-	q += ` ORDER BY turns.started_at, turns.turn_index, turns.id`
+	q += ` ORDER BY ` + turnEffectiveTimeExpr + `, turns.turn_index, turns.id`
 	rows, err := s.reader().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("load turns: %w", err)
@@ -305,10 +307,9 @@ func scanTurns(rows *sql.Rows) ([]trace.Turn, error) {
 			&turn.Index,
 			&turn.UserMessage,
 			&turn.AssistantFinal,
-			&turn.Summary,
 			&startedAt, &endedAt, &turn.DurationMs,
-			&turn.Status, &turn.FailureReason,
-			&turn.InvocationCount, &turn.ToolCallCount, &turn.SubagentCount,
+			&turn.Status,
+			&turn.InvocationCount, &turn.ToolCallCount,
 			&turn.Tokens.Input, &turn.Tokens.Output, &turn.Tokens.CacheRead, &turn.Tokens.CacheWrite, &turn.Tokens.CacheWriteLong,
 		); err != nil {
 			return nil, fmt.Errorf("scan turn: %w", err)
@@ -320,45 +321,11 @@ func scanTurns(rows *sql.Rows) ([]trace.Turn, error) {
 	return turns, rows.Err()
 }
 
-func (s *Store) loadAllSubagentRuns(ctx context.Context) ([]trace.SubagentRun, error) {
-	rows, err := s.reader().QueryContext(ctx, `
-		SELECT id, parent_turn_id, COALESCE(parent_tool_call_id, ''),
-		       COALESCE(agent_name, ''), COALESCE(agent_type, ''), COALESCE(model, ''),
-		       COALESCE(transcript_path, ''),
-		       COALESCE(started_at, ''), COALESCE(ended_at, ''), duration_ms, status,
-		       total_input_tokens, total_output_tokens, cache_read_tokens, cache_write_tokens, cache_write_long_tokens
-		FROM subagent_runs
-		ORDER BY created_at
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("load subagent_runs: %w", err)
-	}
-	defer rows.Close()
-	var out []trace.SubagentRun
-	for rows.Next() {
-		var run trace.SubagentRun
-		var startedAt, endedAt sql.NullString
-		if err := rows.Scan(
-			&run.ID, &run.ParentTurnID, &run.ParentToolCallID,
-			&run.AgentName, &run.AgentType, &run.Model,
-			&run.TranscriptPath,
-			&startedAt, &endedAt, &run.DurationMs, &run.Status,
-			&run.Tokens.Input, &run.Tokens.Output, &run.Tokens.CacheRead, &run.Tokens.CacheWrite, &run.Tokens.CacheWriteLong,
-		); err != nil {
-			return nil, fmt.Errorf("scan subagent_run: %w", err)
-		}
-		run.StartedAt = parseTimeOpt(startedAt)
-		run.EndedAt = parseTimeOpt(endedAt)
-		out = append(out, run)
-	}
-	return out, rows.Err()
-}
-
 func (s *Store) loadAllMCPServers(ctx context.Context) ([]trace.MCPServer, error) {
 	rows, err := s.reader().QueryContext(ctx, `
-		SELECT id, name, scope, transport, COALESCE(config_path, ''), COALESCE(config_hash, ''), enabled
+		SELECT id, source_id, name, scope, transport, COALESCE(config_path, ''), COALESCE(config_hash, ''), enabled
 		FROM mcp_servers
-		ORDER BY name, config_path
+		ORDER BY source_id, name, config_path
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("load mcp_servers: %w", err)
@@ -367,7 +334,7 @@ func (s *Store) loadAllMCPServers(ctx context.Context) ([]trace.MCPServer, error
 	var out []trace.MCPServer
 	for rows.Next() {
 		var m trace.MCPServer
-		if err := rows.Scan(&m.ID, &m.Name, &m.Scope, &m.Transport, &m.ConfigPath, &m.ConfigHash, &m.Enabled); err != nil {
+		if err := rows.Scan(&m.ID, &m.SourceID, &m.Name, &m.Scope, &m.Transport, &m.ConfigPath, &m.ConfigHash, &m.Enabled); err != nil {
 			return nil, fmt.Errorf("scan mcp_server: %w", err)
 		}
 		out = append(out, m)
@@ -377,12 +344,12 @@ func (s *Store) loadAllMCPServers(ctx context.Context) ([]trace.MCPServer, error
 
 func (s *Store) loadAllSkills(ctx context.Context) ([]trace.Skill, error) {
 	rows, err := s.reader().QueryContext(ctx, `
-		SELECT id, name, scope, COALESCE(source_path, ''), COALESCE(source_hash, ''),
+		SELECT id, source_id, name, scope, COALESCE(source_path, ''), COALESCE(source_hash, ''),
 		       COALESCE(description, ''), COALESCE(version, ''), COALESCE(argument_hint, ''),
 		       user_invocable, triggers, allowed_tools, tools,
 		       COALESCE(compatibility, ''), COALESCE(license, '')
 		FROM skills
-		ORDER BY name, scope, source_path
+		ORDER BY source_id, name, scope, source_path
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("load skills: %w", err)
@@ -394,7 +361,7 @@ func (s *Store) loadAllSkills(ctx context.Context) ([]trace.Skill, error) {
 		var userInvocable sql.NullInt64
 		var triggers, allowedTools, tools sql.NullString
 		if err := rows.Scan(
-			&skill.ID, &skill.Name, &skill.Scope, &skill.SourcePath, &skill.SourceHash,
+			&skill.ID, &skill.SourceID, &skill.Name, &skill.Scope, &skill.SourcePath, &skill.SourceHash,
 			&skill.Description, &skill.Version, &skill.ArgumentHint,
 			&userInvocable, &triggers, &allowedTools, &tools,
 			&skill.Compatibility, &skill.License,
@@ -406,59 +373,6 @@ func (s *Store) loadAllSkills(ctx context.Context) ([]trace.Skill, error) {
 		skill.AllowedTools = nullStringToJSON(allowedTools)
 		skill.Tools = nullStringToJSON(tools)
 		out = append(out, skill)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) loadAllToolOutputs(ctx context.Context) ([]trace.ToolOutput, error) {
-	rows, err := s.reader().QueryContext(ctx, `
-		SELECT id, COALESCE(source_file, ''), COALESCE(content_text, ''), content_hash,
-		       size_bytes, retention_class, COALESCE(created_at, '')
-		FROM tool_outputs
-		ORDER BY id
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("load tool_outputs: %w", err)
-	}
-	defer rows.Close()
-	var out []trace.ToolOutput
-	for rows.Next() {
-		var to trace.ToolOutput
-		var createdAt sql.NullString
-		if err := rows.Scan(&to.ID, &to.SourceFile, &to.ContentText, &to.ContentHash, &to.SizeBytes, &to.RetentionClass, &createdAt); err != nil {
-			return nil, fmt.Errorf("scan tool_output: %w", err)
-		}
-		to.CreatedAt = parseTimeOpt(createdAt)
-		out = append(out, to)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) loadAllContextEvents(ctx context.Context) ([]trace.ContextEvent, error) {
-	rows, err := s.reader().QueryContext(ctx, `
-		SELECT id, COALESCE(session_id, ''), COALESCE(turn_id, ''), COALESCE(invocation_id, ''), COALESCE(subagent_run_id, ''),
-		       component_type, COALESCE(component_name, ''), COALESCE(source_path, ''), COALESCE(source_hash, ''),
-		       COALESCE(phase, ''), token_estimate, COALESCE(evidence, ''), confidence
-		FROM context_events
-		ORDER BY id
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("load context_events: %w", err)
-	}
-	defer rows.Close()
-	var out []trace.ContextEvent
-	for rows.Next() {
-		var event trace.ContextEvent
-		var confidence string
-		if err := rows.Scan(
-			&event.ID, &event.SessionID, &event.TurnID, &event.InvocationID, &event.SubagentRunID,
-			&event.ComponentType, &event.ComponentName, &event.SourcePath, &event.SourceHash,
-			&event.Phase, &event.TokenEstimate, &event.Evidence, &confidence,
-		); err != nil {
-			return nil, fmt.Errorf("scan context_event: %w", err)
-		}
-		event.Confidence = trace.Confidence(confidence)
-		out = append(out, event)
 	}
 	return out, rows.Err()
 }

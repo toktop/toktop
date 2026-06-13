@@ -8,40 +8,18 @@ import (
 
 func (s *Store) PruneRawEvents(ctx context.Context, cutoff time.Time, dryRun bool) (int64, error) {
 	cutoffText := timeBound(cutoff)
+	const where = `COALESCE(NULLIF(event_time, ''), imported_at) < ?`
 	if dryRun {
 		var count int64
-		err := s.reader().QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM raw_events
-			WHERE COALESCE(NULLIF(event_time, ''), imported_at) < ?
-		`, cutoffText).Scan(&count)
+		err := s.reader().QueryRowContext(ctx, `SELECT COUNT(*) FROM raw_events WHERE `+where, cutoffText).Scan(&count)
 		if err != nil {
 			return 0, fmt.Errorf("count raw events for prune: %w", err)
 		}
 		return count, nil
 	}
-	result, err := s.writer().ExecContext(ctx, `
-		DELETE FROM raw_events
-		WHERE COALESCE(NULLIF(event_time, ''), imported_at) < ?
-	`, cutoffText)
+	result, err := s.writer().ExecContext(ctx, `DELETE FROM raw_events WHERE `+where, cutoffText)
 	if err != nil {
 		return 0, fmt.Errorf("prune raw events: %w", err)
-	}
-	return result.RowsAffected()
-}
-
-func (s *Store) PruneToolOutputs(ctx context.Context, cutoff time.Time, dryRun bool) (int64, error) {
-	cutoffText := timeBound(cutoff)
-	if dryRun {
-		var count int64
-		err := s.reader().QueryRowContext(ctx, `SELECT COUNT(*) FROM tool_outputs WHERE created_at < ?`, cutoffText).Scan(&count)
-		if err != nil {
-			return 0, fmt.Errorf("count tool_outputs for prune: %w", err)
-		}
-		return count, nil
-	}
-	result, err := s.writer().ExecContext(ctx, `DELETE FROM tool_outputs WHERE created_at < ?`, cutoffText)
-	if err != nil {
-		return 0, fmt.Errorf("prune tool_outputs: %w", err)
 	}
 	return result.RowsAffected()
 }
@@ -72,21 +50,12 @@ func (s *Store) RedactNormalized(ctx context.Context, cutoff time.Time) (int64, 
 		sql  string
 		args []any
 	}{
-		{"turns", `UPDATE turns SET user_message = '', assistant_final = '', summary = ''
+		{"turns", `UPDATE turns SET user_message = '', assistant_final = ''
 			WHERE session_id IN ` + oldSessions + `
-			  AND (user_message <> '' OR assistant_final <> '' OR summary <> '')`, []any{cutoffText}},
+			  AND (user_message <> '' OR assistant_final <> '')`, []any{cutoffText}},
 		{"tool_calls", `UPDATE tool_calls SET input_json = '', output_text = '', error = ''
 			WHERE session_id IN ` + oldSessions + `
 			  AND (input_json <> '' OR output_text <> '' OR error <> '')`, []any{cutoffText}},
-		// context_events.session_id is nullable, so a turn_id-only row (legitimate:
-		// SessionID is omitzero, the read path joins on turn_id) would never match
-		// `session_id IN oldSessions` and keep expired evidence. Also age it via its
-		// turn's session.
-		{"context_events", `UPDATE context_events SET evidence = ''
-			WHERE evidence <> ''
-			  AND (session_id IN ` + oldSessions + `
-			       OR turn_id IN (SELECT id FROM turns WHERE session_id IN ` + oldSessions + `))`,
-			[]any{cutoffText, cutoffText}},
 	}
 
 	var total int64
@@ -103,19 +72,6 @@ func (s *Store) RedactNormalized(ctx context.Context, cutoff time.Time) (int64, 
 		}
 		total += n
 	}
-
-	res, err := tx.ExecContext(ctx, `
-		UPDATE tool_outputs SET content_text = ''
-		WHERE created_at < ? AND content_text <> ''
-	`, cutoffText)
-	if err != nil {
-		return 0, fmt.Errorf("redact normalized tool_outputs: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("rows affected tool_outputs: %w", err)
-	}
-	total += n
 
 	// search_fts is an external-content index over search_documents; blanking
 	// the normalized rows above leaves the inverted index (and snippet() output)

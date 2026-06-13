@@ -52,7 +52,6 @@ const (
 type Policy struct {
 	Profile           Profile
 	RawAge            time.Duration
-	ToolOutputAge     time.Duration
 	RedactRawAfter    time.Duration
 	EventLogAge       time.Duration
 	EventLogMaxEvents int
@@ -65,9 +64,9 @@ func PolicyFor(profile Profile) (Policy, error) {
 	)
 	switch profile {
 	case ProfilePrivacy:
-		return Policy{Profile: profile, RawAge: 7 * 24 * time.Hour, ToolOutputAge: 7 * 24 * time.Hour, RedactRawAfter: 24 * time.Hour, EventLogAge: defaultEventLogAge, EventLogMaxEvents: defaultEventLogMaxEvents}, nil
+		return Policy{Profile: profile, RawAge: 7 * 24 * time.Hour, RedactRawAfter: 24 * time.Hour, EventLogAge: defaultEventLogAge, EventLogMaxEvents: defaultEventLogMaxEvents}, nil
 	case ProfileBalanced, "":
-		return Policy{Profile: ProfileBalanced, RawAge: 90 * 24 * time.Hour, ToolOutputAge: 30 * 24 * time.Hour, RedactRawAfter: 30 * 24 * time.Hour, EventLogAge: defaultEventLogAge, EventLogMaxEvents: defaultEventLogMaxEvents}, nil
+		return Policy{Profile: ProfileBalanced, RawAge: 90 * 24 * time.Hour, RedactRawAfter: 30 * 24 * time.Hour, EventLogAge: defaultEventLogAge, EventLogMaxEvents: defaultEventLogMaxEvents}, nil
 	case ProfileArchive:
 		return Policy{Profile: profile, EventLogAge: defaultEventLogAge, EventLogMaxEvents: defaultEventLogMaxEvents}, nil
 	default:
@@ -79,7 +78,6 @@ type Report struct {
 	Profile                Profile   `json:"profile"`
 	DryRun                 bool      `json:"dry_run"`
 	RawEventsAffected      int64     `json:"raw_events_affected"`
-	ToolOutputsAffected    int64     `json:"tool_outputs_affected"`
 	NormalizedRowsRedacted int64     `json:"normalized_rows_redacted"`
 	EventLogPruned         int       `json:"event_log_pruned"`
 	Now                    time.Time `json:"now"`
@@ -93,13 +91,6 @@ func Apply(ctx context.Context, store *sqlite.Store, events EventLogPruner, poli
 			return report, err
 		}
 		report.RawEventsAffected = count
-	}
-	if policy.ToolOutputAge > 0 {
-		count, err := store.PruneToolOutputs(ctx, now.Add(-policy.ToolOutputAge), dryRun)
-		if err != nil {
-			return report, err
-		}
-		report.ToolOutputsAffected = count
 	}
 	if !dryRun && policy.RedactRawAfter > 0 {
 		cutoff := now.Add(-policy.RedactRawAfter)
@@ -127,8 +118,8 @@ func FormatProfileList() string {
 	var b strings.Builder
 	for _, p := range []Profile{ProfilePrivacy, ProfileBalanced, ProfileArchive} {
 		policy, _ := PolicyFor(p)
-		fmt.Fprintf(&b, "%s\traw=%s\ttool_outputs=%s\tredact_after=%s\n",
-			p, textutil.FormatDuration(policy.RawAge), textutil.FormatDuration(policy.ToolOutputAge), textutil.FormatDuration(policy.RedactRawAfter))
+		fmt.Fprintf(&b, "%s\traw=%s\tredact_after=%s\n",
+			p, textutil.FormatDuration(policy.RawAge), textutil.FormatDuration(policy.RedactRawAfter))
 	}
 	return b.String()
 }

@@ -91,6 +91,20 @@ func FinalizeSession(session *trace.Session, turns []trace.Turn) {
 	}
 }
 
+// IsLocalCommandInjection reports whether a message is one of the local-command /
+// slash-command sentinels both providers inject as non-prompt context: the
+// <local-command-…> wrapper, a /model directive, or the "do not respond … local
+// commands" caveat. trimmed is the TrimSpace'd text; lower is its ToLower form,
+// passed in because callers already compute it for their provider-specific checks.
+func IsLocalCommandInjection(trimmed, lower string) bool {
+	if strings.HasPrefix(trimmed, "<local-command-") ||
+		strings.HasPrefix(trimmed, "</local-command-") ||
+		strings.HasPrefix(trimmed, "/model") {
+		return true
+	}
+	return strings.Contains(lower, "do not respond") && strings.Contains(lower, "local commands")
+}
+
 // DecodeContentText extracts text from a content field that is either a JSON
 // string or a JSON array of blocks carrying a "text" member (array parts are
 // trimmed, blanks dropped, joined with a blank line). fallbackRaw controls the

@@ -10,6 +10,12 @@ func acquireDaemonLock(home string) (release func(), ok bool, err error) {
 	return func() {}, true, nil
 }
 
+// daemonLockAuthoritative reports whether a daemonLockedElsewhere held==false
+// result is trustworthy. On Windows there is no advisory flock to probe, so the
+// probe is non-authoritative and callers must not treat held==false as proof no
+// daemon is running.
+const daemonLockAuthoritative = false
+
 // daemonLockedElsewhere is a best-effort no-op on Windows: with no advisory
 // flock there is no lock to probe, matching acquireDaemonLock above.
 func daemonLockedElsewhere(string) (pid int, held bool) {

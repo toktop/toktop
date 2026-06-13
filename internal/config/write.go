@@ -131,13 +131,7 @@ func FileHasKey(path, key string) (bool, error) {
 
 // cleanPaths splits a comma-separated value into trimmed, non-empty paths.
 func cleanPaths(value string) []string {
-	var out []string
-	for part := range strings.SplitSeq(value, ",") {
-		if p := strings.TrimSpace(part); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
+	return textutil.SplitTrim(value)
 }
 
 // setRoots writes paths under m["roots"][provider], creating the nested map.

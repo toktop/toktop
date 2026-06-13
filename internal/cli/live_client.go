@@ -31,6 +31,9 @@ func pruneRetentionViaServer(ctx context.Context, addr, token, profile string, d
 		if ctx.Err() != nil {
 			return retention.Report{}, ctx.Err()
 		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return retention.Report{}, err
+		}
 		return retention.Report{}, fmt.Errorf("%w: %v", errStreamServerUnreachable, err)
 	}
 	defer resp.Body.Close()

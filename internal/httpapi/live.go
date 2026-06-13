@@ -1,12 +1,13 @@
 package httpapi
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -106,21 +107,28 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "list_live_sessions_failed", err.Error())
 		return
 	}
-	page.Items = s.overlayLiveSessions(page.Items, filter)
+	storedReturned := len(page.Items)
+	page.Items = s.overlayLiveSessions(page.Items, filter, len(watchTargets) > 0)
 	page.Items = filterLiveSessionItemsByWatch(page.Items, watchTargets)
-	page.Total = len(page.Items)
+	if len(watchTargets) > 0 {
+		page.Total = len(page.Items)
+		page.NextOffset = min(page.Offset+len(page.Items), page.Total)
+	} else {
+		// Live-only rows are overlay-injected (first page only) and have no stored
+		// page position: count them in Total, but advance NextOffset over STORED
+		// rows only, so a paginating client neither loses a stored row to the
+		// overlay nor re-sees the live-only rows on the next page.
+		liveAdded := max(len(page.Items)-storedReturned, 0)
+		page.Total = max(page.Total, page.Offset+storedReturned+liveAdded)
+		page.NextOffset = min(page.Offset+storedReturned, page.Total)
+	}
 	writeJSON(w, http.StatusOK, page)
 }
 
 func (s *Server) handleEmit(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxLiveEventBytes))
-	if err != nil {
-		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
-			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", fmt.Sprintf("payload exceeds %d bytes", maxLiveEventBytes))
-			return
-		}
-		writeError(w, http.StatusBadRequest, "read_body_failed", err.Error())
+	body, ok := readBodyCapped(w, r, maxLiveEventBytes, "read_body_failed")
+	if !ok {
 		return
 	}
 	var ev LiveEvent
@@ -148,7 +156,7 @@ func (s *Server) Emit(ctx context.Context, ev LiveEvent) (LiveEvent, error) {
 	// broadcast over SSE, so redact here before Append/publish. redact.Apply is
 	// a no-op on empty/secret-free text.
 	if ev.Reason != "" {
-		ev.Reason = redact.Apply(ev.Reason).Redacted
+		ev.Reason = redact.Apply(ev.Reason)
 	}
 	// Hold emitMu across id-assign + liveSessions update + publish so the
 	// monotonic id is fanned out in the same order it was assigned. Without this,
@@ -162,8 +170,13 @@ func (s *Server) Emit(ctx context.Context, ev LiveEvent) (LiveEvent, error) {
 	// NextSequence design: ids of un-fsynced events are reused after a restart,
 	// which the SSE hello/resync handshake already tolerates.
 	_ = ctx // persistence uses its own background context, not the request ctx
+	s.lifecycleMu.RLock()
+	defer s.lifecycleMu.RUnlock()
 	s.emitMu.Lock()
 	defer s.emitMu.Unlock()
+	if s.closed.Load() {
+		return LiveEvent{}, errors.New("server closed")
+	}
 	id := s.eventSeq.Add(1)
 	ev.EventID = eventIDString(id)
 	// Marshal once, here, after EventID is set: the same bytes feed both the
@@ -177,20 +190,16 @@ func (s *Server) Emit(ctx context.Context, ev LiveEvent) (LiveEvent, error) {
 	}
 	if key := liveEventKey(ev); key != "" {
 		s.liveMu.Lock()
-		if prev, ok := s.liveSessions[key]; ok && !liveEventSupersedes(ev, id, prev) {
-			s.liveMu.Unlock()
-			s.publishEvent(event{ID: ev.EventID, Type: ev.Type, Data: ev, dataJSON: raw})
-			s.enqueueEventPersist(id, ev.Type, ev.At, raw)
-			return ev, nil
+		if prev, ok := s.liveSessions[key]; !ok || liveEventSupersedes(ev, id, prev) {
+			s.liveSessions[key] = ev
 		}
-		s.liveSessions[key] = ev
 		s.liveMu.Unlock()
 	} else {
 		s.logger.Debug("live event missing session key; not cached in liveSessions",
 			"type", ev.Type, "provider", ev.Provider, "event_id", ev.EventID)
 	}
 	s.publishEvent(event{ID: ev.EventID, Type: ev.Type, Data: ev, dataJSON: raw})
-	s.enqueueEventPersist(id, ev.Type, ev.At, raw)
+	s.enqueueEventPersistLocked(id, ev.Type, ev.At, raw)
 	return ev, nil
 }
 
@@ -209,11 +218,14 @@ func normalizeLiveEvent(ev LiveEvent) LiveEvent {
 	if ev.At.IsZero() {
 		ev.At = time.Now().UTC()
 	}
+	if ev.Provider != "" {
+		ev.Provider = ingest.NormalizeName(ev.Provider)
+	}
 	// Back-fill Provider from SourceID via the registry (SourceID is a stable
 	// hash of the provider name), so this works for any registered provider
 	// instead of a hardcoded claude-code/codex switch.
 	if ev.Provider == "" && ev.SourceID != "" {
-		for _, name := range ingest.RegisteredProviders() {
+		for _, name := range ingest.SortedProviders() {
 			if trace.SourceID(name) == ev.SourceID {
 				ev.Provider = name
 				break
@@ -252,7 +264,7 @@ func liveEventKey(ev LiveEvent) string {
 	return source + "\x00" + id
 }
 
-func (s *Server) overlayLiveSessions(items []sqlite.LiveSessionItem, filter sqlite.Filter) []sqlite.LiveSessionItem {
+func (s *Server) overlayLiveSessions(items []sqlite.LiveSessionItem, filter sqlite.Filter, allowLiveOverflow bool) []sqlite.LiveSessionItem {
 	s.liveMu.Lock()
 	states := make([]LiveEvent, 0, len(s.liveSessions))
 	for _, state := range s.liveSessions {
@@ -284,7 +296,9 @@ func (s *Server) overlayLiveSessions(items []sqlite.LiveSessionItem, filter sqli
 	}
 	for i := range items {
 		seen := make(map[int]struct{})
-		apply := func(indices []int) {
+		var best LiveEvent
+		hasBest := false
+		consider := func(indices []int) {
 			for _, j := range indices {
 				if _, ok := seen[j]; ok {
 					continue
@@ -293,56 +307,89 @@ func (s *Server) overlayLiveSessions(items []sqlite.LiveSessionItem, filter sqli
 				if !sourceMatches(states[j], items[i]) {
 					continue
 				}
-				applyLiveEventToItem(&items[i], states[j])
 				used[j] = true
+				id, _ := parseEventID(states[j].EventID)
+				if !hasBest || liveEventSupersedes(states[j], id, best) {
+					best = states[j]
+					hasBest = true
+				}
 			}
 		}
 		if items[i].SessionID != "" {
-			apply(bySession[items[i].SessionID])
+			consider(bySession[items[i].SessionID])
 		}
 		if items[i].ExternalSessionID != "" {
-			apply(byExternal[items[i].ExternalSessionID])
+			consider(byExternal[items[i].ExternalSessionID])
 		}
 		if items[i].TranscriptPath != "" {
-			apply(byPath[items[i].TranscriptPath])
+			consider(byPath[items[i].TranscriptPath])
 		}
 		// Cross-match the provider id against the toktop id: a hook carries the
 		// provider UUID in SessionID, while the ingested row keeps that UUID as
 		// ExternalSessionID (its own SessionID is a content hash). Without this a
 		// hook-only live state (no transcript_path) fails to correlate and spawns a
-		// phantom 0-turn row. apply() dedups via `seen`, so overlap with the matches
+		// phantom 0-turn row. consider() dedups via `seen`, so overlap with the matches
 		// above is harmless. The reverse (store SessionID vs live ExternalSessionID)
 		// can't occur — hooks never carry a content hash — so it is omitted.
 		if items[i].ExternalSessionID != "" {
-			apply(bySession[items[i].ExternalSessionID])
+			consider(bySession[items[i].ExternalSessionID])
+		}
+		if hasBest {
+			applyLiveEventToItem(&items[i], best)
 		}
 	}
 
-	for i, state := range states {
-		if used[i] || !liveEventMatchesFilter(state, filter) {
-			continue
+	_, offset := sqlite.EffectivePagination(filter, 100)
+	// A brand-new live-only session (hook fired, transcript not yet ingested) has
+	// no stored page position, so surface it only on the first page (offset 0), or
+	// whenever overflow is allowed (watch). Injecting it on later pages would
+	// double-count it and make Total inconsistent across pages.
+	added := false
+	if allowLiveOverflow || offset == 0 {
+		for i, state := range states {
+			if used[i] || !liveEventMatchesFilter(state, filter) {
+				continue
+			}
+			items = append(items, sqlite.LiveSessionItem{
+				SourceID:          state.SourceID,
+				Provider:          state.Provider,
+				SessionID:         state.SessionID,
+				ExternalSessionID: state.ExternalSessionID,
+				ProjectID:         state.ProjectID,
+				ProjectName:       state.ProjectName,
+				ProjectPath:       state.ProjectPath,
+				TranscriptPath:    firstNonEmpty(state.TranscriptPath, state.File),
+				SessionStatus:     trace.StatusUnknown,
+				CurrentStatus:     state.Status,
+				LastEventType:     state.Type,
+				LiveUpdatedAt:     state.At,
+				LastActivityAt:    state.At,
+			})
+			added = true
 		}
-		item := sqlite.LiveSessionItem{
-			SourceID:          state.SourceID,
-			Provider:          state.Provider,
-			SessionID:         state.SessionID,
-			ExternalSessionID: state.ExternalSessionID,
-			ProjectID:         state.ProjectID,
-			ProjectName:       state.ProjectName,
-			ProjectPath:       state.ProjectPath,
-			TranscriptPath:    firstNonEmpty(state.TranscriptPath, state.File),
-			SessionStatus:     trace.StatusUnknown,
-			CurrentStatus:     state.Status,
-			LastEventType:     state.Type,
-			LiveUpdatedAt:     state.At,
-			LastActivityAt:    state.At,
-		}
-		items = append(items, item)
+	}
+	// Order the merged set by recency — matching the stored query's
+	// `last_activity DESC` — so the freshest (live-only) sessions lead rather than
+	// trailing in append order. Stored rows are never truncated off the page; the
+	// live-only overflow is reflected in Total/NextOffset by handleStatus. (Watch
+	// keeps its prior append order and returns everything.)
+	if added && !allowLiveOverflow {
+		slices.SortStableFunc(items, func(a, b sqlite.LiveSessionItem) int {
+			return cmp.Or(
+				b.LastActivityAt.Compare(a.LastActivityAt),
+				strings.Compare(a.SessionID, b.SessionID),
+			)
+		})
 	}
 	return items
 }
 
 func applyLiveEventToItem(item *sqlite.LiveSessionItem, ev LiveEvent) {
+	if !item.LiveUpdatedAt.IsZero() {
+		if ev.At.Before(item.LiveUpdatedAt) {
+			return
+		}
+	}
 	item.CurrentStatus = firstNonEmpty(ev.Status, item.CurrentStatus)
 	item.LastEventType = ev.Type
 	item.LiveUpdatedAt = ev.At

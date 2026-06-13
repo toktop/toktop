@@ -141,12 +141,7 @@ func TranscriptExt(name string) string {
 	return ""
 }
 
-func RegisteredProviders() []string {
-	return slices.Collect(maps.Keys(registry))
-}
-
-// SortedProviders returns every registered provider name, sorted. It is the one
-// helper for "iterate all providers" so callers stop re-sorting RegisteredProviders.
+// SortedProviders returns every registered provider name, sorted.
 func SortedProviders() []string {
 	names := slices.Collect(maps.Keys(registry))
 	slices.Sort(names)

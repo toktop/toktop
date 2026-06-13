@@ -68,9 +68,11 @@ func NewRootCmd(info Info) *cobra.Command {
 		buildSimpleCmd("turns", "List turns; `turns inspect|timeline|components <id>` for one", runTurns),
 		buildSimpleCmd("projects", "List projects with session / turn / tool counts", runProjects),
 		buildSimpleCmd("tools", "Roll up tool call usage", runTools),
+		buildSimpleCmd("models", "Roll up model invocation usage", runModels),
 		buildSimpleCmd("mcps", "Roll up MCP usage; `mcps unused` for declared-but-uncalled", runMCPs),
 		buildSimpleCmd("skills", "Show skill usage; `skills unused` for installed-but-unused", runSkills),
 		buildSimpleCmd("suggestions", "List rule-engine suggestions; `suggestions recompute` to rerun", runSuggestions),
+		buildSimpleCmd("handoff", "Build an Evidence-based Handoff Package for cross-agent recovery (`handoff create`)", runHandoff),
 		buildSimpleCmd("search", "Search turns and tool calls", runSearch),
 
 		buildSimpleCmd("status", "Show current live session-state snapshot (one-shot)", runStatus),
@@ -82,7 +84,7 @@ func NewRootCmd(info Info) *cobra.Command {
 		buildSimpleCmd("hooks", "Install/manage observer hooks (status | install | uninstall)", runHook),
 		buildSimpleCmd("sources", "List configured providers and discovery roots", runSources),
 		buildSimpleCmd("config", "Read or write configuration (get | path | set | unset)", runConfig),
-		buildSimpleCmd("db", "Database utilities (stats | path)", runDB),
+		buildSimpleCmd("db", "Database utilities (stats | path | optimize | reindex | checkpoint)", runDB),
 		buildSimpleCmd("uninstall", "Stop the daemon, remove observer hooks, and delete the home directory", runUninstall),
 	)
 	return rootCmd

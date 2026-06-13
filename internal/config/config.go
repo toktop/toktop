@@ -83,66 +83,77 @@ func NewLoader(path string) (*Loader, error) {
 // Current returns the latest Snapshot. Safe for concurrent hot-path use.
 func (l *Loader) Current() *Snapshot { return l.current.Load() }
 
-// OnChange registers fn to run after every successful Reload. Register all
-// subscribers at startup; not safe to call concurrently with Reload.
-func (l *Loader) OnChange(fn func(*Snapshot)) { l.subs = append(l.subs, fn) }
+// OnChange registers fn to run after every successful Reload.
+func (l *Loader) OnChange(fn func(*Snapshot)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.subs = append(l.subs, fn)
+}
 
 // Reload re-reads the file, re-resolves the chain, validates, and atomically
 // swaps in a new Snapshot. On error the previous Snapshot is kept (fail-safe)
 // so a bad edit never disrupts a running broker.
 func (l *Loader) Reload() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	var snap *Snapshot
+	var subs []func(*Snapshot)
+	if err := func() error {
+		l.mu.Lock()
+		defer l.mu.Unlock()
 
-	// Read bytes ourselves: viper.ReadInConfig on an empty/whitespace file
-	// returns "unexpected end of JSON input". Treat missing/empty/whitespace as
-	// an empty object so defaults apply.
-	data, err := os.ReadFile(l.path)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("config: read %s: %w", l.path, err)
-	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		data = []byte("{}")
-	}
-	if err := l.v.ReadConfig(bytes.NewReader(data)); err != nil {
-		return fmt.Errorf("config: parse %s: %w", l.path, err)
-	}
-
-	policy, err := redact.PolicyFromString(l.v.GetString("redact"))
-	if err != nil {
-		return fmt.Errorf("config: %w", err)
-	}
-
-	// interval is stored as a duration string ("30s", "5m"); empty => runtime
-	// default. An unparseable value fails the reload (fail-safe keeps the
-	// previous snapshot) rather than silently reverting to the default.
-	var interval time.Duration
-	if s := strings.TrimSpace(l.v.GetString("interval")); s != "" {
-		interval, err = time.ParseDuration(s)
-		if err != nil {
-			return fmt.Errorf("config: interval %q: %w", s, err)
+		// Read bytes ourselves: viper.ReadInConfig on an empty/whitespace file
+		// returns "unexpected end of JSON input". Treat missing/empty/whitespace as
+		// an empty object so defaults apply.
+		data, err := os.ReadFile(l.path)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("config: read %s: %w", l.path, err)
 		}
-	}
+		if len(bytes.TrimSpace(data)) == 0 {
+			data = []byte("{}")
+		}
+		if err := l.v.ReadConfig(bytes.NewReader(data)); err != nil {
+			return fmt.Errorf("config: parse %s: %w", l.path, err)
+		}
 
-	// Resolve roots for every registered provider so a newly added provider
-	// shows up automatically — no hard-coded provider list here. config.json
-	// stores roots as {"roots": {"<provider>": [...]}}.
-	fileRoots := l.v.GetStringMapStringSlice("roots")
-	roots := make(map[string][]string)
-	for _, name := range ingest.SortedProviders() {
-		roots[name] = ingest.RootPaths(ingest.ResolveRoots(name, nil, fileRoots[name]))
+		policy, err := redact.PolicyFromString(l.v.GetString("redact"))
+		if err != nil {
+			return fmt.Errorf("config: %w", err)
+		}
+
+		// interval is stored as a duration string ("30s", "5m"); empty => runtime
+		// default. An unparseable value fails the reload (fail-safe keeps the
+		// previous snapshot) rather than silently reverting to the default.
+		var interval time.Duration
+		if s := strings.TrimSpace(l.v.GetString("interval")); s != "" {
+			interval, err = time.ParseDuration(s)
+			if err != nil {
+				return fmt.Errorf("config: interval %q: %w", s, err)
+			}
+		}
+
+		// Resolve roots for every registered provider so a newly added provider
+		// shows up automatically — no hard-coded provider list here. config.json
+		// stores roots as {"roots": {"<provider>": [...]}}.
+		fileRoots := l.v.GetStringMapStringSlice("roots")
+		roots := make(map[string][]string)
+		for _, name := range ingest.SortedProviders() {
+			roots[name] = ingest.RootPaths(ingest.ResolveRoots(name, nil, fileRoots[name]))
+		}
+		snap = &Snapshot{
+			RedactPolicy: policy,
+			Roots:        roots,
+			Autostart:    onOffDefaultOn(l.v.GetString("autostart")),
+			IdleStop:     onOffDefaultOn(l.v.GetString("idle_stop")),
+			Timezone:     strings.TrimSpace(l.v.GetString("timezone")),
+			Addr:         strings.TrimSpace(l.v.GetString("addr")),
+			Interval:     interval,
+		}
+		l.current.Store(snap)
+		subs = append([]func(*Snapshot){}, l.subs...)
+		return nil
+	}(); err != nil {
+		return err
 	}
-	snap := &Snapshot{
-		RedactPolicy: policy,
-		Roots:        roots,
-		Autostart:    onOffDefaultOn(l.v.GetString("autostart")),
-		IdleStop:     onOffDefaultOn(l.v.GetString("idle_stop")),
-		Timezone:     strings.TrimSpace(l.v.GetString("timezone")),
-		Addr:         strings.TrimSpace(l.v.GetString("addr")),
-		Interval:     interval,
-	}
-	l.current.Store(snap)
-	for _, fn := range l.subs {
+	for _, fn := range subs {
 		fn(snap)
 	}
 	return nil

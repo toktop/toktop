@@ -15,15 +15,24 @@ import (
 	"toktop.unceas.dev/internal/trace"
 )
 
-func scanDeclaredMCPServers(ctx context.Context, roots []SourceRoot) ([]trace.MCPServer, error) {
+// scanDeclaredMCPServers returns the declared MCP servers and whether the scan
+// was complete. complete is false when an existing config.toml could not be read
+// or decoded, so the caller skips a metadata reconcile rather than deleting rows
+// a transient/corrupt read merely hid.
+func scanDeclaredMCPServers(ctx context.Context, roots []SourceRoot) ([]trace.MCPServer, bool, error) {
 	paths := codexConfigPaths(roots)
 	seen := make(map[string]struct{})
 	out := make([]trace.MCPServer, 0, 8)
+	complete := true
 	for _, path := range paths {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		collector.AppendUniqueMCPServers(&out, seen, scanCodexConfigTOML(path)...)
+		servers, ok := scanCodexConfigTOML(path)
+		if !ok {
+			complete = false
+		}
+		collector.AppendUniqueMCPServers(&out, seen, servers...)
 	}
 	slices.SortFunc(out, func(a, b trace.MCPServer) int {
 		return cmp.Or(
@@ -31,7 +40,7 @@ func scanDeclaredMCPServers(ctx context.Context, roots []SourceRoot) ([]trace.MC
 			strings.Compare(a.ConfigPath, b.ConfigPath),
 		)
 	})
-	return out, nil
+	return out, complete, nil
 }
 
 func codexConfigPaths(roots []SourceRoot) []string {
@@ -42,10 +51,17 @@ func codexConfigPaths(roots []SourceRoot) []string {
 	return collector.UniqueStrings(paths)
 }
 
-func scanCodexConfigTOML(path string) []trace.MCPServer {
-	data, ok := collector.ReadFileOK(path)
+// scanCodexConfigTOML returns the servers declared in a codex config.toml and
+// whether the read was complete. A genuinely absent file is complete (no
+// servers); an unreadable or corrupt/half-written one is not, so the caller can
+// avoid reconciling stored rows away against it.
+func scanCodexConfigTOML(path string) ([]trace.MCPServer, bool) {
+	data, exists, ok := collector.ReadFileState(path)
 	if !ok {
-		return nil
+		return nil, false
+	}
+	if !exists {
+		return nil, true
 	}
 	hash := collector.HashContent(data)
 
@@ -54,10 +70,10 @@ func scanCodexConfigTOML(path string) []trace.MCPServer {
 	}
 	if _, err := toml.Decode(string(data), &doc); err != nil {
 		// A corrupt/half-written config.toml otherwise looks identical to "no
-		// servers configured". Surface it in diagnostics while still letting
-		// ingest continue.
+		// servers configured". Treat it as an incomplete scan so a transient bad
+		// read does not delete the user's stored servers; surface it too.
 		slog.Warn("codex config.toml decode failed", "path", path, "err", err)
-		return nil
+		return nil, false
 	}
 
 	names := slices.Sorted(maps.Keys(doc.MCPServers))
@@ -75,7 +91,7 @@ func scanCodexConfigTOML(path string) []trace.MCPServer {
 			Enabled:    server.enabled(),
 		})
 	}
-	return out
+	return out, true
 }
 
 type codexMCPServerConfig struct {

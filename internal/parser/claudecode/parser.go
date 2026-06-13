@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"iter"
 	"strings"
 	"time"
 
@@ -23,11 +22,12 @@ type ParseResult struct {
 }
 
 func ParseSession(ctx context.Context, raw source.RawSession) (ParseResult, error) {
-	return ParseEvents(ctx, raw, raw.Events())
+	return ParseEvents(ctx, raw, raw.RawEventList)
 }
 
-func ParseEvents(ctx context.Context, raw source.RawSession, events iter.Seq2[source.RawEvent, error]) (ParseResult, error) {
-	sourceRootID := trace.SourceRootID(trace.SourceID(raw.Provider), raw.SourceRoot)
+func ParseEvents(ctx context.Context, raw source.RawSession, events []source.RawEvent) (ParseResult, error) {
+	sourceID := trace.SourceID(raw.Provider)
+	sourceRootID := trace.SourceRootID(sourceID, raw.SourceRoot)
 	session := trace.Session{
 		Provider:       trace.InternString(raw.Provider),
 		ProjectName:    trace.InternString(raw.ProjectName),
@@ -35,6 +35,7 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events iter.Seq2[so
 		TranscriptPath: raw.SourceFile,
 		Status:         trace.StatusUnknown,
 	}
+	session.ID = trace.SessionID(sourceRootID, raw.SourceFile)
 
 	turns := make([]trace.Turn, 0)
 	var current *turnBuilder
@@ -54,17 +55,14 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events iter.Seq2[so
 		current = nil
 	}
 
-	for rawEvent, eventErr := range events {
-		if eventErr != nil {
-			return ParseResult{}, eventErr
-		}
+	for _, rawEvent := range events {
 		if err := ctx.Err(); err != nil {
 			return ParseResult{}, fmt.Errorf("parse cancelled: %w", err)
 		}
 		var event envelope
 		if err := json.Unmarshal(rawEvent.RawJSON, &event); err != nil {
 			parseErrors = append(parseErrors, trace.ParseError{
-				SourceID:      trace.SourceID(raw.Provider),
+				SourceID:      sourceID,
 				SourceRootID:  sourceRootID,
 				SourceFile:    rawEvent.SourceFile,
 				LineNo:        rawEvent.LineNo,
@@ -87,11 +85,17 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events iter.Seq2[so
 			// same message also carry a human text block (non-canonical interleaving)
 			// — fall through so that prompt still starts a new turn instead of being
 			// dropped.
-			if results := msg.toolResults(); len(results) > 0 && current != nil {
-				current.attachToolResults(results, when)
+			if results := msg.toolResults(); len(results) > 0 {
+				if current != nil {
+					parseErrors = append(parseErrors, current.attachToolResults(results, when, rawEvent)...)
+				} else {
+					for _, result := range results {
+						parseErrors = append(parseErrors, unmatchedToolResultError(sourceID, sourceRootID, rawEvent, result))
+					}
+				}
 			}
 			text := msg.text()
-			if text == "" {
+			if text == "" || event.IsMeta || isInjectedContext(text) {
 				continue
 			}
 			flush()
@@ -109,16 +113,12 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events iter.Seq2[so
 	}
 	flush()
 
-	session.ID = trace.SessionID(sourceRootID, raw.SourceFile)
 	if session.Status == trace.StatusUnknown && len(turns) > 0 {
 		session.Status = trace.StatusCompleted
 	}
 	shared.FinalizeSession(&session, turns)
 
 	result := ParseResult{Session: session, Turns: turns, ParseErrors: parseErrors}
-	for i := range result.ParseErrors {
-		result.ParseErrors[i].ParserVersion = trace.InternString(result.ParseErrors[i].ParserVersion)
-	}
 	return result, nil
 }
 
@@ -140,7 +140,7 @@ type turnBuilder struct {
 }
 
 func newTurnBuilder(session *trace.Session, sourceRootID string, index int, userText string, when time.Time, seenMsg map[string]msgRef) *turnBuilder {
-	turnID := trace.TurnID(trace.SessionID(sourceRootID, session.TranscriptPath), index)
+	turnID := trace.TurnID(session.ID, index)
 	return &turnBuilder{
 		session:      session,
 		sourceRootID: sourceRootID,
@@ -252,17 +252,20 @@ func (b *turnBuilder) recordAssistantMessage(msg message, when time.Time, rawEve
 	}
 }
 
-func (b *turnBuilder) attachToolResults(results []toolResult, when time.Time) {
+func (b *turnBuilder) attachToolResults(results []toolResult, when time.Time, rawEvent source.RawEvent) []trace.ParseError {
 	b.turn.EndedAt = shared.LaterTime(b.turn.EndedAt, when)
+	var parseErrors []trace.ParseError
 	for _, result := range results {
 		index := b.resolveToolCall(result.UseID)
 		if index < 0 {
+			parseErrors = append(parseErrors, unmatchedToolResultError(trace.SourceID(b.turn.Provider), b.sourceRootID, rawEvent, result))
 			continue
 		}
 		call := &b.turn.ToolCalls[index]
 		call.Output = result.Output
 		call.OutputBytes = int64(len(result.Output))
 		call.EndedAt = when
+		call.RawResultEventID = trace.RawEventID(b.sourceRootID, rawEvent.SourceFile, rawEvent.LineNo, rawEvent.Hash())
 		if !call.StartedAt.IsZero() && when.After(call.StartedAt) {
 			call.DurationMs = when.Sub(call.StartedAt).Milliseconds()
 		}
@@ -272,12 +275,29 @@ func (b *turnBuilder) attachToolResults(results []toolResult, when time.Time) {
 			call.Status = trace.StatusSuccess
 		}
 	}
+	return parseErrors
 }
 
-// resolveToolCall maps a tool_result to the tool_call it completes. It prefers a
-// use-id match, falling back to the next unresolved pending tool_call (in call
-// order) when the use id is empty or unknown, so results from malformed/partial
-// transcripts are not silently dropped. Returns -1 when no candidate exists.
+func unmatchedToolResultError(sourceID, sourceRootID string, rawEvent source.RawEvent, result toolResult) trace.ParseError {
+	message := "unmatched or duplicate tool_result"
+	if result.UseID == "" {
+		message = "unmatched tool_result without use_id"
+	}
+	return trace.ParseError{
+		SourceID:      sourceID,
+		SourceRootID:  sourceRootID,
+		SourceFile:    rawEvent.SourceFile,
+		LineNo:        rawEvent.LineNo,
+		RawEventID:    trace.RawEventID(sourceRootID, rawEvent.SourceFile, rawEvent.LineNo, rawEvent.Hash()),
+		Message:       message,
+		ParserVersion: ParserVersion,
+	}
+}
+
+// resolveToolCall maps a tool_result to the tool_call it completes. It uses an
+// explicit use-id match when one is present, falling back to the next unresolved
+// pending tool_call only when the result itself has no use id. Returns -1 when
+// no candidate exists.
 func (b *turnBuilder) resolveToolCall(useID string) int {
 	if useID != "" {
 		if index, ok := b.toolByUseID[useID]; ok {
@@ -290,6 +310,7 @@ func (b *turnBuilder) resolveToolCall(useID string) int {
 			}
 			return -1
 		}
+		return -1
 	}
 	for i := range b.turn.ToolCalls {
 		if b.turn.ToolCalls[i].Status == trace.StatusPending {
@@ -315,6 +336,7 @@ type envelope struct {
 	Type      string          `json:"type"`
 	SessionID string          `json:"sessionId"`
 	Timestamp string          `json:"timestamp"`
+	IsMeta    bool            `json:"isMeta"`
 	Message   json.RawMessage `json:"message"`
 }
 
@@ -409,6 +431,20 @@ func (m *message) decodeContent() {
 	if len(parts) > 0 {
 		m.textBody = strings.Join(parts, "\n\n")
 	}
+}
+
+func isInjectedContext(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(trimmed, "<command-name>") ||
+		strings.HasPrefix(trimmed, "<command-args>") ||
+		strings.HasPrefix(trimmed, "[Request interrupted") {
+		return true
+	}
+	return shared.IsLocalCommandInjection(trimmed, lower)
 }
 
 func (m *message) text() string {

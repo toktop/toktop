@@ -34,6 +34,10 @@ func main() {
 	// drain, store.Close (WAL checkpoint) — instead of being hard-killed. A
 	// second signal falls through to the default handler and force-quits.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	code := cli.Execute(ctx, info)
 	stop()
 	os.Exit(code)

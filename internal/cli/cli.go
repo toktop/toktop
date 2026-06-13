@@ -19,6 +19,7 @@ import (
 	"toktop.unceas.dev/internal/retention"
 	"toktop.unceas.dev/internal/runtime"
 	"toktop.unceas.dev/internal/store/sqlite"
+	"toktop.unceas.dev/internal/textutil"
 	"toktop.unceas.dev/internal/trace"
 )
 
@@ -105,6 +106,22 @@ func formatIngestSummary(summary ingest.Summary) string {
 // runPrune is the single `data prune` entry point: prune by retention profile
 // (--profile, full lifecycle + daemon-aware) OR by an ad-hoc raw-events age
 // cutoff (--raw-events-older-than). Exactly one mode is required.
+// pruneFlagSet defines the `data prune` flags. runData derives part of its
+// dispatch value-flag set from it, so keep every prune flag here — a flag
+// defined elsewhere would be invisible to the dispatcher.
+func pruneFlagSet(profile, olderThan, token *string, dryRun, noAuth *bool) *flag.FlagSet {
+	fs := flag.NewFlagSet("data prune", flag.ContinueOnError)
+	fs.StringVar(profile, "profile", *profile, "retention profile: privacy|balanced|archive (full lifecycle, daemon-aware)")
+	fs.StringVar(olderThan, "raw-events-older-than", *olderThan, "ad-hoc raw-events prune by age, e.g. 720h")
+	fs.BoolVar(dryRun, "dry-run", *dryRun, "count rows but do not delete or redact")
+	fs.StringVar(token, "token", *token, "bearer token (default: read api-token file)")
+	fs.BoolVar(noAuth, "no-auth", *noAuth, "do not send a bearer token")
+	setFlagUsage(fs, "usage: toktop data prune (--profile <p> | --raw-events-older-than <dur>) [--dry-run]",
+		"Prune stored data either by retention profile (full lifecycle) or by an ad-hoc",
+		"raw-events age cutoff. Exactly one of --profile / --raw-events-older-than is required.")
+	return fs
+}
+
 func runPrune(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	home, ok := resolveHome(stderr)
 	if !ok {
@@ -115,16 +132,8 @@ func runPrune(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	dryRun := false
 	token := ""
 	noAuth := false
-	fs := flag.NewFlagSet("data prune", flag.ContinueOnError)
+	fs := pruneFlagSet(&profile, &olderThan, &token, &dryRun, &noAuth)
 	fs.SetOutput(stderr)
-	fs.StringVar(&profile, "profile", profile, "retention profile: privacy|balanced|archive (full lifecycle, daemon-aware)")
-	fs.StringVar(&olderThan, "raw-events-older-than", olderThan, "ad-hoc raw-events prune by age, e.g. 720h")
-	fs.BoolVar(&dryRun, "dry-run", dryRun, "count rows but do not delete or redact")
-	fs.StringVar(&token, "token", token, "bearer token (default: read api-token file)")
-	fs.BoolVar(&noAuth, "no-auth", noAuth, "do not send a bearer token")
-	setFlagUsage(fs, "usage: toktop data prune (--profile <p> | --raw-events-older-than <dur>) [--dry-run]",
-		"Prune stored data either by retention profile (full lifecycle) or by an ad-hoc",
-		"raw-events age cutoff. Exactly one of --profile / --raw-events-older-than is required.")
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
@@ -212,15 +221,13 @@ func storeWipeGuard(home string) sqlite.WipeGuard {
 	}
 }
 
-func loadIndex(ctx context.Context, home string) (trace.Index, error) {
+func loadIndex(ctx context.Context, home string, since time.Time) (trace.Index, error) {
 	store, err := openStore(ctx, home)
 	if err != nil {
 		return trace.Index{}, err
 	}
 	defer store.Close()
-	// CLI export/summary/suggestions load the full history (zero since); the
-	// HTTP recompute path scopes its own window (see query.RecomputeSuggestions).
-	return store.LoadIndex(ctx, time.Time{})
+	return store.LoadIndex(ctx, since)
 }
 
 func writeJSON(stdout, stderr io.Writer, value any) int {
@@ -233,25 +240,57 @@ func writeJSON(stdout, stderr io.Writer, value any) int {
 	return 0
 }
 
-func marshalNDJSON(index trace.Index) ([]byte, error) {
-	var builder strings.Builder
-	encoder := json.NewEncoder(&builder)
+func writeNDJSONIndex(w io.Writer, index trace.Index) error {
+	encoder := json.NewEncoder(w)
+	if err := encoder.Encode(map[string]any{"type": "index", "index": map[string]any{
+		"generated_at":     index.GeneratedAt,
+		"source":           index.Source,
+		"parser_version":   index.ParserVersion,
+		"source_roots":     index.SourceRoots,
+		"raw_event_count":  index.RawEventCount,
+		"session_count":    index.SessionCount,
+		"turn_count":       index.TurnCount,
+		"invocation_count": index.InvocationCount,
+		"tool_call_count":  index.ToolCallCount,
+	}}); err != nil {
+		return err
+	}
 	for _, session := range index.Sessions {
 		if err := encoder.Encode(map[string]any{"type": "session", "session": session}); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	for _, turn := range index.Turns {
 		if err := encoder.Encode(map[string]any{"type": "turn", "turn": turn}); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	for _, invocation := range index.Invocations {
 		if err := encoder.Encode(map[string]any{"type": "invocation", "invocation": invocation}); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return []byte(strings.TrimRight(builder.String(), "\n")), nil
+	for _, component := range index.TurnComponents {
+		if err := encoder.Encode(map[string]any{"type": "turn_component", "turn_component": component}); err != nil {
+			return err
+		}
+	}
+	for _, skill := range index.Skills {
+		if err := encoder.Encode(map[string]any{"type": "skill", "skill": skill}); err != nil {
+			return err
+		}
+	}
+	for _, server := range index.MCPServers {
+		if err := encoder.Encode(map[string]any{"type": "mcp_server", "mcp_server": server}); err != nil {
+			return err
+		}
+	}
+	for _, parseErr := range index.ParseErrorList {
+		if err := encoder.Encode(map[string]any{"type": "parse_error", "parse_error": parseErr}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func emptyDash(value string) string {
@@ -262,15 +301,7 @@ func emptyDash(value string) string {
 }
 
 func oneLine(value string, limit int) string {
-	value = strings.Join(strings.Fields(value), " ")
-	runes := []rune(value)
-	if limit <= 0 || len(runes) <= limit {
-		return value
-	}
-	if limit <= 3 {
-		return string(runes[:limit])
-	}
-	return string(runes[:limit-3]) + "..."
+	return textutil.Truncate(strings.Join(strings.Fields(value), " "), limit)
 }
 
 func runInit(_ context.Context, args []string, stdout, stderr io.Writer) int {
@@ -325,10 +356,12 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 
 	// Resolve roots through the config loader so config.json roots are reflected
 	// in doctor's checks, consistent with the daemon's actual discovery.
-	var rootsByProvider map[string][]string
-	if loader, lerr := configFor(ctx, home); lerr == nil {
-		rootsByProvider = loader.Current().Roots
+	loader, lerr := configFor(ctx, home)
+	if lerr != nil {
+		cliErr(stderr, lerr)
+		return 2
 	}
+	rootsByProvider := loader.Current().Roots
 	// No --sources: check every provider whose roots exist on disk, so doctor
 	// never silently skips an installed provider (the original claude-code-only bug).
 	if !explicit {

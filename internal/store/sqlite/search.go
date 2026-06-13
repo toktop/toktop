@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 type SearchResult struct {
@@ -79,10 +80,9 @@ func buildFTSMatch(query string) string {
 			parts = append(parts, `"`+escapeFTS(token.value)+`"`)
 			continue
 		}
-		if !ftsTokenSafe(token.value) {
-			continue
+		for _, term := range ftsTerms(token.value) {
+			parts = append(parts, `"`+escapeFTS(term)+`"*`)
 		}
-		parts = append(parts, escapeFTS(token.value)+`*`)
 	}
 	if len(parts) == 0 {
 		return `"` + escapeFTS(query) + `"`
@@ -108,7 +108,6 @@ func tokenizeQuery(query string) []queryToken {
 			return
 		}
 		tokens = append(tokens, queryToken{value: token, quoted: quoted})
-		quoted = false
 	}
 	for _, r := range query {
 		switch {
@@ -125,17 +124,25 @@ func tokenizeQuery(query string) []queryToken {
 	return tokens
 }
 
-func ftsTokenSafe(token string) bool {
-	if token == "" {
-		return false
+func ftsTerms(token string) []string {
+	var terms []string
+	var current strings.Builder
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		terms = append(terms, current.String())
+		current.Reset()
 	}
 	for _, r := range token {
-		switch r {
-		case '(', ')', '*', ':', '+', '-', '"', ' ':
-			return false
+		if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			current.WriteRune(r)
+			continue
 		}
+		flush()
 	}
-	return true
+	flush()
+	return terms
 }
 
 func escapeFTS(value string) string {

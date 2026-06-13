@@ -8,49 +8,9 @@ import (
 	"toktop.unceas.dev/internal/trace"
 )
 
-// Trace-index lookups and the human-readable rendering for `sessions inspect` /
-// `turns inspect`. The list/query commands live in cli.go; this file is only the
-// single-entity lookup + pretty-print layer.
-
-func findTurn(index trace.Index, id string) (trace.Turn, bool) {
-	for _, turn := range index.Turns {
-		if turn.ID == id {
-			return turn, true
-		}
-	}
-	return trace.Turn{}, false
-}
-
-func findSession(index trace.Index, id string) (trace.Session, bool) {
-	for _, session := range index.Sessions {
-		if session.ID == id || session.ExternalID == id {
-			return session, true
-		}
-	}
-	return trace.Session{}, false
-}
-
-// sessionsWithExternalID returns the internal ids of every session whose external
-// id equals externalID — used to warn when one provider UUID is ambiguous.
-func sessionsWithExternalID(index trace.Index, externalID string) []string {
-	var ids []string
-	for _, session := range index.Sessions {
-		if session.ExternalID == externalID {
-			ids = append(ids, session.ID)
-		}
-	}
-	return ids
-}
-
-func turnsForSession(index trace.Index, sessionID string) []trace.Turn {
-	turns := make([]trace.Turn, 0)
-	for _, turn := range index.Turns {
-		if turn.SessionID == sessionID {
-			turns = append(turns, turn)
-		}
-	}
-	return turns
-}
+// The human-readable rendering for `sessions inspect` / `turns inspect`. The
+// list/query commands live in cli.go; this file is only the single-entity
+// pretty-print layer (single-entity lookups now go through the query service).
 
 func printSessionDetail(stdout io.Writer, detail sessionDetail) {
 	session := detail.Session

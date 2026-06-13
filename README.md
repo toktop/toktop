@@ -151,8 +151,10 @@ All analytics read the local SQLite DB directly (no daemon required).
 | `toktop mcps` | MCP server usage rollup (`mcps unused` = declared but never called) |
 | `toktop skills` | Skill usage rollup (`skills unused` = installed but never used) |
 | `toktop tools` | Tool-call usage (call / turn / failed counts per tool) |
+| `toktop models` | Model invocation usage (call / turn / token counts per provider+model) |
 | `toktop projects` | Per-project session / turn / tool counts |
 | `toktop suggestions` | Rule-engine findings (`suggestions recompute` reruns the rules) |
+| `toktop handoff create` | Assemble an Evidence-based Handoff Package for one session (cross-agent workflow recovery) |
 | `toktop sources` | Configured providers and their discovery roots |
 
 **Shared filter flags** (on `summary`, `sessions`, `turns`, `mcps`, `skills`, `tools`,
@@ -167,8 +169,8 @@ All analytics read the local SQLite DB directly (no daemon required).
 ```
 
 **Output formats** — `--format table` (default) `| json | ndjson | csv` (`summary` and
-`search` are `table|json`). List views page with `--limit` / `--offset`; `sessions` and
-`turns` also take `--sort`.
+`search` are `table|json`). `sessions`, `turns`, and `status` page with `--limit` /
+`--offset`; `sessions` and `turns` also take `--sort`.
 
 ```bash
 toktop turns --sources claude-code --since 24h --sort tokens_desc --limit 10
@@ -222,8 +224,8 @@ transition.
 **Run / control the daemon:**
 
 ```bash
-toktop daemon serve     # background: watch transcripts + serve HTTP/SSE + live broker
-toktop daemon run       # same, in the foreground
+toktop daemon serve     # foreground: watch transcripts + serve HTTP/SSE + live broker
+toktop daemon run       # foreground: watch transcripts only (no HTTP/SSE live broker)
 toktop daemon status    # is it running? what is it watching?
 toktop daemon pause | resume | trigger | stop
 ```
@@ -243,6 +245,10 @@ toktop hooks install --sources=claude-code,codex  # both at once
 toktop hooks status                               # what's installed
 toktop hooks uninstall --sources=claude-code
 ```
+
+Hook commands default to the configured daemon address. The default unix socket
+needs no token; a TCP hook endpoint references `~/.toktop/config/api-token`
+instead of embedding the secret in the agent config.
 
 **Claude Code hooks fire immediately; Codex hooks must be trusted first.** Codex treats a
 third-party (unmanaged) hook as *untrusted* the first time it sees it and **only runs hooks
@@ -332,11 +338,14 @@ honored during root discovery.
 ## Data lifecycle & privacy
 
 ```bash
-toktop export                        # full trace index as JSON (--format ndjson, --output file)
-toktop data prune --help             # age out old raw events / tool outputs
+toktop export                        # full trace index as JSON (--since 24h, --format ndjson, --output file)
+toktop data prune --help             # age out old raw events and redact normalized rows
 toktop data retention status         # effective retention windows for one profile
 toktop data retention profiles       # list the retention profiles
-toktop db stats                      # database size / row counts
+toktop db stats                      # database size / WAL / FTS / row counts
+toktop db checkpoint                 # run a SQLite WAL checkpoint
+toktop db optimize                   # checkpoint WAL and run SQLite/FTS optimize
+toktop db reindex                    # rebuild the FTS search index
 toktop db path                       # path to the SQLite file
 ```
 
@@ -376,8 +385,9 @@ rm -rf ~/.toktop                                      # all config, data, DB, an
 ```
 
 Order matters: uninstall the hooks **before** removing the binary — they live in
-`~/.claude.json` / `~/.codex/config.toml` and shell out to `toktop` on every tool call, so a
-removed binary leaves dangling entries you'd have to delete by hand.
+Claude Code `settings.json` (for example `~/.claude/settings.json`, or `CLAUDE_CONFIG_DIR`)
+and Codex `~/.codex/hooks.json`. The installed hook command is a `curl` POST to the toktop
+daemon intake endpoint, so stale entries keep trying to reach a daemon you removed.
 
 </details>
 

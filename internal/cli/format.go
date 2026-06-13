@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+
+	"toktop.unceas.dev/internal/textutil"
 )
 
 // validateFormat rejects a --format value outside `allowed` (treating "" as the
@@ -20,6 +22,10 @@ func validateFormat(format string, allowed ...string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown --format %q (want %s)", format, strings.Join(allowed, " or "))
+}
+
+func validateListFormat(format string) error {
+	return validateFormat(format, "table", "json", "ndjson", "csv")
 }
 
 // Output rendering shared by every command: format dispatch (table/json/ndjson/
@@ -72,17 +78,6 @@ func writeFormatted[T any](stdout, stderr io.Writer, format string, items []T, h
 	}
 }
 
-func truncate(s string, n int) string {
-	runes := []rune(s)
-	if n <= 0 || len(runes) <= n {
-		return s
-	}
-	if n <= 3 {
-		return string(runes[:n])
-	}
-	return string(runes[:n-1]) + "…"
-}
-
 func writeTable[T any](w io.Writer, headers []string, items []T, row func(T) []string, style string) {
 	tw := table.NewWriter()
 	tw.SetOutputMirror(w)
@@ -125,7 +120,7 @@ func capCells(cells []string, max int) []string {
 	}
 	out := make([]string, len(cells))
 	for i, c := range cells {
-		out[i] = truncate(c, max)
+		out[i] = textutil.Truncate(c, max)
 	}
 	return out
 }

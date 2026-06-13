@@ -24,7 +24,7 @@ func partitionArgs(args []string, valueFlags map[string]bool) (flagArgs, positio
 		}
 		if strings.HasPrefix(a, "-") && a != "-" {
 			flagArgs = append(flagArgs, a)
-			name := strings.TrimLeft(a, "-")
+			name, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")
 			if !strings.Contains(a, "=") && valueFlags[name] {
 				if i+1 < len(args) {
 					i++
@@ -130,7 +130,7 @@ func firstPositional(args []string, valueFlags map[string]bool) (idx int, tok st
 			if isHelpArg(a) {
 				continue // -h/--help is a universal boolean; it never consumes a token
 			}
-			name := strings.TrimLeft(a, "-")
+			name, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")
 			takesValue, known := valueFlags[name]
 			if !known {
 				unknownFlag = true

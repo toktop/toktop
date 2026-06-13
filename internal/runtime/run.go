@@ -3,13 +3,14 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 
 	"toktop.unceas.dev/internal/config"
+	"toktop.unceas.dev/internal/fsx"
 	"toktop.unceas.dev/internal/ingest"
 	"toktop.unceas.dev/internal/liveevent"
 )
@@ -48,16 +49,10 @@ func (s *Service) Run(ctx context.Context) error {
 	workerDone := make(chan struct{})
 	go s.runIngestWorker(workerCtx, workerDone)
 
-	s.emitDaemonState(ctx, "running")
+	s.emitDaemonState("running")
 	defer func() {
 		s.setState(StateStopped)
-		// Run typically exits via <-ctx.Done(), so the parent ctx is already
-		// cancelled here and the bbolt Append (and any flusher emit) would
-		// short-circuit. Use a fresh short-lived context so the terminal
-		// "stopped" transition is still appended + published to consumers.
-		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancelShutdown()
-		s.emitDaemonState(shutdownCtx, "stopped")
+		s.emitDaemonStateBlocking("stopped")
 
 		cancelFlusher()
 		<-flusherDone
@@ -116,6 +111,17 @@ func (s *Service) Run(ctx context.Context) error {
 	// pendingFiles is a set so dedup within a debounce window is O(1) per add
 	// instead of an O(n) slices.Contains scan on the run-loop goroutine.
 	pendingFiles := map[string]struct{}{}
+	flushPendingFiles := func(reason string) {
+		// slices.Sorted already returns the keys in sorted order, giving a stable
+		// ingest order despite unordered map iteration.
+		files := slices.Sorted(maps.Keys(pendingFiles))
+		clear(pendingFiles)
+		s.setPendingFiles(0)
+		if len(files) == 0 {
+			return
+		}
+		s.enqueueAuto(ingestJob{mode: "file", paths: files, reason: reason})
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -129,13 +135,24 @@ func (s *Service) Run(ctx context.Context) error {
 			watcher.Close()
 			watcher = nw
 			s.setWatchedPaths(len(watcher.watched))
-			for _, source := range s.cfg.Sources {
-				s.enqueueAuto(ingestJob{mode: "full", source: source, reason: "config-reload"})
-			}
+			s.enqueueFullAll("config-reload")
 		case req := <-s.pauseCh:
-			s.handlePause(ctx, req)
+			s.handlePause(req)
 		case req := <-s.resumeCh:
-			s.handleResume(ctx, req)
+			wasPaused := s.getState() == StatePaused
+			s.handleResume(req)
+			if wasPaused && s.getState() == StateRunning {
+				if debounceActive {
+					if !debounceTimer.Stop() {
+						select {
+						case <-debounceTimer.C:
+						default:
+						}
+					}
+					debounceActive = false
+				}
+				flushPendingFiles("resume")
+			}
 		case event := <-watcher.Events:
 			// Register newly created directories for watching regardless of
 			// pause state: this is the only run path that recursively watches
@@ -159,7 +176,7 @@ func (s *Service) Run(ctx context.Context) error {
 				// firehose. The debounced file ingest below still carries the
 				// real session update.
 				if len(pendingFiles) > before {
-					s.emit(ctx, liveEventForActivity(s.providerForPath(event.Name), event.Name))
+					s.emit(liveEventForActivity(s.providerForPath(event.Name), event.Name))
 				}
 				s.setPendingFiles(len(pendingFiles))
 				if debounceActive {
@@ -185,17 +202,7 @@ func (s *Service) Run(ctx context.Context) error {
 				break
 			}
 			debounceActive = false
-			files := make([]string, 0, len(pendingFiles))
-			for f := range pendingFiles {
-				files = append(files, f)
-			}
-			clear(pendingFiles)
-			s.setPendingFiles(0)
-
-			if len(files) > 0 {
-				slices.Sort(files) // map iteration is unordered; sort for a stable ingest order
-				s.enqueueAuto(ingestJob{mode: "file", paths: files, reason: "watch"})
-			}
+			flushPendingFiles("watch")
 		case <-ticker.C:
 			// Periodic full reconcile: a safety net for fsnotify events missed or
 			// coalesced (the watch case above handles the common path). Runs at
@@ -204,9 +211,7 @@ func (s *Service) Run(ctx context.Context) error {
 			if s.getState() == StatePaused {
 				break
 			}
-			for _, source := range s.cfg.Sources {
-				s.enqueueAuto(ingestJob{mode: "full", source: source, reason: "reconcile"})
-			}
+			s.enqueueFullAll("reconcile")
 		}
 	}
 }
@@ -234,21 +239,17 @@ func (s *Service) execIngestJob(ctx context.Context, job ingestJob) TriggerResul
 	// Bound each job so a hung filesystem call cannot pin the single ingest worker
 	// goroutine indefinitely (which would fill ingestCh and make enqueueAuto
 	// silently drop every later job while the daemon still looks healthy).
-	timeout := s.cfg.fullIngestTimeout()
-	if job.mode == "file" {
-		timeout = s.cfg.fileIngestTimeout()
-	}
-	jobCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 	switch job.mode {
 	case "file":
 		for _, path := range job.paths {
-			if err := s.runFileForAnySource(jobCtx, path); err != nil {
+			if err := s.runFileForAnySource(ctx, path); err != nil {
 				res.Error = err.Error()
 				break
 			}
 		}
 	case "full":
+		jobCtx, cancel := context.WithTimeout(ctx, s.cfg.fullIngestTimeout())
+		defer cancel()
 		sources := s.cfg.Sources
 		if job.source != "" {
 			sources = []string{job.source}
@@ -272,13 +273,19 @@ func (s *Service) enqueueAuto(job ingestJob) {
 	}
 }
 
+func (s *Service) enqueueFullAll(reason string) {
+	for _, source := range s.cfg.Sources {
+		s.enqueueAuto(ingestJob{mode: "full", source: source, reason: reason})
+	}
+}
+
 func (s *Service) providerForPath(path string) string {
 	// rootsFor returns the already-resolved, cleaned Snapshot roots, so match
 	// against them directly instead of re-running DiscoverRootPaths (and its
 	// per-call clean/dedup allocation) on every fsnotify Write.
 	for _, source := range s.cfg.Sources {
 		for _, root := range s.rootsFor(source) {
-			if root != "" && strings.HasPrefix(path, root) {
+			if root != "" && fsx.PathWithin(root, path) {
 				return source
 			}
 		}
@@ -286,22 +293,19 @@ func (s *Service) providerForPath(path string) string {
 	return ""
 }
 
-func (s *Service) handlePause(ctx context.Context, req controlReq) {
+func (s *Service) handlePause(req controlReq) {
 	if s.getState() == StateRunning {
 		s.setState(StatePaused)
-		s.emitDaemonState(ctx, "paused")
+		s.emitDaemonState("paused")
 	}
 	req.reply <- nil
 }
 
-func (s *Service) handleResume(ctx context.Context, req controlReq) {
+func (s *Service) handleResume(req controlReq) {
 	if s.getState() == StatePaused {
 		s.setState(StateRunning)
-		s.emitDaemonState(ctx, "running")
-
-		for _, source := range s.cfg.Sources {
-			s.enqueueAuto(ingestJob{mode: "full", source: source, reason: "resume"})
-		}
+		s.emitDaemonState("running")
+		s.enqueueFullAll("resume")
 	}
 	req.reply <- nil
 }
@@ -329,7 +333,7 @@ func (s *Service) runFullLocked(ctx context.Context, sourceName, reason string) 
 	s.printf("ingested mode=full reason=%s source=%s files=%d turns=%d raw_events=%d\n",
 		reason, summary.Source, summary.Files, summary.TurnCount, summary.RawEventCount)
 	s.recordFull(reason)
-	s.emit(ctx, liveEventForFullIngest(summary, reason))
+	s.emit(liveEventForFullIngest(summary, reason))
 	return nil
 }
 
@@ -338,8 +342,12 @@ func (s *Service) runFileForAnySource(ctx context.Context, path string) error {
 		return err
 	}
 	defer s.releaseIngest()
+	// fileCtx is used only inside this first loop; a single defer is leak-proof
+	// against any future early-return (cancel is idempotent).
+	fileCtx, cancelFile := context.WithTimeout(ctx, s.cfg.fileIngestTimeout())
+	defer cancelFile()
 	for _, sourceName := range s.cfg.Sources {
-		result, ok, err := ingest.RunFile(ctx, ingest.Options{
+		result, ok, err := ingest.RunFile(fileCtx, ingest.Options{
 			Source: sourceName,
 			Roots:  s.rootsFor(sourceName),
 			Policy: s.policy(),
@@ -352,7 +360,7 @@ func (s *Service) runFileForAnySource(ctx context.Context, path string) error {
 		if !ok {
 			continue
 		}
-		if err := s.store.SaveSessionIngest(ctx, result.Index, result.RawEventList); err != nil {
+		if err := s.store.SaveSessionIngest(fileCtx, result.Index, result.RawEventList, result.Fingerprints); err != nil {
 			s.cfg.logger().Warn("daemon file save failed", "source", sourceName, "path", path, "err", err)
 			s.incrFileFailure()
 			return err
@@ -360,7 +368,7 @@ func (s *Service) runFileForAnySource(ctx context.Context, path string) error {
 		s.printf("ingested mode=file source=%s file=%s turns=%d raw_events=%d\n",
 			result.Index.Source, path, result.Index.TurnCount, result.Index.RawEventCount)
 		s.recordFile(path)
-		s.emit(ctx, liveEventForSessionIngest(result, path))
+		s.emit(liveEventForSessionIngest(result, path))
 		return nil
 	}
 	s.incrUnmapped()
@@ -369,10 +377,12 @@ func (s *Service) runFileForAnySource(ctx context.Context, path string) error {
 		s.cfg.logger().Debug("skipping unmapped-file full reconcile (rate-limited)", "path", path)
 		return nil
 	}
+	fullCtx, cancelFull := context.WithTimeout(ctx, s.cfg.fullIngestTimeout())
+	defer cancelFull()
 	var firstErr error
 	for _, sourceName := range s.cfg.Sources {
 
-		if err := s.runFullLocked(ctx, sourceName, "unmapped-file"); err != nil && firstErr == nil {
+		if err := s.runFullLocked(fullCtx, sourceName, "unmapped-file"); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -381,7 +391,7 @@ func (s *Service) runFileForAnySource(ctx context.Context, path string) error {
 
 const unmappedFullWindow = 60 * time.Second
 
-func (s *Service) emit(_ context.Context, ev liveevent.Event) {
+func (s *Service) emit(ev liveevent.Event) {
 	if s.cfg.Emitter == nil || s.emitCh == nil {
 		return
 	}
@@ -392,16 +402,24 @@ func (s *Service) emit(_ context.Context, ev liveevent.Event) {
 	}
 }
 
-// emitDaemonState publishes a daemon lifecycle transition (running/paused/stopped)
-// through the same non-blocking emitCh as every other live event. Previously it
-// called Emitter.Emit synchronously on the run-loop goroutine, which blocked the
-// loop on the event log's durable write during startup and every pause/resume.
-// The flusher serializes the actual Emit off the run loop; the terminal "stopped"
-// event is still delivered because Run enqueues it before cancelling the flusher
-// (whose context is decoupled from the parent ctx, so cancelFlusher is the sole
-// stop trigger) and drainEmitCh flushes the channel on shutdown.
-func (s *Service) emitDaemonState(ctx context.Context, state string) {
-	s.emit(ctx, liveEventForDaemonState(state))
+// emitDaemonState publishes a daemon lifecycle transition through the same
+// non-blocking emitCh as ordinary live events. The terminal stopped event uses
+// emitDaemonStateBlocking so a full channel cannot silently drop shutdown state.
+func (s *Service) emitDaemonState(state string) {
+	s.emit(liveEventForDaemonState(state))
+}
+
+func (s *Service) emitDaemonStateBlocking(state string) {
+	if s.cfg.Emitter == nil || s.emitCh == nil {
+		return
+	}
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case s.emitCh <- liveEventForDaemonState(state):
+	case <-timer.C:
+		s.cfg.logger().Warn("emit channel full; dropping daemon state", "state", state)
+	}
 }
 
 func (s *Service) runEmitFlusher(ctx context.Context) {

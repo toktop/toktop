@@ -24,7 +24,14 @@ func placeholders(cols int) string {
 	if cols <= 0 {
 		return "()"
 	}
-	return "(" + strings.TrimSuffix(strings.Repeat("?,", cols), ",") + ")"
+	return "(" + bindMarkers(cols) + ")"
+}
+
+func bindMarkers(cols int) string {
+	if cols <= 0 {
+		return ""
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", cols), ",")
 }
 
 // execRows inserts n rows via chunked multi-row INSERT statements. prefix is the
@@ -32,14 +39,12 @@ func placeholders(cols int) string {
 // `INSERT OR IGNORE INTO t(a, b, c)`; rowGroup is one VALUES tuple template (e.g.
 // placeholders(3) → "(?,?,?)", or a literal-bearing form like
 // "('turn', ?, ?, ? || ' ' || ?)"); binds is the number of bind markers in
-// rowGroup; suffix is appended after the VALUES list (e.g. "" or
-// " ON CONFLICT(content_hash) DO NOTHING"). args(i) returns the binds values for
-// row i, in rowGroup order.
+// rowGroup. args(i) returns the binds values for row i, in rowGroup order.
 //
 // It is the bulk-insert counterpart to a prepared-statement-per-row loop:
 // semantically identical (the conflict clause in prefix/suffix is evaluated per
 // row by sqlite) but with far fewer Execs.
-func execRows(ctx context.Context, tx *sql.Tx, prefix, rowGroup string, binds, n int, suffix string, args func(i int) []any) error {
+func execRows(ctx context.Context, tx *sql.Tx, prefix, rowGroup string, binds, n int, args func(i int) []any) error {
 	if n == 0 || binds == 0 {
 		return nil
 	}
@@ -59,7 +64,6 @@ func execRows(ctx context.Context, tx *sql.Tx, prefix, rowGroup string, binds, n
 			b.WriteString(rowGroup)
 			buf = append(buf, args(i)...)
 		}
-		b.WriteString(suffix)
 		if _, err := tx.ExecContext(ctx, b.String(), buf...); err != nil {
 			return err
 		}

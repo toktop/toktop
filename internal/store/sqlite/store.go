@@ -21,19 +21,22 @@ import (
 
 const dbFileName = "toktop.db"
 
-// schemaUserVersion is the schema epoch stamped into PRAGMA user_version. Bump it
-// on ANY in-place edit to migrations/00001_init.sql (added/dropped column,
-// table/index/FTS/trigger change) or on a parser change that must re-project old
-// data. On Open, a database whose stamp differs — older or newer build alike —
-// is wiped and rebuilt from scratch: the DB is a pure projection of the
-// transcripts (the source of truth) and ingest is idempotent, so a clean rebuild
-// loses no data — it just re-projects on the next ingest/reconcile. This is a
-// rebuild trigger, not a data migration (we never ALTER in place).
+// schemaUserVersion is the projection epoch stamped into PRAGMA user_version.
+// Ordinary schema changes belong in additive goose migrations. Bump this only
+// for an in-place baseline edit or a parser/projection semantics change that
+// requires old normalized rows to be rebuilt from transcripts.
+//
+// On Open, a database whose stamp differs — older or newer build alike — is
+// wiped and rebuilt from scratch before goose migrations run. The DB is a pure
+// projection of the transcripts (the source of truth) and ingest is idempotent,
+// so a clean rebuild loses no data — it just re-projects on the next
+// ingest/reconcile. This is a correctness rebuild trigger, not a substitute for
+// normal schema migration.
 //
 // Must stay nonzero: 0 is both the implicit value of a fresh database file and
 // the in-progress-wipe marker wipeSchema sets, so 0 always means "no schema
 // built at this epoch".
-const schemaUserVersion = 3
+const schemaUserVersion = 7
 
 var writerCacheKiB, readerCacheKiB, sqliteMmapBytes = memoryBudget(memory.TotalMemory())
 

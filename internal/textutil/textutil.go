@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // DedupNonEmpty trims each value, drops blanks, and dedups, preserving first
@@ -42,6 +43,62 @@ func SplitTrim(value string) []string {
 		}
 	}
 	return out
+}
+
+func Truncate(s string, n int) string {
+	runes := []rune(s)
+	if n <= 0 || len(runes) <= n {
+		return s
+	}
+	if n <= 3 {
+		return string(runes[:n])
+	}
+	return string(runes[:n-1]) + "…"
+}
+
+// ClipText bounds large free-text (tool output, agent results) to about maxBytes
+// for export / handoff packages, keeping the head and tail on line boundaries
+// with a marker noting how much was omitted. The full bytes stay retrievable via
+// the raw transcript pointer the caller carries, so this never loses data — it
+// only caps what is inlined. maxBytes <= 0 means no clipping. Returns (clipped,
+// truncated). The marker keeps truncation explicit, never silent.
+func ClipText(s string, maxBytes int) (string, bool) {
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		return s, false
+	}
+	head := maxBytes * 2 / 3
+	tail := maxBytes - head
+	h := s[:head]
+	if i := strings.LastIndexByte(h, '\n'); i > 0 {
+		h = h[:i]
+	}
+	t := s[len(s)-tail:]
+	if i := strings.IndexByte(t, '\n'); i >= 0 && i < len(t)-1 {
+		t = t[i+1:]
+	}
+	// The byte cuts (and the newline retraction) can land mid-rune on multibyte
+	// text with no newline near the boundary; back off to a rune boundary so the
+	// head never ends and the tail never starts with a partial UTF-8 sequence.
+	for len(h) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(h); r == utf8.RuneError && size == 1 {
+			h = h[:len(h)-1]
+			continue
+		}
+		break
+	}
+	for len(t) > 0 {
+		if r, size := utf8.DecodeRuneInString(t); r == utf8.RuneError && size == 1 {
+			t = t[1:]
+			continue
+		}
+		break
+	}
+	omitted := len(s) - len(h) - len(t)
+	if omitted <= 0 {
+		return s, false
+	}
+	marker := "\n… [" + strconv.Itoa(omitted) + " of " + strconv.Itoa(len(s)) + " bytes omitted; full output via the raw transcript pointer] …\n"
+	return h + marker + t, true
 }
 
 // FirstNonBlank returns the first value whose TrimSpace is non-empty, returned
@@ -94,9 +151,9 @@ func FormatCount(n int) string {
 	switch {
 	case n < 1000:
 		return strconv.Itoa(n)
-	case n < 1_000_000:
+	case n < 999_950:
 		return formatScaled(n, 1000, "k")
-	case n < 1_000_000_000:
+	case n < 999_950_000:
 		return formatScaled(n, 1_000_000, "M")
 	default:
 		return formatScaled(n, 1_000_000_000, "B")

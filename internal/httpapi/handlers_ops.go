@@ -90,7 +90,6 @@ func retentionPolicyView(p retention.Policy) map[string]any {
 	return map[string]any{
 		"profile":          string(p.Profile),
 		"raw_age":          p.RawAge.String(),
-		"tool_output_age":  p.ToolOutputAge.String(),
 		"redact_raw_after": p.RedactRawAfter.String(),
 	}
 }

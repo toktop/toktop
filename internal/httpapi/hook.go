@@ -5,9 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"toktop.unceas.dev/internal/paths"
 	"toktop.unceas.dev/internal/redact"
 	"toktop.unceas.dev/internal/trace"
 )
@@ -37,8 +33,13 @@ func (s *Server) runSpoolWriter() {
 // enqueueSpool hands a raw hook body to runSpoolWriter without blocking the
 // request. On overflow the body is dropped from the audit spool (warned) — the
 // live-event projection over SSE is unaffected, since Emit redacts and publishes
-// it independently. Mirrors enqueueEventPersist's lossy-by-design contract.
+// it independently. Mirrors enqueueEventPersistLocked's lossy-by-design contract.
 func (s *Server) enqueueSpool(body []byte) {
+	s.lifecycleMu.RLock()
+	defer s.lifecycleMu.RUnlock()
+	if s.closed.Load() {
+		return
+	}
 	select {
 	case s.spoolCh <- body:
 	default:
@@ -62,11 +63,7 @@ func (s *Server) stopSpooler() {
 // or rotating it as needed. Called only from runSpoolWriter, so spoolFile/
 // spoolDate need no lock.
 func (s *Server) appendSpoolLine(body []byte) error {
-	dir, err := paths.DataDir()
-	if err != nil {
-		return err
-	}
-	spoolDir := filepath.Join(dir, "hooks", "spool")
+	spoolDir := filepath.Join(s.store.DataDir(), "hooks", "spool")
 	date := time.Now().UTC().Format("2006-01-02")
 	if s.spoolFile == nil || s.spoolDate != date {
 		if s.spoolFile != nil {
@@ -87,7 +84,7 @@ func (s *Server) appendSpoolLine(body []byte) error {
 	// that can echo secrets, mirroring the redaction Emit applies to the
 	// live-event projection. redact.Apply is a no-op on secret-free text and
 	// only rewrites secret substrings, so JSON string framing is preserved.
-	line := redact.Apply(string(compactSpoolLine(body))).Redacted
+	line := redact.Apply(string(compactSpoolLine(body)))
 	if _, err := s.spoolFile.WriteString(line); err != nil {
 		return err
 	}
@@ -112,13 +109,8 @@ func compactSpoolLine(body []byte) []byte {
 
 func (s *Server) handleHooksIntake(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxHookIntakeBytes))
-	if err != nil {
-		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
-			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", fmt.Sprintf("payload exceeds %d bytes", maxHookIntakeBytes))
-			return
-		}
-		writeError(w, http.StatusBadRequest, "read_body_failed", err.Error())
+	body, ok := readBodyCapped(w, r, maxHookIntakeBytes, "read_body_failed")
+	if !ok {
 		return
 	}
 	if len(body) == 0 {
@@ -387,8 +379,6 @@ func stringFromAny(value any) string {
 	switch typed := value.(type) {
 	case string:
 		return strings.TrimSpace(typed)
-	case fmt.Stringer:
-		return strings.TrimSpace(typed.String())
 	default:
 		return ""
 	}
@@ -417,6 +407,8 @@ func timeFromAny(value any) (time.Time, bool) {
 
 func epochToTime(n float64) time.Time {
 	switch {
+	case n >= 1e18:
+		return time.Unix(0, int64(n)).UTC()
 	case n >= 1e15:
 		return time.Unix(0, int64(n)*int64(time.Microsecond)).UTC()
 	case n >= 1e12:

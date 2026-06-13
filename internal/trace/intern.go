@@ -20,16 +20,6 @@ func InternIndexStrings(index *Index) {
 	for i := range index.Invocations {
 		internInvocation(&index.Invocations[i])
 	}
-	for i := range index.SubagentRuns {
-		internSubagentRun(&index.SubagentRuns[i])
-	}
-	for i := range index.ToolOutputs {
-		index.ToolOutputs[i].SourceFile = InternString(index.ToolOutputs[i].SourceFile)
-		index.ToolOutputs[i].RetentionClass = InternString(index.ToolOutputs[i].RetentionClass)
-	}
-	for i := range index.ContextEvents {
-		internContextEvent(&index.ContextEvents[i])
-	}
 	for i := range index.TurnComponents {
 		internTurnComponent(&index.TurnComponents[i])
 	}
@@ -56,21 +46,14 @@ func internTurn(turn *Turn) {
 	turn.Provider = InternString(turn.Provider)
 	turn.ProjectName = InternString(turn.ProjectName)
 	turn.Status = InternString(turn.Status)
-	turn.FailureReason = InternString(turn.FailureReason)
 	for i := range turn.ToolCalls {
 		internToolCall(&turn.ToolCalls[i])
 	}
 	for i := range turn.Invocations {
 		internInvocation(&turn.Invocations[i])
 	}
-	for i := range turn.SubagentRuns {
-		internSubagentRun(&turn.SubagentRuns[i])
-	}
 	for i := range turn.Components {
 		internTurnComponent(&turn.Components[i])
-	}
-	for i := range turn.ContextEvents {
-		internContextEvent(&turn.ContextEvents[i])
 	}
 }
 
@@ -87,26 +70,6 @@ func internToolCall(call *ToolCall) {
 	call.MCPServer = InternString(call.MCPServer)
 	call.MCPTool = InternString(call.MCPTool)
 	call.Status = InternString(call.Status)
-}
-
-func internSubagentRun(run *SubagentRun) {
-	run.AgentName = InternString(run.AgentName)
-	run.AgentType = InternString(run.AgentType)
-	run.Model = InternString(run.Model)
-	run.Status = InternString(run.Status)
-	for i := range run.Invocations {
-		internInvocation(&run.Invocations[i])
-	}
-	for i := range run.ToolCalls {
-		internToolCall(&run.ToolCalls[i])
-	}
-}
-
-func internContextEvent(event *ContextEvent) {
-	event.ComponentType = InternString(event.ComponentType)
-	event.ComponentName = InternString(event.ComponentName)
-	event.Phase = InternString(event.Phase)
-	event.Confidence = Confidence(InternString(string(event.Confidence)))
 }
 
 func internTurnComponent(component *TurnComponent) {

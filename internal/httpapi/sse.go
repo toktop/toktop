@@ -103,10 +103,17 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 				// The resume point was pruned: events (lastID, oldest) are gone.
 				// Don't stream a silent hole — tell the client to resync from the
 				// oldest still-recoverable id, then keep tailing live events.
-				_ = writeFrame(event{Type: "resync_required", Data: map[string]any{
+				data := map[string]any{
 					"reason":          "gap_in_event_log",
 					"oldest_event_id": eventIDString(gap.oldest),
-				}})
+				}
+				if gap.missing != 0 {
+					data["missing_event_id"] = eventIDString(gap.missing)
+				}
+				if gap.reason != "" {
+					data["gap_reason"] = gap.reason
+				}
+				_ = writeFrame(event{Type: "resync_required", Data: data})
 			default:
 				// The replay failure is almost always the same broken socket, so a
 				// best-effort replay.error frame would just fail again; only attempt
@@ -218,27 +225,33 @@ func (s *Server) unsubscribeEvents(sub *sseSubscriber) {
 	}
 }
 
-// replayGapError signals that the client's resume point was pruned out of the
-// event log before/while replaying, so an incremental replay would stream a
-// silent hole. handleStream turns it into a resync_required frame.
-type replayGapError struct{ oldest uint64 }
+// replayGapError signals that the retained event log cannot prove a contiguous
+// replay for the requested range. handleStream turns it into resync_required.
+type replayGapError struct {
+	oldest  uint64
+	missing uint64
+	reason  string
+}
 
 func (e *replayGapError) Error() string {
-	return fmt.Sprintf("event-log floor pruned past resume point (oldest=%d)", e.oldest)
+	return fmt.Sprintf("event-log replay gap (oldest=%d missing=%d reason=%s)", e.oldest, e.missing, e.reason)
 }
 
 // waitDurable blocks (bounded, ctx-aware) until the async persister has written
 // the event log up to id `until`. Reconnect replay reads from that log, so this
-// keeps the replay watermark backed by durable storage despite the off-hot-path
-// write. On timeout it returns anyway and the caller pages whatever is durable.
-func (s *Server) waitDurable(ctx context.Context, until uint64) {
+// keeps the replay watermark backed by durable storage.
+func (s *Server) waitDurable(ctx context.Context, until uint64) bool {
+	if until == 0 {
+		return true
+	}
 	for i := 0; i < 40 && s.durableID.Load() < until; i++ {
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
+	return s.durableID.Load() >= until
 }
 
 func (s *Server) writeReplayEvents(ctx context.Context, writeFrame func(event) error, after, until uint64, watchTargets []liveevent.Target, statusOnly bool) error {
@@ -246,21 +259,18 @@ func (s *Server) writeReplayEvents(ctx context.Context, writeFrame func(event) e
 	// published ids may not be in the log yet. Wait briefly for the persister to
 	// flush up to `until` before paging: without this, a client reconnecting in
 	// the publish→persist window would replay an empty tail and silently drop the
-	// newest events (lastPublishedID advances before durability). Bounded; on
-	// timeout we page whatever is durable and the client still gets live events.
-	s.waitDurable(ctx, until)
-	// Hold replayMu for the whole walk so Prune cannot delete a range between our
-	// batches and silently skip it. This is a Go mutex, not a bbolt txn: each
-	// ReplayRange still uses its own short txn and frames are still written
-	// OUTSIDE any txn, so a slow socket only delays the periodic GC, never bbolt
-	// freelist reclamation.
-	s.replayMu.RLock()
-	defer s.replayMu.RUnlock()
-	// With replayMu held, Prune is frozen, so MinID is a stable floor for the
-	// whole replay. If it sits above the resume point, (after, oldest) was pruned
-	// — signal a gap instead of streaming a hole.
-	if oldest, err := s.eventStore.MinID(ctx); err == nil && oldest > after+1 {
-		return &replayGapError{oldest: oldest}
+	// newest events (lastPublishedID advances before durability). If the range is
+	// still not durable after the bounded wait, force resync instead of paging a
+	// partial log and letting the client advance across an unproven gap.
+	if gapID, reason, ok := s.replayGapInRange(after, until); ok {
+		return s.replayGap(ctx, gapID, reason)
+	}
+	if !s.waitDurable(ctx, until) {
+		missing := s.durableID.Load() + 1
+		if missing <= after {
+			missing = after + 1
+		}
+		return s.replayGap(ctx, missing, "not_durable")
 	}
 	// Page through the log in bounded batches, each read in its own short bbolt
 	// txn (ReplayRange copies payloads), and write frames OUTSIDE the txn. A
@@ -269,14 +279,35 @@ func (s *Server) writeReplayEvents(ctx context.Context, writeFrame func(event) e
 	// reclamation and lets the event-log file grow unbounded while one slow
 	// consumer replays.
 	for {
+		if gapID, reason, ok := s.replayGapInRange(after, until); ok {
+			return s.replayGap(ctx, gapID, reason)
+		}
+		expected := after + 1
+		s.replayMu.RLock()
+		oldest, minErr := s.eventStore.MinID(ctx)
+		if minErr == nil && oldest > expected {
+			s.replayMu.RUnlock()
+			return &replayGapError{oldest: oldest, missing: expected, reason: "pruned"}
+		}
 		batch, err := s.eventStore.ReplayRange(ctx, after, until, eventlog.DefaultReplayBatchSize)
+		s.replayMu.RUnlock()
+		if minErr != nil {
+			return minErr
+		}
 		if err != nil {
 			return err
 		}
 		if len(batch) == 0 {
+			if until > 0 && after < until {
+				return s.replayGap(ctx, expected, "missing")
+			}
 			return nil
 		}
 		for _, record := range batch {
+			if record.ID != expected {
+				return &replayGapError{oldest: oldest, missing: expected, reason: "hole"}
+			}
+			expected = record.ID + 1
 			ev := eventFromLog(record)
 			if !eventMatchesWatchTargets(ev, watchTargets) {
 				continue
@@ -293,6 +324,17 @@ func (s *Server) writeReplayEvents(ctx context.Context, writeFrame func(event) e
 			return nil
 		}
 	}
+}
+
+func (s *Server) replayGap(ctx context.Context, missing uint64, reason string) error {
+	oldest, err := s.eventStore.MinID(ctx)
+	if err != nil {
+		return err
+	}
+	if oldest == 0 {
+		oldest = missing
+	}
+	return &replayGapError{oldest: oldest, missing: missing, reason: reason}
 }
 
 func reconnectEventID(r *http.Request) (string, bool) {
@@ -352,14 +394,7 @@ func (s *Server) runEventLogGC(ctx context.Context) {
 	if s.eventLogGCInterval <= 0 {
 		return
 	}
-	if n, err := s.PruneEventLog(ctx); err != nil {
-		s.logger.Warn("event log gc failed", "err", err)
-	} else if n > 0 {
-		s.logger.Info("event log gc", "pruned", n, "pass", "startup")
-	}
-	if evicted := s.pruneLiveSessions(); evicted > 0 {
-		s.logger.Info("live sessions gc", "evicted", evicted, "pass", "startup")
-	}
+	s.gcPass(ctx, "startup")
 	ticker := time.NewTicker(s.eventLogGCInterval)
 	defer ticker.Stop()
 	for {
@@ -367,21 +402,25 @@ func (s *Server) runEventLogGC(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			n, err := s.PruneEventLog(ctx)
-			if err != nil {
-				s.logger.Warn("event log gc failed", "err", err)
-				continue
-			}
-			if n > 0 {
-				s.logger.Info("event log gc", "pruned", n, "pass", "interval")
-			}
-			if evicted := s.pruneLiveSessions(); evicted > 0 {
-				s.logger.Info("live sessions gc", "evicted", evicted, "pass", "interval")
-			}
+			s.gcPass(ctx, "interval")
 			if active := s.subscriberCount(); active > 0 {
 				s.logger.Info("sse subscribers", "active", active, "cap", maxSSESubscribers)
 			}
 		}
+	}
+}
+
+func (s *Server) gcPass(ctx context.Context, pass string) {
+	n, err := s.PruneEventLog(ctx)
+	if err != nil {
+		s.logger.Warn("event log gc failed", "err", err)
+		return
+	}
+	if n > 0 {
+		s.logger.Info("event log gc", "pruned", n, "pass", pass)
+	}
+	if evicted := s.pruneLiveSessions(); evicted > 0 {
+		s.logger.Info("live sessions gc", "evicted", evicted, "pass", pass)
 	}
 }
 

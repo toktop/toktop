@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"toktop.unceas.dev/internal/httpapi"
 	"toktop.unceas.dev/internal/ingest"
 	"toktop.unceas.dev/internal/paths"
 )
@@ -45,8 +46,6 @@ examples:
 		fmt.Fprintln(stderr, "usage: toktop hooks <status|install|uninstall> [flags]")
 		return 2
 	}
-	sub := args[0]
-	args = args[1:]
 	home, ok := resolveHome(stderr)
 	if !ok {
 		return 1
@@ -54,15 +53,33 @@ examples:
 	var sourcesFlag rootList
 	scope := "user"
 	dryRun := false
-	endpoint := "unix:" + paths.SocketPath(home)
+	endpoint := ""
 	fs := flag.NewFlagSet("hook", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Var(&sourcesFlag, "sources", "hook source providers: claude-code|codex; may be repeated or comma-separated")
 	fs.StringVar(&scope, "scope", scope, "user|project")
 	fs.BoolVar(&dryRun, "dry-run", dryRun, "show planned diff without writing")
-	fs.StringVar(&endpoint, "endpoint", endpoint, "toktop hook intake endpoint")
+	fs.StringVar(&endpoint, "endpoint", endpoint, "toktop hook intake endpoint (default: configured daemon addr)")
+	sub, rest, firstPos, found := firstLeafSubcommand(args, valueFlagSet(fs), "status", "install", "uninstall")
+	if !found {
+		if firstPos != "" {
+			cliErrf(stderr, "unknown hook subcommand %q (want status|install|uninstall)", firstPos)
+			return 2
+		}
+		fmt.Fprintln(stderr, "usage: toktop hooks <status|install|uninstall> [flags]")
+		return 2
+	}
+	args = rest
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
+	}
+	if endpoint == "" {
+		loader, err := configFor(ctx, home)
+		if err != nil {
+			cliErr(stderr, err)
+			return 2
+		}
+		endpoint = hookEndpointForAddr(clientAddr(loader.Current()))
 	}
 	// Fold + validate every name up front (all must implement HookInstaller), so
 	// a typo'd list errors before any settings file is written.
@@ -211,10 +228,6 @@ func runHookInstall(_ context.Context, sourceName, scope, endpoint, home string,
 		cliErr(stderr, err)
 		return 1
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		cliErr(stderr, err)
-		return 1
-	}
 	existing := map[string]any{}
 	if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
 		if err := json.Unmarshal(data, &existing); err != nil {
@@ -222,12 +235,28 @@ func runHookInstall(_ context.Context, sourceName, scope, endpoint, home string,
 			return 1
 		}
 	}
-	hooks, _ := existing["hooks"].(map[string]any)
+	hooks, ok := existing["hooks"].(map[string]any)
+	if !ok && existing["hooks"] != nil {
+		cliErrf(stderr, "existing hooks value in %s is not an object; refusing to overwrite", path)
+		return 1
+	}
 	if hooks == nil {
 		hooks = map[string]any{}
 	}
 	// The CLI owns the shared curl command (transport + sentinel query); the
 	// provider wraps it in its own per-event entry schema.
+	if !strings.HasPrefix(endpoint, "unix:") {
+		if _, ok := apiTokenPath(); !ok {
+			if dryRun {
+				cliErrf(stderr, "TCP hook endpoint requires an API token file; rerun without --dry-run to generate it or start the TCP daemon first")
+				return 2
+			}
+			if _, err := ensureAPIToken(stderr); err != nil {
+				cliErr(stderr, err)
+				return 1
+			}
+		}
+	}
 	command := toktopHookCommand(sourceName, endpoint)
 	for _, event := range hi.HookEvents() {
 		upsertToktopHookEntry(hooks, event, hi.HookEntry(event, command))
@@ -241,6 +270,10 @@ func runHookInstall(_ context.Context, sourceName, scope, endpoint, home string,
 	if dryRun {
 		fmt.Fprintf(stdout, "would write %s:\n%s\n", path, payload)
 		return 0
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		cliErr(stderr, err)
+		return 1
 	}
 	if err := os.WriteFile(path, payload, 0o600); err != nil {
 		cliErr(stderr, err)
@@ -282,7 +315,15 @@ func runHookUninstall(sourceName, scope string, dryRun bool, stdout, stderr io.W
 		cliErr(stderr, err)
 		return 1
 	}
-	hooks, _ := existing["hooks"].(map[string]any)
+	hooks, ok := existing["hooks"].(map[string]any)
+	if !ok && existing["hooks"] != nil {
+		cliErrf(stderr, "existing hooks value in %s is not an object; refusing to rewrite", path)
+		return 1
+	}
+	if hooks == nil {
+		fmt.Fprintf(stdout, "no toktop observer hooks source=%s in %s\n", sourceName, path)
+		return 0
+	}
 	for event, entries := range hooks {
 		list, ok := entries.([]any)
 		if !ok {
@@ -351,6 +392,14 @@ func toktopHookCommand(sourceName, endpoint string) string {
 		auth = fmt.Sprintf(`-H "Authorization: Bearer $(cat %s)" `, shellSingleQuote(tokenPath))
 	}
 	return fmt.Sprintf(`curl -fsS --max-time 2 -o /dev/null -X POST -H 'Content-Type: application/json' %s--data @- %s 2>/dev/null || true`, auth, shellSingleQuote(target))
+}
+
+func hookEndpointForAddr(addr string) string {
+	network, address := httpapi.SplitListenAddr(addr)
+	if network == "unix" {
+		return "unix:" + address
+	}
+	return "http://" + tcpClientHost(address) + hookIntakePath
 }
 
 func appendHookQuery(endpoint, sourceName string) string {

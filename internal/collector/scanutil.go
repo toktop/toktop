@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -23,7 +21,6 @@ func FinalizeCounts(index *trace.Index) {
 	index.SessionCount = len(index.Sessions)
 	index.TurnCount = len(index.Turns)
 	index.InvocationCount = len(index.Invocations)
-	index.SubagentCount = len(index.SubagentRuns)
 	count := 0
 	for _, turn := range index.Turns {
 		count += len(turn.ToolCalls)
@@ -32,11 +29,10 @@ func FinalizeCounts(index *trace.Index) {
 }
 
 func HashContent(content []byte) string {
-	sum := sha256.Sum256(content)
-	return hex.EncodeToString(sum[:])
+	return trace.HashPayload(content)
 }
 
-func StatFingerprint(path string) (size int64, mtimeNS int64, ino uint64, ok bool) {
+func StatFingerprint(path string) (size int64, mtimeNS int64, ino int64, ok bool) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0, 0, 0, false
@@ -50,6 +46,24 @@ func ReadFileOK(path string) ([]byte, bool) {
 		return nil, false
 	}
 	return data, true
+}
+
+// ReadFileState reads path with the three outcomes a config/metadata scan must
+// tell apart: found=true with data on success; found=false complete=true when
+// the file is genuinely absent (an authoritative "no data" answer); found=false
+// complete=false when an existing file could not be read (permission/IO). A
+// reconcile that deletes stored rows must skip when complete is false — an
+// unreadable file is not proof the data went away.
+func ReadFileState(path string) (data []byte, found, complete bool) {
+	data, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		return data, true, true
+	case errors.Is(err, os.ErrNotExist):
+		return nil, false, true
+	default:
+		return nil, false, false
+	}
 }
 
 func MCPServerID(scope, configPath, name string) string {

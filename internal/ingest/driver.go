@@ -12,14 +12,14 @@ import (
 )
 
 // Spec parameterizes the generic ingest Driver for one provider. F is the
-// provider's session-file type; the driver needs only its project-relative path
-// and discovery-root path (via PathOf/RootOf), so each provider keeps its own
-// richer SessionFile shape.
+// provider's session-file type; the driver needs only its absolute transcript
+// path and discovery-root path (via PathOf/RootOf), so each provider keeps its
+// own richer SessionFile shape.
 type Spec[F any] struct {
 	Source        string // provider name; also the Index.Source value
 	ParserVersion string
 
-	PathOf func(F) string // session file's project-relative path
+	PathOf func(F) string // session file's absolute transcript path
 	RootOf func(F) string // session file's discovery-root path
 
 	// Collect reads one session file into a RawSession plus any per-file collect
@@ -73,11 +73,12 @@ func (d Driver[F]) newIndex(roots []SourceRoot, capHint int) trace.Index {
 func (d Driver[F]) IngestBatch(ctx context.Context, roots []SourceRoot, policy redact.Policy, batch []F) (Result, error) {
 	index := d.newIndex(roots, len(batch))
 	type parseOutput struct {
-		raw     source.RawSession
-		collect []trace.ParseError
-		session trace.Session
-		turns   []trace.Turn
-		perrs   []trace.ParseError
+		raw           source.RawSession
+		collect       []trace.ParseError
+		session       trace.Session
+		turns         []trace.Turn
+		perrs         []trace.ParseError
+		processedFile string
 	}
 	parsed, err := collector.SafeMapErr(ctx, batch, func(file *F) (parseOutput, error) {
 		raw, collectErrors, err := d.Spec.Collect(ctx, *file)
@@ -85,7 +86,8 @@ func (d Driver[F]) IngestBatch(ctx context.Context, roots []SourceRoot, policy r
 			if cerr := ctx.Err(); cerr != nil {
 				return parseOutput{}, cerr
 			}
-			return parseOutput{collect: []trace.ParseError{d.fileSkipError(d.Spec.RootOf(*file), d.Spec.PathOf(*file), err)}}, nil
+			path := d.Spec.PathOf(*file)
+			return parseOutput{collect: []trace.ParseError{d.fileSkipError(d.Spec.RootOf(*file), path, err)}, processedFile: path}, nil
 		}
 		session, turns, perrs, err := d.Spec.Parse(ctx, raw)
 		if err != nil {
@@ -93,18 +95,21 @@ func (d Driver[F]) IngestBatch(ctx context.Context, roots []SourceRoot, policy r
 			if cerr := ctx.Err(); cerr != nil {
 				return parseOutput{}, cerr
 			}
-			return parseOutput{collect: []trace.ParseError{d.fileSkipError(d.Spec.RootOf(*file), d.Spec.PathOf(*file), err)}}, nil
+			path := d.Spec.PathOf(*file)
+			return parseOutput{collect: []trace.ParseError{d.fileSkipError(d.Spec.RootOf(*file), path, err)}, processedFile: path}, nil
 		}
 		collector.ReleaseRawJSON(raw.RawEventList)
-		return parseOutput{raw: raw, collect: collectErrors, session: session, turns: turns, perrs: perrs}, nil
+		return parseOutput{raw: raw, collect: collectErrors, session: session, turns: turns, perrs: perrs, processedFile: d.Spec.PathOf(*file)}, nil
 	})
 	if err != nil {
 		return Result{}, err
 	}
 	var rawList []source.RawEvent
 	processed := make([]string, 0, len(batch))
-	for i, out := range parsed {
-		processed = append(processed, d.Spec.PathOf(batch[i]))
+	for _, out := range parsed {
+		if out.processedFile != "" {
+			processed = append(processed, out.processedFile)
+		}
 		index.RawEventCount += len(out.raw.RawEventList)
 		rawList = append(rawList, out.raw.RawEventList...)
 		index.ParseErrorList = append(index.ParseErrorList, out.collect...)
@@ -120,7 +125,9 @@ func (d Driver[F]) IngestBatch(ctx context.Context, roots []SourceRoot, policy r
 		}
 	}
 	collector.FinalizeCounts(&index)
-	policy.ApplyToIndex(ctx, &index)
+	if err := policy.ApplyToIndex(ctx, &index); err != nil {
+		return Result{}, err
+	}
 	trace.InternIndexStrings(&index)
 	return Result{Index: index, RawEventList: rawList, ProcessedFiles: processed}, nil
 }
@@ -130,13 +137,18 @@ func (d Driver[F]) IngestBatch(ctx context.Context, roots []SourceRoot, policy r
 // ingest has no sibling batch to protect).
 func (d Driver[F]) IngestSessionFile(ctx context.Context, roots []SourceRoot, file F, policy redact.Policy) (Result, error) {
 	index := d.newIndex(roots, 1)
+	path := d.Spec.PathOf(file)
+	fingerprints := make(map[string]source.Fingerprint, 1)
+	if size, mtimeNS, ino, ok := collector.StatFingerprint(path); ok {
+		fingerprints[path] = source.Fingerprint{Size: size, MtimeNS: mtimeNS, Ino: ino}
+	}
 	raw, collectErrors, err := d.Spec.Collect(ctx, file)
 	if err != nil {
-		return Result{}, fmt.Errorf("collect %s: %w", d.Spec.PathOf(file), err)
+		return Result{}, fmt.Errorf("collect %s: %w", path, err)
 	}
 	session, turns, perrs, err := d.Spec.Parse(ctx, raw)
 	if err != nil {
-		return Result{}, fmt.Errorf("parse %s: %w", d.Spec.PathOf(file), err)
+		return Result{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	collector.ReleaseRawJSON(raw.RawEventList)
 	index.RawEventCount = len(raw.RawEventList)
@@ -151,9 +163,11 @@ func (d Driver[F]) IngestSessionFile(ctx context.Context, roots []SourceRoot, fi
 		}
 	}
 	collector.FinalizeCounts(&index)
-	policy.ApplyToIndex(ctx, &index)
+	if err := policy.ApplyToIndex(ctx, &index); err != nil {
+		return Result{}, err
+	}
 	trace.InternIndexStrings(&index)
-	return Result{Index: index, RawEventList: raw.RawEventList}, nil
+	return Result{Index: index, RawEventList: raw.RawEventList, ProcessedFiles: []string{path}, Fingerprints: fingerprints}, nil
 }
 
 func (d Driver[F]) fileSkipError(rootPath, filePath string, err error) trace.ParseError {

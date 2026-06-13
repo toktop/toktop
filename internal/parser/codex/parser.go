@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"iter"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -25,10 +25,10 @@ type ParseResult struct {
 }
 
 func ParseSession(ctx context.Context, raw source.RawSession) (ParseResult, error) {
-	return ParseEvents(ctx, raw, raw.Events())
+	return ParseEvents(ctx, raw, raw.RawEventList)
 }
 
-func ParseEvents(ctx context.Context, raw source.RawSession, events iter.Seq2[source.RawEvent, error]) (ParseResult, error) {
+func ParseEvents(ctx context.Context, raw source.RawSession, events []source.RawEvent) (ParseResult, error) {
 	sourceID := trace.SourceID(raw.Provider)
 	sourceRootID := trace.SourceRootID(sourceID, raw.SourceRoot)
 	session := trace.Session{
@@ -37,23 +37,30 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events iter.Seq2[so
 		TranscriptPath: raw.SourceFile,
 		Status:         trace.StatusUnknown,
 	}
+	session.ID = trace.SessionID(sourceRootID, raw.SourceFile)
 
 	turns := make([]trace.Turn, 0)
 	var current *turnBuilder
 	var parseErrors []trace.ParseError
+	seenTurnContext := false
+	// model_context_window arrives once per session in a task_started event_msg
+	// (before any turn_context), so it is tracked at session scope and stamped onto
+	// every turn's invocations — mirroring claude's per-invocation context window.
+	contextWindow := 0
 
 	flush := func() {
 		if current == nil {
+			return
+		}
+		if current.empty() {
+			current = nil
 			return
 		}
 		turns = append(turns, current.finish())
 		current = nil
 	}
 
-	for rawEvent, eventErr := range events {
-		if eventErr != nil {
-			return ParseResult{}, eventErr
-		}
+	for _, rawEvent := range events {
 		if err := ctx.Err(); err != nil {
 			return ParseResult{}, fmt.Errorf("parse cancelled: %w", err)
 		}
@@ -90,35 +97,44 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events iter.Seq2[so
 		case "turn_context":
 			payload := decodeTurnContext(event.Payload)
 			flush()
+			seenTurnContext = true
 			projectPath := textutil.FirstNonBlank(payload.CWD, session.ProjectPath)
 			projectName := session.ProjectName
 			if projectPath != "" {
 				projectName = lastPathSegment(projectPath)
 			}
-			current = newTurnBuilder(&session, sourceRootID, len(turns)+1, projectName, projectPath, when)
+			current = newTurnBuilder(&session, sourceRootID, len(turns)+1, projectName, projectPath, payload.Model, contextWindow, when)
 		case "response_item":
 			if current == nil {
-				current = newTurnBuilder(&session, sourceRootID, len(turns)+1, session.ProjectName, session.ProjectPath, when)
+				if !seenTurnContext && isInjectedPreTurnResponseItem(event.Payload) {
+					continue
+				}
+				current = newTurnBuilder(&session, sourceRootID, len(turns)+1, session.ProjectName, session.ProjectPath, "", contextWindow, when)
 			}
-			current.handleResponseItem(event.Payload, when, rawEvent)
+			parseErrors = append(parseErrors, current.handleResponseItem(event.Payload, when, rawEvent)...)
 		case "event_msg":
-			if current != nil {
-				current.applyEventMessage(event.Payload)
+			var ev eventPayload
+			if err := json.Unmarshal(event.Payload, &ev); err == nil {
+				if ev.Type == "task_started" && ev.ModelContextWindow > 0 {
+					contextWindow = ev.ModelContextWindow
+					if current != nil {
+						current.contextWindow = contextWindow
+					}
+				}
+				if current != nil {
+					current.applyEventMessage(ev)
+				}
 			}
 		}
 	}
 	flush()
 
-	session.ID = trace.SessionID(sourceRootID, raw.SourceFile)
 	if session.Status == trace.StatusUnknown && len(turns) > 0 {
 		session.Status = trace.StatusCompleted
 	}
 	shared.FinalizeSession(&session, turns)
 
 	result := ParseResult{Session: session, Turns: turns, ParseErrors: parseErrors}
-	for i := range result.ParseErrors {
-		result.ParseErrors[i].ParserVersion = trace.InternString(result.ParseErrors[i].ParserVersion)
-	}
 	return result, nil
 }
 
@@ -128,10 +144,16 @@ type turnBuilder struct {
 	turn           trace.Turn
 	toolByCallID   map[string]int
 	userMessageSet bool // true once an authoritative user_message event set UserMessage
+	pendingTokens  trace.Tokens
+	// model and contextWindow come from the turn's turn_context / task_started
+	// events and are stamped onto every invocation in the turn (codex records them
+	// per turn, unlike claude's per-message model).
+	model         string
+	contextWindow int
 }
 
-func newTurnBuilder(session *trace.Session, sourceRootID string, index int, projectName, projectPath string, when time.Time) *turnBuilder {
-	turnID := trace.TurnID(trace.SessionID(sourceRootID, session.TranscriptPath), index)
+func newTurnBuilder(session *trace.Session, sourceRootID string, index int, projectName, projectPath, model string, contextWindow int, when time.Time) *turnBuilder {
+	turnID := trace.TurnID(session.ID, index)
 	return &turnBuilder{
 		session:      session,
 		sourceRootID: sourceRootID,
@@ -146,15 +168,17 @@ func newTurnBuilder(session *trace.Session, sourceRootID string, index int, proj
 			EndedAt:        when,
 			Status:         trace.StatusUnknown,
 		},
-		toolByCallID: make(map[string]int),
+		toolByCallID:  make(map[string]int),
+		model:         trace.InternString(model),
+		contextWindow: contextWindow,
 	}
 }
 
-func (b *turnBuilder) handleResponseItem(raw json.RawMessage, when time.Time, rawEvent source.RawEvent) {
+func (b *turnBuilder) handleResponseItem(raw json.RawMessage, when time.Time, rawEvent source.RawEvent) []trace.ParseError {
 	b.turn.EndedAt = shared.LaterTime(b.turn.EndedAt, when)
 	var payload responsePayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return
+		return []trace.ParseError{b.parseError(rawEvent, err.Error())}
 	}
 	switch payload.Type {
 	case "message":
@@ -175,29 +199,35 @@ func (b *turnBuilder) handleResponseItem(raw json.RawMessage, when time.Time, ra
 			}
 			rawEventID := trace.RawEventID(b.sourceRootID, rawEvent.SourceFile, rawEvent.LineNo, rawEvent.Hash())
 			invocation := trace.Invocation{
-				ID:         trace.InvocationID(b.turn.ID, len(b.turn.Invocations)+1),
-				Provider:   b.turn.Provider,
-				TurnID:     b.turn.ID,
-				Index:      len(b.turn.Invocations) + 1,
-				StartedAt:  when,
-				EndedAt:    when,
-				Status:     trace.StatusSuccess,
-				RawEventID: rawEventID,
+				ID:                  trace.InvocationID(b.turn.ID, len(b.turn.Invocations)+1),
+				Provider:            b.turn.Provider,
+				TurnID:              b.turn.ID,
+				Index:               len(b.turn.Invocations) + 1,
+				Model:               b.model,
+				StartedAt:           when,
+				EndedAt:             when,
+				Status:              trace.StatusSuccess,
+				ContextWindowTokens: b.contextWindow,
+				Tokens:              b.pendingTokens,
+				RawEventID:          rawEventID,
 			}
+			b.pendingTokens = trace.Tokens{}
 			b.turn.Invocations = append(b.turn.Invocations, invocation)
 		}
 	case "function_call":
+		rawEventID := trace.RawEventID(b.sourceRootID, rawEvent.SourceFile, rawEvent.LineNo, rawEvent.Hash())
 		callIndex := len(b.turn.ToolCalls) + 1
 		toolCall := trace.ToolCall{
-			ID:        trace.ToolCallID(b.turn.ID, payload.CallID, callIndex),
-			TurnID:    b.turn.ID,
-			CallIndex: callIndex,
-			Kind:      shared.ClassifyToolKind(payload.Name),
-			Name:      payload.Name,
-			UseID:     payload.CallID,
-			Input:     payload.Arguments,
-			Status:    trace.StatusPending,
-			StartedAt: when,
+			ID:            trace.ToolCallID(b.turn.ID, payload.CallID, callIndex),
+			TurnID:        b.turn.ID,
+			CallIndex:     callIndex,
+			Kind:          shared.ClassifyToolKind(payload.Name),
+			Name:          payload.Name,
+			UseID:         payload.CallID,
+			Input:         argumentText(payload.Arguments),
+			Status:        trace.StatusPending,
+			StartedAt:     when,
+			RawUseEventID: rawEventID,
 		}
 		if toolCall.Kind == trace.ToolKindMCP {
 			toolCall.MCPServer, toolCall.MCPTool = shared.SplitMCPName(toolCall.Name)
@@ -212,18 +242,19 @@ func (b *turnBuilder) handleResponseItem(raw json.RawMessage, when time.Time, ra
 	case "function_call_output":
 		idx, ok := b.toolByCallID[payload.CallID]
 		if !ok || idx < 0 || idx >= len(b.turn.ToolCalls) {
-			return
+			return []trace.ParseError{b.unmatchedToolOutputError(rawEvent, payload.CallID)}
 		}
 		// A duplicate function_call_output for an already-resolved call must not
 		// clobber the recorded output/status; only a still-pending call accepts one.
 		if b.turn.ToolCalls[idx].Status != trace.StatusPending {
-			return
+			return []trace.ParseError{b.duplicateToolOutputError(rawEvent, payload.CallID)}
 		}
 		call := &b.turn.ToolCalls[idx]
 		output := outputText(payload.Output)
 		call.Output = output
 		call.OutputBytes = int64(len(output))
 		call.EndedAt = when
+		call.RawResultEventID = trace.RawEventID(b.sourceRootID, rawEvent.SourceFile, rawEvent.LineNo, rawEvent.Hash())
 		if !call.StartedAt.IsZero() && when.After(call.StartedAt) {
 			call.DurationMs = when.Sub(call.StartedAt).Milliseconds()
 		}
@@ -234,19 +265,49 @@ func (b *turnBuilder) handleResponseItem(raw json.RawMessage, when time.Time, ra
 			call.Status = trace.StatusSuccess
 		}
 	}
+	return nil
 }
 
-func (b *turnBuilder) applyEventMessage(raw json.RawMessage) {
-	var payload eventPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return
+func (b *turnBuilder) parseError(rawEvent source.RawEvent, message string) trace.ParseError {
+	return trace.ParseError{
+		SourceID:      trace.SourceID(b.turn.Provider),
+		SourceRootID:  b.sourceRootID,
+		SourceFile:    rawEvent.SourceFile,
+		LineNo:        rawEvent.LineNo,
+		RawEventID:    trace.RawEventID(b.sourceRootID, rawEvent.SourceFile, rawEvent.LineNo, rawEvent.Hash()),
+		Message:       message,
+		ParserVersion: ParserVersion,
 	}
+}
+
+func (b *turnBuilder) unmatchedToolOutputError(rawEvent source.RawEvent, callID string) trace.ParseError {
+	if callID == "" {
+		return b.parseError(rawEvent, "unmatched function_call_output without call_id")
+	}
+	return b.parseError(rawEvent, "unmatched function_call_output")
+}
+
+func (b *turnBuilder) duplicateToolOutputError(rawEvent source.RawEvent, callID string) trace.ParseError {
+	if callID == "" {
+		return b.parseError(rawEvent, "duplicate function_call_output without call_id")
+	}
+	return b.parseError(rawEvent, "duplicate function_call_output")
+}
+
+func (b *turnBuilder) applyEventMessage(payload eventPayload) {
 	switch payload.Type {
 	case "user_message":
 		// The authoritative human prompt arrives as a user_message event, not as
 		// the first role==user response_item (which is injected turn context).
 		if msg := strings.TrimSpace(payload.Message); msg != "" {
-			b.turn.UserMessage = msg
+			if isInjectedContext(msg) {
+				return
+			}
+			if b.userMessageSet && b.turn.UserMessage != "" {
+				b.turn.UserMessage += "\n\n" + msg
+			} else {
+				b.turn.UserMessage = msg
+			}
 			b.userMessageSet = true
 		}
 	case "token_count":
@@ -254,23 +315,16 @@ func (b *turnBuilder) applyEventMessage(raw json.RawMessage) {
 		// summed per-turn/per-session. Attribute the per-event delta
 		// (last_token_usage) to the most recent invocation so that the sum of
 		// per-invocation tokens equals the turn total.
+		usage := payload.Info.LastTokenUsage
+		delta := trace.Tokens{
+			Input:     max(usage.InputTokens-usage.CachedInputTokens, 0),
+			CacheRead: usage.CachedInputTokens,
+			Output:    usage.OutputTokens,
+		}
 		if n := len(b.turn.Invocations); n > 0 {
-			// Codex (OpenAI) reports input_tokens INCLUSIVE of the cached prefix,
-			// with cached_input_tokens the cached subset — unlike Anthropic, which
-			// reports them disjoint. toktop's trace.Tokens.Input is the UNCACHED
-			// portion, so subtract the cached count out (clamped at 0) and record
-			// it as CacheRead. CacheWrite stays 0: OpenAI automatic prompt caching
-			// exposes only a read count, never a separate write/creation count.
-			usage := payload.Info.LastTokenUsage
-			uncached := max(usage.InputTokens-usage.CachedInputTokens, 0)
-			// Accumulate, not assign: a turn can emit several token_count events that
-			// all attribute to the same most-recent invocation, and an earlier delta
-			// must not be clobbered by a later one.
-			b.turn.Invocations[n-1].Tokens.Add(trace.Tokens{
-				Input:     uncached,
-				CacheRead: usage.CachedInputTokens,
-				Output:    usage.OutputTokens,
-			})
+			b.turn.Invocations[n-1].Tokens.Add(delta)
+		} else {
+			b.pendingTokens.Add(delta)
 		}
 	case "task_complete":
 		if b.turn.Status == trace.StatusUnknown {
@@ -293,12 +347,25 @@ func (b *turnBuilder) finish() trace.Turn {
 	for i := range turn.Invocations {
 		turn.Tokens.Add(turn.Invocations[i].Tokens)
 	}
+	// pendingTokens holds token_count deltas that arrived before any invocation
+	// existed. It is drained (reset to {}) once an assistant message creates an
+	// invocation, so it is non-zero here only for a kept turn that ended without
+	// one (interrupted/aborted after its usage event); fold it in so those tokens
+	// are not dropped from the turn and session totals.
+	turn.Tokens.Add(b.pendingTokens)
 
 	if derived := shared.StatusForTurn(turn); turn.Status == trace.StatusUnknown || derived == trace.StatusFailed {
 		turn.Status = derived
 	}
 	turn.Components = components.FromTools(turn.ID, turn.ToolCalls)
 	return turn
+}
+
+func (b *turnBuilder) empty() bool {
+	return b.turn.UserMessage == "" &&
+		b.turn.AssistantFinal == "" &&
+		len(b.turn.Invocations) == 0 &&
+		len(b.turn.ToolCalls) == 0
 }
 
 func backfillProject(turns []trace.Turn, projectName, projectPath string) {
@@ -324,8 +391,8 @@ type sessionMeta struct {
 }
 
 type turnContext struct {
-	TurnID string `json:"turn_id"`
-	CWD    string `json:"cwd"`
+	CWD   string `json:"cwd"`
+	Model string `json:"model"`
 }
 
 type responsePayload struct {
@@ -334,7 +401,7 @@ type responsePayload struct {
 	Content   json.RawMessage `json:"content"`
 	Name      string          `json:"name"`
 	CallID    string          `json:"call_id"`
-	Arguments string          `json:"arguments"`
+	Arguments json.RawMessage `json:"arguments"`
 	// Output is decoded flexibly: real Codex rollouts emit it as a string, but
 	// multimodal results (e.g. view_image) emit a JSON array of content blocks.
 	// Keeping it raw avoids aborting the whole responsePayload unmarshal.
@@ -342,11 +409,11 @@ type responsePayload struct {
 }
 
 type eventPayload struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
-	Info    struct {
-		TotalTokenUsage tokenUsage `json:"total_token_usage"`
-		LastTokenUsage  tokenUsage `json:"last_token_usage"`
+	Type               string `json:"type"`
+	Message            string `json:"message"`
+	ModelContextWindow int    `json:"model_context_window"`
+	Info               struct {
+		LastTokenUsage tokenUsage `json:"last_token_usage"`
 	} `json:"info"`
 }
 
@@ -366,6 +433,23 @@ func decodeTurnContext(raw json.RawMessage) turnContext {
 	var payload turnContext
 	_ = json.Unmarshal(raw, &payload)
 	return payload
+}
+
+func argumentText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "{}"
+	}
+	if raw[0] == '"' {
+		var text string
+		if err := json.Unmarshal(raw, &text); err == nil {
+			text = strings.TrimSpace(text)
+			if text == "" {
+				return "{}"
+			}
+			return text
+		}
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 // outputText decodes a function_call_output.output value, which may be a JSON
@@ -390,15 +474,18 @@ func outputText(raw json.RawMessage) string {
 func outputFailure(output string) string {
 	for line := range strings.SplitSeq(output, "\n") {
 		trimmed := strings.TrimSpace(line)
-		lower := strings.ToLower(trimmed)
-		if strings.HasPrefix(lower, "process exited with code ") ||
-			strings.HasPrefix(lower, "command exited with code ") {
+		if equalFoldPrefix(trimmed, "process exited with code ") ||
+			equalFoldPrefix(trimmed, "command exited with code ") {
 			if code, ok := exitCode(trimmed); ok && code != 0 {
 				return trimmed
 			}
 		}
 	}
 	return ""
+}
+
+func equalFoldPrefix(value, prefix string) bool {
+	return len(value) >= len(prefix) && strings.EqualFold(value[:len(prefix)], prefix)
 }
 
 // exitCode extracts the trailing integer exit code from a line like
@@ -438,7 +525,29 @@ func isInjectedContext(text string) bool {
 		return true
 	}
 	lower := strings.ToLower(trimmed)
+	if shared.IsLocalCommandInjection(trimmed, lower) {
+		return true
+	}
 	return strings.Contains(lower, "agents.md") || strings.HasPrefix(lower, "# instructions")
+}
+
+func isInjectedPreTurnResponseItem(raw json.RawMessage) bool {
+	var payload responsePayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return false
+	}
+	if payload.Type != "message" {
+		return false
+	}
+	switch payload.Role {
+	case "developer", "system":
+		return true
+	case "user":
+		text := shared.DecodeContentText(payload.Content, false)
+		return text == "" || isInjectedContext(text)
+	default:
+		return false
+	}
 }
 
 // openingTagName returns the element name of a leading "<name>"/"<name ...>" tag
@@ -463,14 +572,10 @@ func openingTagName(text string) (string, bool) {
 	return name, true
 }
 
-func lastPathSegment(path string) string {
-	path = strings.TrimRight(path, "/")
-	if path == "" {
+func lastPathSegment(cwd string) string {
+	base := path.Base(cwd)
+	if base == "." || base == "/" {
 		return "unknown"
 	}
-	index := strings.LastIndex(path, "/")
-	if index < 0 || index == len(path)-1 {
-		return path
-	}
-	return path[index+1:]
+	return base
 }
