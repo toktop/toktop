@@ -83,13 +83,21 @@ func runHandoffCreate(ctx context.Context, args []string, stdout, stderr io.Writ
 		return 1
 	}
 	pkg := handoff.Build(time.Now().UTC(), sess, turns, maxOutputBytes)
+	// Record the same disambiguation the stderr note above reported, so the
+	// written manifest.json is self-describing about an ambiguous external id.
+	if len(matches) > 1 {
+		pkg.Manifest.AmbiguousSessionIDs = make([]string, len(matches))
+		for i, m := range matches {
+			pkg.Manifest.AmbiguousSessionIDs[i] = m.ID
+		}
+	}
 	if err := pkg.Write(output); err != nil {
 		cliErr(stderr, err)
 		return 1
 	}
 	m := pkg.Manifest
 	fmt.Fprintf(stdout, "handoff written to %s\n", output)
-	fmt.Fprintf(stdout, "  status=%s  turns=%d  agent_runs=%d (%d ok, %d failed, %d incomplete)  final_synthesis=%v\n",
-		m.WorkflowStatus, m.Turns, m.AgentRuns, m.CompletedAgentRuns, m.FailedAgentRuns, m.IncompleteAgentRuns, m.FinalSynthesisPresent)
+	fmt.Fprintf(stdout, "  status=%s  turns=%d  agent_runs=%d (%d ok, %d failed, %d stopped, %d in-flight)  final_synthesis=%v\n",
+		m.WorkflowStatus, m.Turns, m.AgentRuns, m.CompletedAgentRuns, m.FailedAgentRuns, m.InterruptedAgentRuns, m.IncompleteAgentRuns, m.FinalSynthesisPresent)
 	return 0
 }

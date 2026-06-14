@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -11,6 +12,17 @@ import (
 	"toktop.unceas.dev/internal/paths"
 	"toktop.unceas.dev/internal/retention"
 )
+
+// pruneDryRun resolves the dry_run flag for a control prune route: the JSON body
+// value wins (so a body is never silently ignored), then the query param (the
+// CLI client sends it that way), defaulting to true — a prune dry-runs unless
+// dry_run is explicitly disabled, so it never deletes by accident.
+func pruneDryRun(body *bool, q url.Values) bool {
+	if body != nil {
+		return *body
+	}
+	return !isFalsy(q.Get("dry_run"))
+}
 
 func (s *Server) handleSources(w http.ResponseWriter, _ *http.Request) {
 	type sourceRoot struct {
@@ -120,7 +132,15 @@ func (s *Server) handleRetentionStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRetentionPrune(w http.ResponseWriter, r *http.Request) {
-	profile := r.URL.Query().Get("profile")
+	var req struct {
+		Profile string `json:"profile"`
+		DryRun  *bool  `json:"dry_run"`
+	}
+	if !decodeJSONBody(w, r, maxControlRequestBytes, &req) {
+		return
+	}
+	q := r.URL.Query()
+	profile := firstNonEmpty(req.Profile, q.Get("profile"))
 	if profile == "" {
 		profile = "balanced"
 	}
@@ -129,7 +149,7 @@ func (s *Server) handleRetentionPrune(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_profile", err.Error())
 		return
 	}
-	dryRun := !isFalsy(r.URL.Query().Get("dry_run"))
+	dryRun := pruneDryRun(req.DryRun, q)
 	// Wrap the event log so its Prune coordinates with in-flight reconnect
 	// replays via replayMu (see replayGuardedStore); a bare s.eventStore would
 	// delete ranges out from under a replay.
@@ -143,7 +163,15 @@ func (s *Server) handleRetentionPrune(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDataPruneRaw(w http.ResponseWriter, r *http.Request) {
-	olderThan := r.URL.Query().Get("older_than")
+	var req struct {
+		OlderThan string `json:"older_than"`
+		DryRun    *bool  `json:"dry_run"`
+	}
+	if !decodeJSONBody(w, r, maxControlRequestBytes, &req) {
+		return
+	}
+	q := r.URL.Query()
+	olderThan := firstNonEmpty(req.OlderThan, q.Get("older_than"))
 	if olderThan == "" {
 		writeError(w, http.StatusBadRequest, "missing_param", "older_than is required (e.g. 720h)")
 		return
@@ -155,7 +183,7 @@ func (s *Server) handleDataPruneRaw(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_duration", err.Error())
 		return
 	}
-	dryRun := !isFalsy(r.URL.Query().Get("dry_run"))
+	dryRun := pruneDryRun(req.DryRun, q)
 	count, err := s.store.PruneRawEvents(r.Context(), cutoff, dryRun)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "prune_failed", err.Error())

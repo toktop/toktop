@@ -307,7 +307,7 @@ func (s *Store) ListProjects(ctx context.Context, f Filter) ([]ProjectListItem, 
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
 	defer rows.Close()
-	var out []ProjectListItem
+	out := make([]ProjectListItem, 0)
 	for rows.Next() {
 		var item ProjectListItem
 		var lastActivity sql.NullString
@@ -356,7 +356,7 @@ func (s *Store) ListModels(ctx context.Context, f Filter) ([]ModelListItem, erro
 		return nil, fmt.Errorf("list models: %w", err)
 	}
 	defer rows.Close()
-	var out []ModelListItem
+	out := make([]ModelListItem, 0)
 	for rows.Next() {
 		var item ModelListItem
 		var lastUsed sql.NullString
@@ -391,7 +391,7 @@ func (s *Store) ListTools(ctx context.Context, f Filter) ([]ToolListItem, error)
 		return nil, fmt.Errorf("list tools: %w", err)
 	}
 	defer rows.Close()
-	var out []ToolListItem
+	out := make([]ToolListItem, 0)
 	for rows.Next() {
 		var item ToolListItem
 		var lastUsed sql.NullString
@@ -460,7 +460,7 @@ func (s *Store) listMCPsCore(ctx context.Context, f Filter) ([]MCPListItem, erro
 		return nil, fmt.Errorf("list mcps: %w", err)
 	}
 	defer rows.Close()
-	var out []MCPListItem
+	out := make([]MCPListItem, 0)
 	for rows.Next() {
 		var item MCPListItem
 		var lastUsed sql.NullString
@@ -573,7 +573,7 @@ func (s *Store) ListSkills(ctx context.Context, f Filter) ([]SkillListItem, erro
 		return nil, fmt.Errorf("list skills: %w", err)
 	}
 	defer rows.Close()
-	var out []SkillListItem
+	out := make([]SkillListItem, 0)
 	for rows.Next() {
 		var item SkillListItem
 		var lastUsed sql.NullString
@@ -633,7 +633,13 @@ func (s *Store) ListComponentsForTurn(ctx context.Context, turnID string) ([]tra
 	if err != nil {
 		return nil, err
 	}
-	return byTurn[turnID], nil
+	// Non-nil even when the turn has no components, so the array-typed
+	// /v1/turns/{id}/components endpoint serializes [] rather than null.
+	comps := byTurn[turnID]
+	if comps == nil {
+		comps = []trace.TurnComponent{}
+	}
+	return comps, nil
 }
 
 func (s *Store) ListSuggestions(ctx context.Context, ruleID string) ([]trace.Suggestion, error) {
@@ -654,7 +660,9 @@ func (s *Store) ListSuggestions(ctx context.Context, ruleID string) ([]trace.Sug
 		return nil, fmt.Errorf("list suggestions: %w", err)
 	}
 	defer rows.Close()
-	var out []trace.Suggestion
+	// Non-nil so empty results serialize as [] (not null) across the CLI and the
+	// /v1/suggestions endpoint, matching the make([]T, 0) list convention below.
+	out := make([]trace.Suggestion, 0)
 	for rows.Next() {
 		var sug trace.Suggestion
 		var confidence string
@@ -933,6 +941,17 @@ func (f Filter) pagination(defaultLimit int) (int, int) {
 	}
 	offset := max(f.Offset, 0)
 	return limit, offset
+}
+
+// NextOffset advances offset by count and caps it at total. It is overflow-safe
+// for an adversarially large offset: offset+count can wrap past the int range, so
+// when offset is already at/beyond total (no next page) it returns total directly
+// rather than computing the wrapping sum.
+func NextOffset(offset, count, total int) int {
+	if offset >= total {
+		return total
+	}
+	return min(offset+count, total)
 }
 
 func EffectivePagination(f Filter, defaultLimit int) (int, int) {

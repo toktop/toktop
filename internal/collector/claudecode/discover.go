@@ -104,6 +104,15 @@ func DiscoverSessions(ctx context.Context, roots []SourceRoot) ([]SessionFile, e
 				return err
 			}
 			if entry.IsDir() {
+				// Skip the subagents/ subtree: Claude Code nests workflow sub-agent
+				// transcripts and journal.jsonl metadata under a session's own dir.
+				// They are not independent user sessions — each agent transcript carries
+				// the PARENT session id (so one real UUID would explode into dozens of
+				// colliding sessions) and journal.jsonl is not a transcript at all (a
+				// 0-turn ghost). Exclude the whole subtree from top-level discovery.
+				if entry.Name() == "subagents" {
+					return filepath.SkipDir
+				}
 				return nil
 			}
 			if filepath.Ext(path) != ".jsonl" {
@@ -144,6 +153,12 @@ func SessionFileFromPath(path string, roots []SourceRoot) (SessionFile, bool) {
 		if !fsx.PathWithin(projectsDir, cleanPath) {
 			continue
 		}
+		// Mirror DiscoverSessions: a transcript inside a subagents/ subtree is a
+		// nested workflow artifact, not a top-level session — never ingest it via
+		// the single-file watch path either.
+		if underSubagents(projectsDir, cleanPath) {
+			return SessionFile{}, false
+		}
 		projectName := projectNameFor(projectsDir, cleanPath)
 		return SessionFile{
 			Root:        root,
@@ -153,6 +168,17 @@ func SessionFileFromPath(path string, roots []SourceRoot) (SessionFile, bool) {
 		}, true
 	}
 	return SessionFile{}, false
+}
+
+// underSubagents reports whether transcriptPath lies inside a `subagents/`
+// segment relative to projectsDir — the nested workflow sub-agent / journal
+// subtree that DiscoverSessions skips.
+func underSubagents(projectsDir, transcriptPath string) bool {
+	rel, err := filepath.Rel(projectsDir, transcriptPath)
+	if err != nil {
+		return false
+	}
+	return slices.Contains(strings.Split(rel, string(filepath.Separator)), "subagents")
 }
 
 func projectNameFor(projectsDir, transcriptPath string) string {

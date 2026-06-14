@@ -22,7 +22,7 @@ func buildEvidence(session trace.Session, turns []trace.Turn, agents []AgentRun)
 		conf := ConfidenceEvidence
 		claim := a.Description
 		if claim == "" {
-			claim = a.Type + " agent run"
+			claim = textutil.FirstNonBlank(a.Type, a.Tool) + " run"
 		}
 		switch a.Status {
 		case trace.StatusSuccess:
@@ -30,10 +30,16 @@ func buildEvidence(session trace.Session, turns []trace.Turn, agents []AgentRun)
 		case trace.StatusFailed:
 			typ = "failed_agent"
 			conf = ConfidenceUnknown // a failed run's output is not a reliable result
+		case trace.StatusInterrupted:
+			// Deliberately stopped (TaskStop): no result was produced, but it was
+			// killed on purpose — flag distinctly so the recovering agent reconciles
+			// against the final answer rather than blindly resuming.
+			typ = "stopped_agent"
+			conf = ConfidenceUnknown
 		default:
-			// pending / active: the run was interrupted before its result was
-			// recorded, so it is not authoritative evidence — flag it so the
-			// recovering agent knows to re-run it rather than trust a blank result.
+			// pending / active: launched but never completed or stopped — not
+			// authoritative evidence; flag it so the recovering agent knows to resume
+			// or re-run it rather than trust a blank result.
 			typ = "incomplete_agent"
 			conf = ConfidenceUnknown
 		}

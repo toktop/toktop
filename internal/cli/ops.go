@@ -25,7 +25,7 @@ func runSources(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	format := "table"
 	fs := flag.NewFlagSet("sources", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&format, "format", format, "output format: table|json|ndjson|csv")
+	fs.StringVar(&format, "format", format, formatFlagUsage)
 	setFlagUsage(fs, "usage: toktop sources [flags]", "List configured providers and their discovery roots (and whether each exists).")
 	// `list` is an optional alias for the default listing; accept it regardless
 	// of where flags sit, like every other keyworded command.
@@ -383,13 +383,29 @@ func clientAddr(snap *config.Snapshot) string {
 	return defaultAPIAddr()
 }
 
-func runDaemonControl(ctx context.Context, method, path string, args []string, stdout, stderr io.Writer) int {
+// daemonControlDesc is the one-line description for each daemon control leaf's
+// `-h` usage.
+func daemonControlDesc(name string) string {
+	switch name {
+	case "status":
+		return "Show whether a daemon is running for this home and what it is watching."
+	case "pause":
+		return "Pause the running daemon's ingest loop (the live broker stays up)."
+	case "resume":
+		return "Resume a paused daemon's ingest loop."
+	case "trigger":
+		return "Trigger a one-off ingest in the running daemon (--mode full|file|once)."
+	}
+	return ""
+}
+
+func runDaemonControl(ctx context.Context, method, path, name string, args []string, stdout, stderr io.Writer) int {
 	token := ""
 	noAuth := false
 	mode := ""
 	triggerPath := ""
 	sync := false
-	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
+	fs := flag.NewFlagSet("daemon "+name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&token, "token", token, "bearer token (default: read api-token file)")
 	fs.BoolVar(&noAuth, "no-auth", noAuth, "do not send a bearer token")
@@ -398,6 +414,9 @@ func runDaemonControl(ctx context.Context, method, path string, args []string, s
 		fs.StringVar(&triggerPath, "path", triggerPath, "transcript path (required for --mode file)")
 		fs.BoolVar(&sync, "sync", sync, "wait for the ingest to finish")
 	}
+	// Clean `daemon <sub> -h` usage instead of flag's default "Usage of daemon:"
+	// header, matching the other leaf commands.
+	setFlagUsage(fs, "usage: toktop daemon "+name+" [flags]", daemonControlDesc(name))
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}

@@ -165,6 +165,6 @@ func mapNotFound(err error) error {
 // is truthful.
 func makePage[T any](items []T, total int, f sqlite.Filter, defaultLimit int) Page[T] {
 	limit, offset := sqlite.EffectivePagination(f, defaultLimit)
-	next := min(offset+len(items), total)
+	next := sqlite.NextOffset(offset, len(items), total)
 	return Page[T]{Items: items, Total: total, Limit: limit, Offset: offset, NextOffset: next}
 }

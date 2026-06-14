@@ -20,7 +20,9 @@ type SearchResult struct {
 func (s *Store) Search(ctx context.Context, query string, limit int, kind, source string) ([]SearchResult, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return nil, nil
+		// Non-nil so an empty/blank query serializes results as [] (not null) on the
+		// search endpoint, matching the zero-match path below.
+		return []SearchResult{}, nil
 	}
 	if limit <= 0 {
 		limit = 20
@@ -32,10 +34,13 @@ func (s *Store) Search(ctx context.Context, query string, limit int, kind, sourc
 		limit = maxPageSize
 	}
 	match := buildFTSMatch(query)
-	// Push the kind/source filters into the WHERE (search_fts.kind is an UNINDEXED
-	// FTS column; the provider comes from the sources join) so the LIMIT applies
-	// AFTER filtering. Filtering in Go after a rank-ordered LIMIT under-returned —
-	// the top-N rows could be mostly of other kinds/sources.
+	// Push the kind/source filters into the WHERE (search_fts.kind and source_id
+	// are UNINDEXED FTS columns) so the LIMIT applies AFTER filtering. Filtering in
+	// Go after a rank-ordered LIMIT under-returned — the top-N rows could be mostly
+	// of other kinds/sources. The source filter is a content-hashed source_id (the
+	// caller resolves a provider name to its id via query.ResolveSourceFilter,
+	// matching the list-filter convention) — compare it against the stored
+	// source_id, NOT sources.kind (the literal name), which never equals the hash.
 	where := []string{"search_fts MATCH ?"}
 	args := []any{match}
 	if kind != "" {
@@ -43,7 +48,7 @@ func (s *Store) Search(ctx context.Context, query string, limit int, kind, sourc
 		args = append(args, kind)
 	}
 	if source != "" {
-		where = append(where, "sources.kind = ?")
+		where = append(where, "search_fts.source_id = ?")
 		args = append(args, source)
 	}
 	args = append(args, limit)

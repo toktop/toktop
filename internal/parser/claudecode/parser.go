@@ -13,7 +13,7 @@ import (
 	"toktop.unceas.dev/internal/trace"
 )
 
-const ParserVersion = "claudecode/3"
+const ParserVersion = "claudecode/5"
 
 type ParseResult struct {
 	Session     trace.Session
@@ -45,13 +45,20 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events []source.Raw
 	// within a turn (continuations) and across turns (rewind/fork history
 	// replays, or a queued user prompt splitting one response over a flush).
 	seenMsg := make(map[string]msgRef)
+	// Session-scoped async completions: a background task (Workflow / background
+	// Bash) returns a "launched in background" ack synchronously, then its real
+	// result arrives much later — in a different turn — as a <task-notification>
+	// correlated by the launching tool_use id. Collected across the whole stream,
+	// then reconciled onto the launch in applyAsyncCompletions after flush().
+	completions := make(map[string]asyncCompletion)
 
 	flush := func() {
 		if current == nil {
 			return
 		}
-		t := current.finish()
+		t, errs := current.finish()
 		turns = append(turns, t)
+		parseErrors = append(parseErrors, errs...)
 		current = nil
 	}
 
@@ -78,6 +85,11 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events []source.Raw
 		shared.UpdateSessionTimes(&session, when)
 
 		msg := decodeMessage(event.Message)
+		if useID, comp, ok := parseTaskNotification(event, msg, when, rawEvent); ok {
+			// Later inject (event.Type=="user") supersedes the earlier enqueue copy
+			// (event.Type=="queue-operation"); both carry identical payloads.
+			completions[useID] = comp
+		}
 		switch event.Type {
 		case "user":
 			// A canonical tool_result message carries only tool_result blocks and no
@@ -95,7 +107,14 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events []source.Raw
 				}
 			}
 			text := msg.text()
-			if text == "" || event.IsMeta || isInjectedContext(text) {
+			// A background task's completion is injected as a system <task-notification>
+			// user event: it opens a real turn (the agent acts on it) but its text is
+			// machine XML, not a human prompt — and its payload is already reconciled
+			// onto the launching tool call (parseTaskNotification). Keep the turn
+			// boundary, drop the redundant XML from the user message.
+			if strings.HasPrefix(text, "<task-notification>") {
+				text = ""
+			} else if text == "" || event.IsMeta || isInjectedContext(text) {
 				continue
 			}
 			flush()
@@ -112,6 +131,8 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events []source.Raw
 		}
 	}
 	flush()
+
+	applyAsyncCompletions(turns, completions, sourceRootID)
 
 	if session.Status == trace.StatusUnknown && len(turns) > 0 {
 		session.Status = trace.StatusCompleted
@@ -134,9 +155,21 @@ type turnBuilder struct {
 	sourceRootID string
 	turn         trace.Turn
 	toolByUseID  map[string]int
+	// pendingResults holds tool_results whose tool_use had not been seen yet when
+	// the result line was read — out-of-order transcripts where a tool_result
+	// precedes its tool_use (sidechain / streaming interleaving). They are
+	// re-resolved as later tool_uses in the turn arrive; any still unmatched at
+	// finish() become parse errors.
+	pendingResults []pendingToolResult
 	// seenMsg is shared across all turns of the session (owned by
 	// ParseEvents). See recordAssistantMessage.
 	seenMsg map[string]msgRef
+}
+
+type pendingToolResult struct {
+	result   toolResult
+	when     time.Time
+	rawEvent source.RawEvent
 }
 
 func newTurnBuilder(session *trace.Session, sourceRootID string, index int, userText string, when time.Time, seenMsg map[string]msgRef) *turnBuilder {
@@ -250,32 +283,67 @@ func (b *turnBuilder) recordAssistantMessage(msg message, when time.Time, rawEve
 		}
 		b.turn.ToolCalls = append(b.turn.ToolCalls, toolCall)
 	}
+	// A tool_use just recorded here may complete a tool_result that arrived
+	// out-of-order earlier in this turn.
+	if len(b.pendingResults) > 0 {
+		b.resolvePendingResults()
+	}
 }
 
 func (b *turnBuilder) attachToolResults(results []toolResult, when time.Time, rawEvent source.RawEvent) []trace.ParseError {
 	b.turn.EndedAt = shared.LaterTime(b.turn.EndedAt, when)
 	var parseErrors []trace.ParseError
 	for _, result := range results {
-		index := b.resolveToolCall(result.UseID)
-		if index < 0 {
-			parseErrors = append(parseErrors, unmatchedToolResultError(trace.SourceID(b.turn.Provider), b.sourceRootID, rawEvent, result))
+		if index := b.resolveToolCall(result.UseID); index >= 0 {
+			b.applyResult(index, result, when, rawEvent)
 			continue
 		}
-		call := &b.turn.ToolCalls[index]
-		call.Output = result.Output
-		call.OutputBytes = int64(len(result.Output))
-		call.EndedAt = when
-		call.RawResultEventID = trace.RawEventID(b.sourceRootID, rawEvent.SourceFile, rawEvent.LineNo, rawEvent.Hash())
-		if !call.StartedAt.IsZero() && when.After(call.StartedAt) {
-			call.DurationMs = when.Sub(call.StartedAt).Milliseconds()
+		// Not resolvable now. A result whose use id simply has not been recorded yet
+		// is an out-of-order forward reference (the tool_use line comes later) —
+		// buffer it and re-resolve when that tool_use arrives. A blank or
+		// already-resolved use id is genuinely unmatched/duplicate.
+		if result.UseID != "" {
+			if _, seen := b.toolByUseID[result.UseID]; !seen {
+				b.pendingResults = append(b.pendingResults, pendingToolResult{result: result, when: when, rawEvent: rawEvent})
+				continue
+			}
 		}
-		if result.IsError {
-			call.Status = trace.StatusFailed
-		} else {
-			call.Status = trace.StatusSuccess
-		}
+		parseErrors = append(parseErrors, unmatchedToolResultError(trace.SourceID(b.turn.Provider), b.sourceRootID, rawEvent, result))
 	}
 	return parseErrors
+}
+
+// applyResult writes a tool_result's output, status, and timing onto the
+// resolved tool call.
+func (b *turnBuilder) applyResult(index int, result toolResult, when time.Time, rawEvent source.RawEvent) {
+	call := &b.turn.ToolCalls[index]
+	call.Output = result.Output
+	call.OutputBytes = int64(len(result.Output))
+	call.EndedAt = when
+	call.RawResultEventID = trace.RawEventID(b.sourceRootID, rawEvent.SourceFile, rawEvent.LineNo, rawEvent.Hash())
+	if !call.StartedAt.IsZero() && when.After(call.StartedAt) {
+		call.DurationMs = when.Sub(call.StartedAt).Milliseconds()
+	}
+	if result.IsError {
+		call.Status = trace.StatusFailed
+	} else {
+		call.Status = trace.StatusSuccess
+	}
+}
+
+// resolvePendingResults re-attempts buffered out-of-order tool_results after new
+// tool_uses were recorded, attaching any that now resolve and keeping the rest
+// buffered (their tool_use may yet arrive later in the turn).
+func (b *turnBuilder) resolvePendingResults() {
+	kept := b.pendingResults[:0]
+	for _, pr := range b.pendingResults {
+		if index := b.resolveToolCall(pr.result.UseID); index >= 0 {
+			b.applyResult(index, pr.result, pr.when, pr.rawEvent)
+			continue
+		}
+		kept = append(kept, pr)
+	}
+	b.pendingResults = kept
 }
 
 func unmatchedToolResultError(sourceID, sourceRootID string, rawEvent source.RawEvent, result toolResult) trace.ParseError {
@@ -320,7 +388,13 @@ func (b *turnBuilder) resolveToolCall(useID string) int {
 	return -1
 }
 
-func (b *turnBuilder) finish() trace.Turn {
+func (b *turnBuilder) finish() (trace.Turn, []trace.ParseError) {
+	// Any tool_result still buffered never found its tool_use within the turn — a
+	// genuinely unmatched result, surfaced now that the turn is complete.
+	var parseErrors []trace.ParseError
+	for _, pr := range b.pendingResults {
+		parseErrors = append(parseErrors, unmatchedToolResultError(trace.SourceID(b.turn.Provider), b.sourceRootID, pr.rawEvent, pr.result))
+	}
 	turn := b.turn
 	if !turn.StartedAt.IsZero() && !turn.EndedAt.IsZero() && turn.EndedAt.After(turn.StartedAt) {
 		turn.DurationMs = turn.EndedAt.Sub(turn.StartedAt).Milliseconds()
@@ -329,7 +403,7 @@ func (b *turnBuilder) finish() trace.Turn {
 	turn.ToolCallCount = len(turn.ToolCalls)
 	turn.Status = shared.StatusForTurn(turn)
 	turn.Components = components.FromTools(turn.ID, turn.ToolCalls)
-	return turn
+	return turn, parseErrors
 }
 
 type envelope struct {
@@ -338,6 +412,23 @@ type envelope struct {
 	Timestamp string          `json:"timestamp"`
 	IsMeta    bool            `json:"isMeta"`
 	Message   json.RawMessage `json:"message"`
+	// Content carries the payload of a queue-operation event (a task-notification
+	// enqueue), which has no nested message. User-injected events keep their text
+	// under Message instead.
+	Content json.RawMessage `json:"content"`
+}
+
+// topLevelText decodes a queue-operation event's top-level string content,
+// returning "" when it is absent or not a JSON string.
+func (e envelope) topLevelText() string {
+	if len(e.Content) == 0 || e.Content[0] != '"' {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(e.Content, &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 type message struct {
@@ -489,6 +580,165 @@ func (m *message) toolResults() []toolResult {
 		})
 	}
 	return results
+}
+
+// asyncCompletion is a background task's out-of-band terminal result, delivered
+// as a <task-notification> long after the launching tool call's synchronous
+// "launched in background" acknowledgement and correlated to it by tool_use id.
+type asyncCompletion struct {
+	status string
+	output string
+	when   time.Time
+	raw    source.RawEvent
+}
+
+// parseTaskNotification extracts the completion a <task-notification> event
+// reports, correlated to the originating tool_use id. The notification arrives
+// either as an injected user message (text under message) or as the enqueue
+// queue-operation (top-level content); both carry the same tagged payload.
+func parseTaskNotification(event envelope, msg message, when time.Time, rawEvent source.RawEvent) (string, asyncCompletion, bool) {
+	text := msg.text()
+	if !strings.HasPrefix(text, "<task-notification>") {
+		text = event.topLevelText()
+	}
+	if !strings.HasPrefix(text, "<task-notification>") {
+		return "", asyncCompletion{}, false
+	}
+	useID := notificationTag(text, "tool-use-id")
+	if useID == "" {
+		return "", asyncCompletion{}, false
+	}
+	// The full machine-readable result is authoritative; fall back to the human
+	// summary for tasks (e.g. background Bash) that report no inline result.
+	output := notificationTag(text, "result")
+	if output == "" {
+		output = notificationTag(text, "summary")
+	}
+	return useID, asyncCompletion{
+		status: notificationTag(text, "status"),
+		output: output,
+		when:   when,
+		raw:    rawEvent,
+	}, true
+}
+
+// notificationTag returns the trimmed text of the first <tag>…</tag> in s, or "".
+func notificationTag(s, tag string) string {
+	open, close := "<"+tag+">", "</"+tag+">"
+	i := strings.Index(s, open)
+	if i < 0 {
+		return ""
+	}
+	i += len(open)
+	j := strings.Index(s[i:], close)
+	if j < 0 {
+		return ""
+	}
+	return strings.TrimSpace(s[i : i+j])
+}
+
+// applyAsyncCompletions reconciles background-task launches with their real
+// outcomes. A Workflow / background-Bash call's synchronous tool_result is only a
+// "launched in background" ack; the true result arrives later as a
+// <task-notification>. The three terminal fates a recovering agent must tell
+// apart:
+//   - a completion notification supersedes the ack (real output + status + end
+//     time) — the task finished (success/failed);
+//   - the task was deliberately killed (a successful TaskStop on its task id) →
+//     interrupted;
+//   - neither — launched but never completed or stopped within the transcript →
+//     active (in-flight / abandoned).
+// Without this, every ack is mistaken for a successful result.
+func applyAsyncCompletions(turns []trace.Turn, completions map[string]asyncCompletion, sourceRootID string) {
+	stopped := stoppedTaskIDs(turns)
+	dirty := make(map[int]bool)
+	for ti := range turns {
+		for ci := range turns[ti].ToolCalls {
+			call := &turns[ti].ToolCalls[ci]
+			if comp, ok := completions[call.UseID]; ok {
+				call.Output = comp.output
+				call.OutputBytes = int64(len(comp.output))
+				call.Status = asyncCompletionStatus(comp.status)
+				call.EndedAt = comp.when
+				if !call.StartedAt.IsZero() && comp.when.After(call.StartedAt) {
+					call.DurationMs = comp.when.Sub(call.StartedAt).Milliseconds()
+				}
+				call.RawResultEventID = trace.RawEventID(sourceRootID, comp.raw.SourceFile, comp.raw.LineNo, comp.raw.Hash())
+				dirty[ti] = true
+			} else if call.Status == trace.StatusSuccess && isAsyncLaunchAck(call.Output) {
+				if id := asyncLaunchTaskID(call.Output); id != "" && stopped[id] {
+					call.Status = trace.StatusInterrupted // deliberately stopped (TaskStop)
+				} else {
+					call.Status = trace.StatusActive // launched, never completed or stopped
+				}
+				dirty[ti] = true
+			}
+		}
+	}
+	for ti := range dirty {
+		turns[ti].Status = shared.StatusForTurn(turns[ti])
+	}
+}
+
+// stoppedTaskIDs collects the task ids a successful TaskStop killed, so an async
+// launch for one can be classified as deliberately interrupted rather than merely
+// in-flight.
+func stoppedTaskIDs(turns []trace.Turn) map[string]bool {
+	out := make(map[string]bool)
+	for ti := range turns {
+		for ci := range turns[ti].ToolCalls {
+			call := &turns[ti].ToolCalls[ci]
+			if call.Name != "TaskStop" || call.Status != trace.StatusSuccess {
+				continue
+			}
+			var in struct {
+				TaskID string `json:"task_id"`
+			}
+			if json.Unmarshal([]byte(call.Input), &in) == nil && in.TaskID != "" {
+				out[in.TaskID] = true
+			}
+		}
+	}
+	return out
+}
+
+// asyncLaunchTaskID extracts the background task id an async launch ack reports
+// ("Workflow launched in background. Task ID: X" / "Command running in background
+// with ID: X"), or "" when absent.
+func asyncLaunchTaskID(output string) string {
+	for _, marker := range []string{"Task ID: ", "with ID: "} {
+		if _, rest, ok := strings.Cut(output, marker); ok {
+			if j := strings.IndexFunc(rest, func(r rune) bool {
+				return r == ' ' || r == '\n' || r == '\t' || r == '.'
+			}); j >= 0 {
+				return rest[:j]
+			}
+			return strings.TrimSpace(rest)
+		}
+	}
+	return ""
+}
+
+// asyncCompletionStatus maps a task-notification <status> to a tool-call status.
+func asyncCompletionStatus(notificationStatus string) string {
+	switch notificationStatus {
+	case "completed":
+		return trace.StatusSuccess
+	case "failed":
+		return trace.StatusFailed
+	default:
+		return trace.StatusActive
+	}
+}
+
+// isAsyncLaunchAck reports whether a tool_result is the synchronous "launched in
+// background" acknowledgement of an async tool call (a Workflow, or a Bash run
+// with run_in_background) rather than its real result. Claude Code phrases the
+// two cases distinctly.
+func isAsyncLaunchAck(output string) bool {
+	out := strings.TrimSpace(output)
+	return strings.HasPrefix(out, "Workflow launched in background") ||
+		strings.HasPrefix(out, "Command running in background")
 }
 
 func invocationStatusFor(msg message) string {

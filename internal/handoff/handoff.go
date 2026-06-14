@@ -89,6 +89,11 @@ type Manifest struct {
 	GeneratedAt            time.Time `json:"generated_at"`
 	SessionID              string    `json:"session_id"`
 	ExternalSessionID      string    `json:"external_session_id,omitempty"`
+	// AmbiguousSessionIDs lists every internal session id the requested id matched
+	// when an external id resolved to more than one session; SessionID is the one
+	// packaged (the same first match the CLI picks). Empty when the id was
+	// unambiguous. Set by the resolving surface, not by Build.
+	AmbiguousSessionIDs    []string  `json:"ambiguous_session_ids,omitempty"`
 	Provider               string    `json:"provider"`
 	Project                string    `json:"project,omitempty"`
 	TranscriptPath         string    `json:"transcript_path,omitempty"`
@@ -97,18 +102,27 @@ type Manifest struct {
 	AgentRuns              int       `json:"agent_runs"`
 	CompletedAgentRuns     int       `json:"completed_agent_runs"`
 	FailedAgentRuns        int       `json:"failed_agent_runs"`
+	// InterruptedAgentRuns counts agents deliberately stopped (a successful
+	// TaskStop); IncompleteAgentRuns counts those launched but never completed or
+	// stopped (in-flight / abandoned). Both lack a captured result, but the
+	// recovery differs: reconcile a stop vs resume an in-flight run.
+	InterruptedAgentRuns   int       `json:"interrupted_agent_runs,omitempty"`
 	IncompleteAgentRuns    int       `json:"incomplete_agent_runs,omitempty"`
 	FinalSynthesisPresent  bool      `json:"final_synthesis_present"`
-	RecommendedEntrypoints []string  `json:"recommended_entrypoints"`
+	// RecommendedEntrypoints names the package files in reading order; it is a
+	// directory-form (CLI) concept, so the HTTP handler clears it (omitempty) —
+	// over HTTP the whole package is one JSON body, not a set of files.
+	RecommendedEntrypoints []string  `json:"recommended_entrypoints,omitempty"`
 }
 
-// Package is the full assembled handoff, ready to write to a directory.
+// Package is the full assembled handoff, ready to write to a directory (CLI) or
+// serve as one JSON object (HTTP GET /v1/sessions/{id}/handoff).
 type Package struct {
-	Manifest  Manifest
-	Session   trace.Session
-	Turns     []trace.Turn
-	AgentRuns []AgentRun
-	Evidence  []EvidenceItem
+	Manifest  Manifest       `json:"manifest"`
+	Session   trace.Session  `json:"session"`
+	Turns     []trace.Turn   `json:"turns"`
+	AgentRuns []AgentRun     `json:"agent_runs"`
+	Evidence  []EvidenceItem `json:"evidence"`
 }
 
 // agentInput is the shared shape of the agent-spawning tools' input_json. Task
@@ -148,7 +162,9 @@ func Build(now time.Time, session trace.Session, turns []trace.Turn, maxOutputBy
 }
 
 func detectAgentRuns(session trace.Session, turns []trace.Turn) []AgentRun {
-	var runs []AgentRun
+	// Non-nil so the handoff package's agent_runs serializes as [] (not null) for a
+	// session with no agent tool calls — the /v1/sessions/{id}/handoff route.
+	runs := make([]AgentRun, 0)
 	for ti := range turns {
 		turn := &turns[ti]
 		for ci := range turn.ToolCalls {
@@ -187,16 +203,21 @@ func detectAgentRuns(session trace.Session, turns []trace.Turn) []AgentRun {
 }
 
 func buildManifest(now time.Time, session trace.Session, turns []trace.Turn, agents []AgentRun) Manifest {
-	completed, failed, incomplete := 0, 0, 0
+	completed, failed, interrupted, incomplete := 0, 0, 0, 0
 	for _, a := range agents {
 		switch a.Status {
 		case trace.StatusSuccess:
 			completed++
 		case trace.StatusFailed:
 			failed++
+		case trace.StatusInterrupted:
+			// Deliberately stopped (a successful TaskStop) — its result was never
+			// produced, but unlike an in-flight run it was killed on purpose, so a
+			// recovering agent should reconcile rather than blindly resume it.
+			interrupted++
 		default:
-			// pending / active / unknown: the agent was interrupted before its
-			// result was recorded, so it is neither a usable result nor a failure.
+			// pending / active / unknown: launched but never completed or stopped —
+			// in-flight / abandoned, neither a usable result nor a failure.
 			incomplete++
 		}
 	}
@@ -223,6 +244,7 @@ func buildManifest(now time.Time, session trace.Session, turns []trace.Turn, age
 		AgentRuns:              len(agents),
 		CompletedAgentRuns:     completed,
 		FailedAgentRuns:        failed,
+		InterruptedAgentRuns:   interrupted,
 		IncompleteAgentRuns:    incomplete,
 		FinalSynthesisPresent:  finalPresent,
 		RecommendedEntrypoints: entrypoints,
@@ -231,20 +253,32 @@ func buildManifest(now time.Time, session trace.Session, turns []trace.Turn, age
 
 // workflowStatus classifies the session for a recovering agent. The headline
 // case the feature targets: agents finished but the final synthesis is missing
-// (quota/interrupt before wrap-up).
+// (quota/interrupt before wrap-up). A present final synthesis is authoritative
+// for "completed" — a failed tool call in the closing turn (a non-zero Bash, a
+// grep with no match) does not mean the session was interrupted, and any
+// still-in-flight agents are surfaced via IncompleteAgentRuns rather than by
+// overriding a wrap-up that genuinely happened.
 func workflowStatus(turns []trace.Turn, agents []AgentRun, finalPresent bool) string {
 	if len(turns) == 0 {
 		return "empty"
 	}
-	last := turns[len(turns)-1]
-	switch {
-	case len(agents) > 0 && !finalPresent:
-		return "interrupted_after_agents_completed"
-	case last.Status == trace.StatusFailed:
-		return "interrupted"
-	case !finalPresent:
-		return "no_final_synthesis"
-	default:
+	if finalPresent {
 		return "completed"
 	}
+	if len(agents) > 0 {
+		// No wrap-up: an agent still in flight (launched, never completed or stopped)
+		// means its result was never captured and it may still be running — distinct
+		// from agents that reached a terminal state (succeeded, failed, or were
+		// deliberately stopped) but whose closing synthesis was lost.
+		for _, a := range agents {
+			if a.Status == trace.StatusActive || a.Status == trace.StatusPending {
+				return "interrupted_agents_in_flight"
+			}
+		}
+		return "interrupted_after_agents_completed"
+	}
+	if turns[len(turns)-1].Status == trace.StatusFailed {
+		return "interrupted"
+	}
+	return "no_final_synthesis"
 }

@@ -140,7 +140,12 @@ raw bytes; the normalized rows survive until the next reconcile.
 
 ## Analyze your usage
 
-All analytics read the local SQLite DB directly (no daemon required).
+All analytics read the local SQLite DB directly (no daemon required) — so they show the
+database **as of the last `ingest` or daemon reconcile**, not the live transcript. To pick up
+new transcript activity, re-run `toktop ingest` (idempotent — unchanged files are skipped) or
+keep a daemon running so the DB stays current automatically (see
+[Live status](#live-status--event-stream)). `search` and the other analytics commands do
+**not** auto-start a daemon — only `status` / `stream` do.
 
 | Command | Shows |
 | --- | --- |
@@ -168,16 +173,17 @@ All analytics read the local SQLite DB directly (no daemon required).
 --since 24h    --until 7d       # duration (7d, 24h) or an RFC3339 timestamp
 ```
 
-**Output formats** — `--format table` (default) `| json | ndjson | csv` (`summary` and
-`search` are `table|json`). `sessions`, `turns`, and `status` page with `--limit` /
-`--offset`; `sessions` and `turns` also take `--sort`.
+**Output formats** — `--format table` (default) `| json | ndjson | csv | markdown | html`
+(`summary` and `search` are `table|json`). `sessions`, `turns`, and `status` page with
+`--limit` / `--offset`; `sessions` and `turns` also take `--sort`.
 
 ```bash
 toktop turns --sources claude-code --since 24h --sort tokens_desc --limit 10
-toktop search 'rate limit' kind:turn --limit 20
+toktop search 'rate limit' kind:turn source:claude-code --limit 20   # kind:/source: tokens are separate args
 toktop mcps unused --format json
 toktop sessions inspect 7fe8484969b12a21
 toktop turns timeline 2dcb402ffc459e93     # per-turn event timeline
+toktop handoff create --session 7fe8484969b12a21   # recovery package → .ai/handoff/toktop (--output dir, --max-output-bytes N)
 ```
 
 `suggestions` runs a small rule engine over your history — e.g. an MCP server enabled but
@@ -233,7 +239,9 @@ toktop daemon pause | resume | trigger | stop
 `status` and `stream` **auto-start a daemon on demand** (config `autostart`, default on) and
 it **idle-stops** ~60 s after the last SSE consumer disconnects (config `idle_stop`). Exactly
 one daemon owns the live event log per home; live/status/stream commands are daemon *clients*
-over the socket.
+over the socket. To keep one running indefinitely — e.g. so analytics / `search` always
+reflect the latest transcripts — use `toktop daemon run` (watch-only; never idle-stops), or
+`toktop config set idle_stop off` before `toktop daemon serve`.
 
 **Push live status from the agents themselves (hooks):** transcript watching alone lags a
 little; installing observer hooks makes status near-instant. Each hook POSTs to
@@ -289,7 +297,7 @@ via config `addr=tcp://host:port`; off loopback it **requires a bearer token** r
 | --- | --- |
 | `GET /v1/health` | Liveness |
 | `GET /v1/summary` | Counts + token totals |
-| `GET /v1/sessions` · `/v1/sessions/{id}` | List / one session |
+| `GET /v1/sessions` · `/v1/sessions/{id}` · `/{id}/handoff` | List / one session / Evidence-based Handoff Package (`max_output_bytes`) |
 | `GET /v1/turns` · `/{id}` · `/{id}/timeline` · `/{id}/components` | Turns + per-turn detail |
 | `GET /v1/projects` · `/v1/tools` · `/v1/models` | Project / tool / model rollups |
 | `GET /v1/mcps` · `/v1/mcps/unused` · `/v1/skills` · `/v1/skills/unused` | MCP / skill usage |
@@ -323,7 +331,7 @@ toktop config path            # where the file lives
 | --- | --- | --- |
 | `redact` | `on` | Secret redaction on projected/indexed fields |
 | `autostart` | `on` | `status`/`stream` may auto-start a daemon |
-| `idle_stop` | `on` | Daemon idle-stops ~60 s after the last SSE consumer |
+| `idle_stop` | `on` | Daemon idle-stops ~60 s after the last SSE consumer (`off` = keep running) |
 | `addr` | _(unix socket)_ | Server bind: empty = `~/.toktop/run/toktop.sock`, or `tcp://host:port` |
 | `interval` | _(built-in)_ | Daemon full-reconcile interval (e.g. `5m`) |
 | `timezone` | `UTC` | Display timezone: `utc`, `local`, or an IANA name |

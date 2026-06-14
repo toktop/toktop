@@ -14,9 +14,14 @@ import (
 	"toktop.unceas.dev/internal/textutil"
 )
 
+// formatFlagUsage is the --format help for every writeFormatted-backed list
+// command — a single source so the advertised set can't drift from the formats
+// validateListFormat accepts and writeFormatted renders.
+const formatFlagUsage = "output format: table|json|ndjson|csv|markdown|html"
+
 // validateFormat rejects a --format value outside `allowed` (treating "" as the
-// default). For the limited table|json commands; the full table/json/ndjson/csv/
-// markdown/html set is validated inside writeFormatted itself.
+// default). For the limited table|json commands; the full list set is
+// validateListFormat, and writeFormatted renders the same set.
 func validateFormat(format string, allowed ...string) error {
 	if format == "" || slices.Contains(allowed, format) {
 		return nil
@@ -24,8 +29,12 @@ func validateFormat(format string, allowed ...string) error {
 	return fmt.Errorf("unknown --format %q (want %s)", format, strings.Join(allowed, " or "))
 }
 
+// validateListFormat gates the list commands' --format to the full rendered set
+// (table/json/ndjson/csv/markdown/html). Kept in lockstep with writeFormatted's
+// switch so every list command accepts the same formats — a command that skipped
+// this check would silently accept markdown/html that another rejects.
 func validateListFormat(format string) error {
-	return validateFormat(format, "table", "json", "ndjson", "csv")
+	return validateFormat(format, "table", "json", "ndjson", "csv", "markdown", "html")
 }
 
 // Output rendering shared by every command: format dispatch (table/json/ndjson/

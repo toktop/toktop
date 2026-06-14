@@ -51,7 +51,7 @@ func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	offset := 0
 	fs.IntVar(&limit, "limit", limit, "maximum sessions per page")
 	fs.IntVar(&offset, "offset", offset, "rows to skip (page past --limit)")
-	fs.StringVar(&format, "format", format, "output format: table|json|ndjson|csv")
+	fs.StringVar(&format, "format", format, formatFlagUsage)
 	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
 	fs.Var(&projects, "project", "project id filter; may be repeated or comma-separated")
 	fs.Var(&sessionsFilter, "session", "session id or external session id filter; may be repeated or comma-separated")
@@ -199,7 +199,7 @@ func runTurns(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	offset := 0
 	fs.IntVar(&limit, "limit", limit, "maximum turns per page")
 	fs.IntVar(&offset, "offset", offset, "rows to skip (page past --limit)")
-	fs.StringVar(&format, "format", format, "output format: table|json|ndjson|csv")
+	fs.StringVar(&format, "format", format, formatFlagUsage)
 	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
 	fs.Var(&projects, "project", "project id filter; may be repeated or comma-separated")
 	fs.Var(&sessionsFilter, "session", "session id or external session id filter; may be repeated or comma-separated")
@@ -325,7 +325,7 @@ func runTurnComponents(ctx context.Context, args []string, stdout, stderr io.Wri
 	kind := ""
 	fs := flag.NewFlagSet("turns components", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&format, "format", format, "output format: table|json|ndjson|csv")
+	fs.StringVar(&format, "format", format, formatFlagUsage)
 	fs.StringVar(&kind, "kind", kind, "filter by kind: builtin_tool|mcp_server|mcp_tool|skill")
 	setFlagUsage(fs, "usage: toktop turns components [flags] <turn_id>", "List the components (tools, skills) attributed to one turn.")
 	if code := parseFlags(fs, args, stdout); code >= 0 {
@@ -384,7 +384,7 @@ func runTurnTimeline(ctx context.Context, args []string, stdout, stderr io.Write
 	format := "table"
 	fs := flag.NewFlagSet("turns timeline", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&format, "format", format, "output format: table|json|ndjson|csv")
+	fs.StringVar(&format, "format", format, formatFlagUsage)
 	setFlagUsage(fs, "usage: toktop turns timeline [flags] <turn_id>", "Show the chronological event timeline (prompt, invocations, tool calls) for one turn.")
 	if code := parseFlags(fs, args, stdout); code >= 0 {
 		return code

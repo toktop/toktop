@@ -1,13 +1,14 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"toktop.unceas.dev/internal/runtime"
 )
 
-const maxDaemonRequestBytes int64 = 64 << 10
+// maxControlRequestBytes caps the JSON body of the small control POST routes
+// (daemon:trigger, data:prune, retention:prune) — see decodeJSONBody.
+const maxControlRequestBytes int64 = 64 << 10
 
 func (s *Server) AttachRuntime(svc *runtime.Service) {
 	s.runtime.Store(svc)
@@ -23,22 +24,14 @@ func (s *Server) handleDaemonStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDaemonIngest(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
 	rt := s.runtime.Load()
 	if rt == nil {
 		writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "runtime not attached")
 		return
 	}
-	body, ok := readBodyCapped(w, r, maxDaemonRequestBytes, "bad_body")
-	if !ok {
-		return
-	}
 	var req runtime.TriggerRequest
-	if len(body) > 0 {
-		if err := json.Unmarshal(body, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
-			return
-		}
+	if !decodeJSONBody(w, r, maxControlRequestBytes, &req) {
+		return
 	}
 	if req.Mode == "" {
 		req.Mode = "full"

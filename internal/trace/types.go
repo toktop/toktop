@@ -61,13 +61,16 @@ type Index struct {
 	ParserVersion  string          `json:"parser_version,omitzero"`
 	SourceRoots    []string        `json:"source_roots,omitzero"`
 	RawEventCount  int             `json:"raw_event_count"`
-	Sessions       []Session       `json:"sessions,omitzero"`
-	Turns          []Turn          `json:"turns,omitzero"`
-	Invocations    []Invocation    `json:"invocations,omitzero"`
-	TurnComponents []TurnComponent `json:"turn_components,omitzero"`
-	Skills         []Skill         `json:"skills,omitzero"`
-	MCPServers     []MCPServer     `json:"mcp_servers,omitzero"`
-	ParseErrorList []ParseError    `json:"parse_errors,omitzero"`
+	// The record arrays carry NO omitzero: an export has a stable schema so a
+	// consumer can always index sessions/turns/... A since-window that matched
+	// nothing serializes [] (LoadIndex guarantees non-nil), never a dropped key.
+	Sessions       []Session       `json:"sessions"`
+	Turns          []Turn          `json:"turns"`
+	Invocations    []Invocation    `json:"invocations"`
+	TurnComponents []TurnComponent `json:"turn_components"`
+	Skills         []Skill         `json:"skills"`
+	MCPServers     []MCPServer     `json:"mcp_servers"`
+	ParseErrorList []ParseError    `json:"parse_errors"`
 
 	SessionCount    int `json:"session_count"`
 	TurnCount       int `json:"turn_count"`

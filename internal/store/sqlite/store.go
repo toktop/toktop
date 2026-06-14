@@ -36,7 +36,19 @@ const dbFileName = "toktop.db"
 // Must stay nonzero: 0 is both the implicit value of a fresh database file and
 // the in-progress-wipe marker wipeSchema sets, so 0 always means "no schema
 // built at this epoch".
-const schemaUserVersion = 7
+// Epoch 8: claudecode parser now re-resolves out-of-order tool_results (a
+// tool_result whose tool_use appears later in the turn), so old rows where those
+// calls had no output / a stale pending status and a spurious parse error must be
+// rebuilt.
+// Epoch 9: claudecode parser now reconciles background-task launches (Workflow /
+// background Bash) with their out-of-band <task-notification> results — the real
+// output and status supersede the "launched in background" ack, and a launch with
+// no completion becomes active (in-flight), or interrupted when a successful
+// TaskStop killed its task. The same notification, when injected as a system user
+// event, no longer stores its raw XML as the turn's user message. Old rows holding
+// the ack as a successful result (or the notification XML as a user message) must
+// be rebuilt.
+const schemaUserVersion = 9
 
 var writerCacheKiB, readerCacheKiB, sqliteMmapBytes = memoryBudget(memory.TotalMemory())
 

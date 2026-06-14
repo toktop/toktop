@@ -93,7 +93,7 @@ func (s *Server) pruneLiveSessions() int {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	filter, err := parseFilter(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_filter", err.Error())
+		writeQueryError(w, err, "invalid_filter")
 		return
 	}
 	watchTargets, err := parseWatchTargets(r)
@@ -112,7 +112,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	page.Items = filterLiveSessionItemsByWatch(page.Items, watchTargets)
 	if len(watchTargets) > 0 {
 		page.Total = len(page.Items)
-		page.NextOffset = min(page.Offset+len(page.Items), page.Total)
+		page.NextOffset = sqlite.NextOffset(page.Offset, len(page.Items), page.Total)
 	} else {
 		// Live-only rows are overlay-injected (first page only) and have no stored
 		// page position: count them in Total, but advance NextOffset over STORED
@@ -120,7 +120,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		// overlay nor re-sees the live-only rows on the next page.
 		liveAdded := max(len(page.Items)-storedReturned, 0)
 		page.Total = max(page.Total, page.Offset+storedReturned+liveAdded)
-		page.NextOffset = min(page.Offset+storedReturned, page.Total)
+		page.NextOffset = sqlite.NextOffset(page.Offset, storedReturned, page.Total)
 	}
 	writeJSON(w, http.StatusOK, page)
 }

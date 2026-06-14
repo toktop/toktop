@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"toktop.unceas.dev/internal/handoff"
 	"toktop.unceas.dev/internal/httpapi/internal/eventlog"
 	"toktop.unceas.dev/internal/ingest"
 	"toktop.unceas.dev/internal/liveevent"
@@ -30,7 +32,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
 	filter, err := parseFilter(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_filter", err.Error())
+		writeQueryError(w, err, "invalid_filter")
 		return
 	}
 	summary, err := s.service.Summary(r.Context(), filter)
@@ -44,7 +46,7 @@ func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	filter, err := parseFilter(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_filter", err.Error())
+		writeQueryError(w, err, "invalid_filter")
 		return
 	}
 	page, err := s.service.ListSessions(r.Context(), filter)
@@ -56,28 +58,78 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	session, err := s.service.GetSession(r.Context(), id)
+	session, turns, ambiguous, ok := s.loadSessionWithTurns(w, r)
+	if !ok {
+		return
+	}
+	resp := map[string]any{"session": session, "turns": turns}
+	if len(ambiguous) > 0 {
+		resp["ambiguous_session_ids"] = ambiguous
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// loadSessionWithTurns resolves the {id} path value to a session (matching an
+// internal or external id) and loads its turns, writing the matching HTTP error
+// and returning ok=false on failure. Shared by the session-detail and handoff
+// routes so their lookup, 404 wording, and error codes cannot drift apart. The
+// returned ambiguous slice lists every matching internal id when an external id
+// resolved to more than one session (else nil) — so the caller can signal it
+// instead of silently handing back an arbitrary first match, mirroring the CLI's
+// disambiguation note.
+func (s *Server) loadSessionWithTurns(w http.ResponseWriter, r *http.Request) (trace.Session, []trace.Turn, []string, bool) {
+	matches, err := s.service.FindSessions(r.Context(), r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, query.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "session not found")
-			return
+		} else {
+			writeError(w, http.StatusInternalServerError, "get_session_failed", err.Error())
 		}
-		writeError(w, http.StatusInternalServerError, "get_session_failed", err.Error())
-		return
+		return trace.Session{}, nil, nil, false
+	}
+	// matches is ordered exact-internal-id first, so [0] is the session to use
+	// (the same pick the CLI's selectSessionMatch makes).
+	session := matches[0]
+	var ambiguous []string
+	if len(matches) > 1 {
+		ambiguous = make([]string, len(matches))
+		for i, m := range matches {
+			ambiguous[i] = m.ID
+		}
 	}
 	turns, err := s.service.SessionTurns(r.Context(), session.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "session_turns_failed", err.Error())
+		return trace.Session{}, nil, nil, false
+	}
+	return session, turns, ambiguous, true
+}
+
+func (s *Server) handleSessionHandoff(w http.ResponseWriter, r *http.Request) {
+	// ?max_output_bytes=N mirrors the CLI --max-output-bytes flag (0 = full).
+	// Validate the cheap query param before the session + turns DB load.
+	maxOutputBytes, err := intParam(r.URL.Query(), "max_output_bytes", 0)
+	if err != nil {
+		writeQueryError(w, err, "invalid_max_output_bytes")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"session": session, "turns": turns})
+	session, turns, ambiguous, ok := s.loadSessionWithTurns(w, r)
+	if !ok {
+		return
+	}
+	pkg := handoff.Build(time.Now().UTC(), session, turns, maxOutputBytes)
+	// recommended_entrypoints names CLI directory files that don't exist over HTTP
+	// (the package is one JSON body here); ambiguous_session_ids mirrors the CLI's
+	// note for an external id that matched several sessions.
+	pkg.Manifest.RecommendedEntrypoints = nil
+	pkg.Manifest.AmbiguousSessionIDs = ambiguous
+	writeJSON(w, http.StatusOK, pkg)
 }
 
 func (s *Server) handleTurns(w http.ResponseWriter, r *http.Request) {
 	filter, err := parseFilter(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_filter", err.Error())
+		writeQueryError(w, err, "invalid_filter")
 		return
 	}
 	page, err := s.service.ListTurns(r.Context(), filter)
@@ -88,45 +140,65 @@ func (s *Server) handleTurns(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, page)
 }
 
-func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	turn, err := s.service.GetTurn(r.Context(), id)
+// loadTurn resolves the {id} path value to a turn, writing the matching HTTP
+// error and returning ok=false on failure. Shared by the turn-detail and
+// timeline routes so their lookup, 404 wording, and error codes cannot drift.
+func (s *Server) loadTurn(w http.ResponseWriter, r *http.Request) (trace.Turn, bool) {
+	turn, err := s.service.GetTurn(r.Context(), r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, query.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "turn not found")
-			return
+		} else {
+			writeError(w, http.StatusInternalServerError, "get_turn_failed", err.Error())
 		}
-		writeError(w, http.StatusInternalServerError, "get_turn_failed", err.Error())
+		return trace.Turn{}, false
+	}
+	return turn, true
+}
+
+func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
+	turn, ok := s.loadTurn(w, r)
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, turn)
 }
 
 func (s *Server) handleTurnTimeline(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	turn, err := s.service.GetTurn(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, query.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "not_found", "turn not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "get_turn_failed", err.Error())
+	turn, ok := s.loadTurn(w, r)
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, BuildTimeline(turn))
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	limit := atoiOr(r.URL.Query().Get("limit"), 20)
+	values := r.URL.Query()
+	q := strings.TrimSpace(values.Get("q"))
+	limit, err := intParam(values, "limit", 20)
+	if err != nil {
+		writeQueryError(w, err, "invalid_limit")
+		return
+	}
 	if limit < 1 {
 		// Mirror the CLI `search --limit < 1` rejection so both surfaces agree
 		// instead of the store silently clamping to a default.
 		writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be >= 1")
 		return
 	}
-	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
-	source := strings.TrimSpace(r.URL.Query().Get("source"))
+	kind := strings.TrimSpace(values.Get("kind"))
+	source := strings.TrimSpace(values.Get("source"))
+	if source != "" {
+		// Resolve a provider name to its content-hashed source_id (and reject an
+		// unknown one), matching the list-filter convention and what the store's
+		// search filter compares against. Passing the raw name silently returned 0.
+		resolved, err := resolveSourceFilter(source)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "unknown_source", err.Error())
+			return
+		}
+		source = resolved
+	}
 	results, err := s.service.Search(r.Context(), q, limit, kind, source)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "search_failed", err.Error())
@@ -138,7 +210,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	filter, err := parseFilter(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_filter", err.Error())
+		writeQueryError(w, err, "invalid_filter")
 		return
 	}
 	projects, err := s.service.ListProjects(r.Context(), filter)
@@ -152,7 +224,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 	filter, err := parseFilter(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_filter", err.Error())
+		writeQueryError(w, err, "invalid_filter")
 		return
 	}
 	tools, err := s.service.ListTools(r.Context(), filter)
@@ -166,7 +238,7 @@ func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	filter, err := parseFilter(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_filter", err.Error())
+		writeQueryError(w, err, "invalid_filter")
 		return
 	}
 	models, err := s.service.ListModels(r.Context(), filter)
@@ -180,7 +252,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMCPs(w http.ResponseWriter, r *http.Request) {
 	filter, err := parseFilter(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_filter", err.Error())
+		writeQueryError(w, err, "invalid_filter")
 		return
 	}
 	mcps, err := s.service.ListMCPs(r.Context(), filter)
@@ -203,7 +275,7 @@ func (s *Server) handleUnusedMCPs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	filter, err := parseFilter(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_filter", err.Error())
+		writeQueryError(w, err, "invalid_filter")
 		return
 	}
 	skills, err := s.service.ListSkills(r.Context(), filter)
@@ -276,19 +348,30 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, index)
 }
 
+// resolveSourceFilter maps a source query param to the content-hashed source_id
+// the store filters on: a value that already looks like an id passes through;
+// otherwise a provider name is validated and resolved. Shared by parseFilter and
+// handleSearch so the list filters and search agree on resolution + validation.
+func resolveSourceFilter(app string) (string, error) {
+	if query.LooksLikeSourceID(app) {
+		return app, nil
+	}
+	name := ingest.NormalizeName(app)
+	if !ingest.HasProvider(name) {
+		return "", fmt.Errorf("unknown source %q", app)
+	}
+	return query.ResolveSourceFilter(name), nil
+}
+
 func parseFilter(r *http.Request) (sqlite.Filter, error) {
 	q := r.URL.Query()
 	var sourceIDs []string
 	for _, app := range queryValues(q, "source", "sources", "provider", "providers", "app", "apps") {
-		if query.LooksLikeSourceID(app) {
-			sourceIDs = append(sourceIDs, app)
-			continue
+		id, err := resolveSourceFilter(app)
+		if err != nil {
+			return sqlite.Filter{}, err
 		}
-		name := ingest.NormalizeName(app)
-		if !ingest.HasProvider(name) {
-			return sqlite.Filter{}, fmt.Errorf("unknown source %q", app)
-		}
-		sourceIDs = append(sourceIDs, query.ResolveSourceFilter(name))
+		sourceIDs = append(sourceIDs, id)
 	}
 	statuses := textutil.DedupNonEmpty(queryValues(q, "status", "statuses"))
 	validStatuses := trace.StatusValues()
@@ -297,13 +380,23 @@ func parseFilter(r *http.Request) (sqlite.Filter, error) {
 			return sqlite.Filter{}, fmt.Errorf("unknown status %q", status)
 		}
 	}
+	// limit/offset default to 0 (the store's "default page" sentinel); a present
+	// but unparseable value is rejected, not silently swallowed (see intParam).
+	limit, err := intParam(q, "limit", 0)
+	if err != nil {
+		return sqlite.Filter{}, err
+	}
+	offset, err := intParam(q, "offset", 0)
+	if err != nil {
+		return sqlite.Filter{}, err
+	}
 	filter := sqlite.Filter{
 		SourceIDs:  textutil.DedupNonEmpty(sourceIDs),
 		ProjectIDs: textutil.DedupNonEmpty(queryValues(q, "project", "projects")),
 		SessionIDs: textutil.DedupNonEmpty(queryValues(q, "session", "sessions")),
 		Statuses:   statuses,
-		Limit:      atoiOr(q.Get("limit"), 0),
-		Offset:     atoiOr(q.Get("offset"), 0),
+		Limit:      limit,
+		Offset:     offset,
 		SortBy:     q.Get("sort_by"),
 	}
 	if order := q.Get("sort"); order != "" {
@@ -372,13 +465,43 @@ func firstNonEmpty(values ...string) string {
 	return strings.TrimSpace(textutil.FirstNonBlank(values...))
 }
 
-func atoiOr(value string, fallback int) int {
-	if value == "" {
-		return fallback
+// queryParamError carries a per-parameter HTTP error code (invalid_limit,
+// invalid_offset, …) so the same bad param surfaces the same code regardless of
+// whether it was parsed inline (handleSearch) or inside parseFilter — write it
+// via writeQueryError.
+type queryParamError struct {
+	code string
+	msg  string
+}
+
+func (e *queryParamError) Error() string { return e.msg }
+
+// writeQueryError responds 400 with the parameter-specific code when err carries
+// one, else fallbackCode. Use at every site that surfaces a parse/validation
+// error from intParam or parseFilter.
+func writeQueryError(w http.ResponseWriter, err error, fallbackCode string) {
+	code := fallbackCode
+	var pe *queryParamError
+	if errors.As(err, &pe) {
+		code = pe.code
 	}
-	n, err := strconv.Atoi(value)
+	writeError(w, http.StatusBadRequest, code, err.Error())
+}
+
+// intParam parses query parameter key as an int. An absent value yields fallback;
+// a present-but-unparseable value yields a queryParamError (code "invalid_<key>")
+// so the handler can reject it with 400 rather than silently swallowing a client
+// typo behind a default. Use it for filter/listing/handoff numeric params; SSE
+// resume ids go through parseEventID instead (uint64 + tolerant fallback,
+// required for reconnect).
+func intParam(values url.Values, key string, fallback int) (int, error) {
+	raw := values.Get(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
 	if err != nil {
-		return fallback
+		return 0, &queryParamError{code: "invalid_" + key, msg: key + " must be an integer"}
 	}
-	return n
+	return n, nil
 }

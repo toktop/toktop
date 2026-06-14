@@ -157,13 +157,13 @@ func runDaemon(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return runDaemonLoop(ctx, rest, true, stdout, stderr)
 
 	case "status":
-		return runDaemonControl(ctx, "GET", "/v1/daemon", rest, stdout, stderr)
+		return runDaemonControl(ctx, "GET", "/v1/daemon", "status", rest, stdout, stderr)
 	case "pause":
-		return runDaemonControl(ctx, "POST", "/v1/daemon:pause", rest, stdout, stderr)
+		return runDaemonControl(ctx, "POST", "/v1/daemon:pause", "pause", rest, stdout, stderr)
 	case "resume":
-		return runDaemonControl(ctx, "POST", "/v1/daemon:resume", rest, stdout, stderr)
+		return runDaemonControl(ctx, "POST", "/v1/daemon:resume", "resume", rest, stdout, stderr)
 	case "trigger":
-		return runDaemonControl(ctx, "POST", "/v1/daemon:trigger", rest, stdout, stderr)
+		return runDaemonControl(ctx, "POST", "/v1/daemon:trigger", "trigger", rest, stdout, stderr)
 	case "stop":
 		if printUsageForHelp(rest, stdout, "usage: toktop daemon stop") {
 			return 0
@@ -253,6 +253,13 @@ func runDaemonLoop(ctx context.Context, args []string, serveAPIDefault bool, std
 	fs.Var(&sourcesFlag, "sources", "providers to watch/import (default: auto-detected on-disk providers); may be repeated or comma-separated")
 	fs.StringVar(&token, "token", token, "bearer token (serve)")
 	fs.BoolVar(&noAuth, "no-auth", noAuth, "disable bearer token enforcement (serve, loopback only)")
+	// Clean `daemon run|serve -h` usage instead of flag's default "Usage of
+	// daemon:" header, matching the other leaf commands.
+	if serveAPIDefault {
+		setFlagUsage(fs, "usage: toktop daemon serve [flags]", "Watch transcript roots, serve the HTTP API v1, and run the live event broker.")
+	} else {
+		setFlagUsage(fs, "usage: toktop daemon run [flags]", "Watch transcript roots and ingest changes (no HTTP/SSE; use `daemon serve` for the live broker).")
+	}
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}

@@ -71,9 +71,9 @@ func (p Package) evidenceIndexMD() string {
 	if p.Manifest.Project != "" {
 		fmt.Fprintf(&b, " · project `%s`", p.Manifest.Project)
 	}
-	fmt.Fprintf(&b, "\n\nWorkflow status: **%s** · %d turns · %d agent runs (%d ok, %d failed) · final synthesis: %v\n\n",
+	fmt.Fprintf(&b, "\n\nWorkflow status: **%s** · %d turns · %d agent runs (%d ok, %d failed, %d stopped, %d in-flight) · final synthesis: %v\n\n",
 		p.Manifest.WorkflowStatus, p.Manifest.Turns, p.Manifest.AgentRuns,
-		p.Manifest.CompletedAgentRuns, p.Manifest.FailedAgentRuns, p.Manifest.FinalSynthesisPresent)
+		p.Manifest.CompletedAgentRuns, p.Manifest.FailedAgentRuns, p.Manifest.InterruptedAgentRuns, p.Manifest.IncompleteAgentRuns, p.Manifest.FinalSynthesisPresent)
 	fmt.Fprintf(&b, "Each item is tagged `evidence` (proven by the transcript), `inference` (derived), or `unknown`.\nProvenance points to the original transcript so you can re-read raw bytes; do not trust a claim you cannot trace.\n\n")
 	if len(p.Evidence) == 0 {
 		b.WriteString("_No evidence items extracted._\n")
@@ -103,7 +103,7 @@ func (p Package) codexPromptMD() string {
 	fmt.Fprintf(&b, "You are picking up a %s workflow %s. Workflow status: **%s**.\n\n",
 		p.Manifest.Provider, intro, p.Manifest.WorkflowStatus)
 	b.WriteString("## Hard rules\n")
-	b.WriteString("1. Do NOT re-run the agents below — their results are already captured in `agent-results.ndjson`.\n")
+	b.WriteString("1. Do NOT re-run an agent whose result is captured (status `success` in `agent-results.ndjson`). Agents marked `failed` or `active` (incomplete) have NO captured result — do not trust a blank or ack-only output; resume, re-run, or reconcile against the final answer as the notes below direct.\n")
 	b.WriteString("2. Do NOT re-plan from scratch or guess from the current git diff.\n")
 	b.WriteString("3. Work only from `evidence`-tagged facts. Treat `inference` as a hint and `unknown` as not established.\n")
 	b.WriteString("4. Every claim you rely on must trace to a source pointer (`raw-pointers.ndjson`); re-read the transcript if unsure.\n")
@@ -113,10 +113,30 @@ func (p Package) codexPromptMD() string {
 		fmt.Fprintf(&b, "%d. `%s`\n", i+1, e)
 	}
 	b.WriteString("\n## What is left\n")
-	if !p.Manifest.FinalSynthesisPresent {
+	inFlight := p.Manifest.IncompleteAgentRuns
+	stopped := p.Manifest.InterruptedAgentRuns
+	final := p.Manifest.FinalSynthesisPresent
+	if !final {
 		b.WriteString("- The final synthesis/answer is missing. The agent runs completed; your job is to collect their results and produce the wrap-up the original session never emitted.\n")
 	} else {
 		b.WriteString("- A final assistant message exists (see `final_answer` in the evidence index). Verify it against the agent results before continuing.\n")
+	}
+	if inFlight > 0 {
+		// In-flight runs (launched, never completed or stopped) have no captured
+		// result; they may still be running.
+		if final {
+			fmt.Fprintf(&b, "- %d agent run(s) were still in flight (status `active`, no captured result), yet the session still produced a final answer — reconcile against the final answer first, then resume or re-run only what it did not already cover.\n", inFlight)
+		} else {
+			fmt.Fprintf(&b, "- %d agent run(s) were still in flight (status `active`, no captured result). Resume or re-run them — a background Workflow's captured ack holds the run id and script path to resume from.\n", inFlight)
+		}
+	}
+	if stopped > 0 {
+		// Deliberately stopped (TaskStop): killed on purpose, so resuming would
+		// override an intentional decision.
+		fmt.Fprintf(&b, "- %d agent run(s) were deliberately stopped (status `interrupted`, via TaskStop) — no result was captured, but they were killed on purpose. The session likely used their partial results or abandoned them; reconcile against the final answer or the transcript rather than blindly resuming.\n", stopped)
+	}
+	if n := p.Manifest.FailedAgentRuns; n > 0 {
+		fmt.Fprintf(&b, "- %d agent run(s) failed; treat their output as unreliable and re-run if their result is needed.\n", n)
 	}
 	return b.String()
 }

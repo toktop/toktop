@@ -14,6 +14,7 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("GET /v1/sessions", s.handleSessions)
 	s.mux.HandleFunc("GET /v1/sessions/{id}", s.handleSession)
+	s.mux.HandleFunc("GET /v1/sessions/{id}/handoff", s.handleSessionHandoff)
 	s.mux.HandleFunc("GET /v1/turns", s.handleTurns)
 	s.mux.HandleFunc("GET /v1/turns/{id}", s.handleTurn)
 	s.mux.HandleFunc("GET /v1/turns/{id}/timeline", s.handleTurnTimeline)

@@ -95,7 +95,10 @@ func (WorkflowInterrupted) Evaluate(_ context.Context, index trace.Index, _ time
 	var out []trace.Suggestion
 	for _, sid := range order {
 		a := bySession[sid]
-		if a.agentRuns == 0 || (a.lastHasFinal && !a.lastFailed) {
+		// A closing turn that produced a synthesis means the session wrapped up —
+		// a failed tool call within that turn is not an interruption. Only the
+		// absence of a final message signals "interrupted before wrap-up".
+		if a.agentRuns == 0 || a.lastHasFinal {
 			continue
 		}
 		ev, _ := json.Marshal(map[string]any{"session_id": sid, "agent_runs": a.agentRuns, "completed_runs": a.completedRuns, "last_turn_failed": a.lastFailed})

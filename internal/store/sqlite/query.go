@@ -79,7 +79,26 @@ func (s *Store) LoadIndex(ctx context.Context, since time.Time) (trace.Index, er
 		count += len(turn.ToolCalls)
 	}
 	index.ToolCallCount = count
+	// Guarantee non-nil record arrays so the export serializes [] (not null or a
+	// dropped key) for an empty result — the stable schema the omitzero-free
+	// trace.Index fields promise.
+	index.Sessions = nonNilSlice(index.Sessions)
+	index.Turns = nonNilSlice(index.Turns)
+	index.Invocations = nonNilSlice(index.Invocations)
+	index.TurnComponents = nonNilSlice(index.TurnComponents)
+	index.Skills = nonNilSlice(index.Skills)
+	index.MCPServers = nonNilSlice(index.MCPServers)
+	index.ParseErrorList = nonNilSlice(index.ParseErrorList)
 	return index, nil
+}
+
+// nonNilSlice returns s, or an empty non-nil slice when s is nil, so a JSON
+// array field serializes [] instead of null for an empty result.
+func nonNilSlice[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
 }
 
 func (s *Store) GetTurn(ctx context.Context, turnID string) (trace.Turn, error) {
@@ -235,7 +254,10 @@ func (s *Store) loadAllSessions(ctx context.Context, since time.Time) ([]trace.S
 
 func scanSessions(rows *sql.Rows) ([]trace.Session, error) {
 	defer rows.Close()
-	var sessions []trace.Session
+	// Non-nil so an empty result serializes as [] (not null): this scan feeds
+	// /v1/sessions (Page.Items) — the shared boundary, so the fix lives here rather
+	// than per-endpoint.
+	sessions := make([]trace.Session, 0)
 	for rows.Next() {
 		var session trace.Session
 		var startedAt, endedAt sql.NullString
@@ -296,7 +318,10 @@ func (s *Store) loadAllTurns(ctx context.Context, since time.Time) ([]trace.Turn
 
 func scanTurns(rows *sql.Rows) ([]trace.Turn, error) {
 	defer rows.Close()
-	var turns []trace.Turn
+	// Non-nil so an empty result serializes as [] (not null): this scan feeds
+	// /v1/turns (Page.Items), the /v1/sessions/{id} turns array, and the handoff
+	// package's turns — the shared boundary for all three.
+	turns := make([]trace.Turn, 0)
 	for rows.Next() {
 		var turn trace.Turn
 		var startedAt, endedAt sql.NullString

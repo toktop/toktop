@@ -41,7 +41,7 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	var sources, projects, sessions, statuses rootList
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&format, "format", format, "table|json|ndjson|csv")
+	fs.StringVar(&format, "format", format, formatFlagUsage)
 	fs.IntVar(&limit, "limit", limit, "maximum sessions per page")
 	fs.IntVar(&offset, "offset", offset, "rows to skip (page past --limit)")
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
@@ -298,7 +298,7 @@ func runProjects(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	var sources, projectFilter, sessions, statuses rootList
 	fs := flag.NewFlagSet("projects", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&format, "format", format, "table|json|ndjson|csv")
+	fs.StringVar(&format, "format", format, formatFlagUsage)
 	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
 	fs.Var(&projectFilter, "project", "project id filter; may be repeated or comma-separated")
 	fs.Var(&sessions, "session", "session id or external session id filter; may be repeated or comma-separated")
@@ -351,7 +351,7 @@ func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	var sources, projects, sessions, statuses rootList
 	fs := flag.NewFlagSet("tools", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&format, "format", format, "table|json|ndjson|csv")
+	fs.StringVar(&format, "format", format, formatFlagUsage)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
@@ -404,7 +404,7 @@ func runModels(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	var sources, projects, sessions, statuses rootList
 	fs := flag.NewFlagSet("models", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&format, "format", format, "table|json|ndjson|csv")
+	fs.StringVar(&format, "format", format, formatFlagUsage)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
@@ -465,7 +465,7 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	var sources, projects, sessions, statuses rootList
 	fs := flag.NewFlagSet("mcps", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&format, "format", format, "table|json|ndjson|csv")
+	fs.StringVar(&format, "format", format, formatFlagUsage)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
@@ -489,7 +489,7 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		// rejects the filter flags above.
 		uf := flag.NewFlagSet("mcps unused", flag.ContinueOnError)
 		uf.SetOutput(stderr)
-		uf.StringVar(&format, "format", format, "table|json|ndjson|csv")
+		uf.StringVar(&format, "format", format, formatFlagUsage)
 		setFlagUsage(uf, "usage: toktop mcps unused [--format ...]", "List declared MCP servers with zero observed calls. Accepts no filters.")
 		if code := parseFlagsNoPositionals(uf, rest, stdout, stderr); code >= 0 {
 			return code
@@ -552,7 +552,7 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	var sources, projects, sessions, statuses rootList
 	fs := flag.NewFlagSet("skills", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&format, "format", format, "table|json|ndjson|csv")
+	fs.StringVar(&format, "format", format, formatFlagUsage)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
@@ -575,7 +575,7 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		// `unused` takes no filters, so it parses with a minimal flag set.
 		uf := flag.NewFlagSet("skills unused", flag.ContinueOnError)
 		uf.SetOutput(stderr)
-		uf.StringVar(&format, "format", format, "table|json|ndjson|csv")
+		uf.StringVar(&format, "format", format, formatFlagUsage)
 		setFlagUsage(uf, "usage: toktop skills unused [--format ...]", "List installed skills with zero inferred uses. Accepts no filters.")
 		if code := parseFlagsNoPositionals(uf, rest, stdout, stderr); code >= 0 {
 			return code
@@ -645,7 +645,7 @@ func runSuggestions(ctx context.Context, args []string, stdout, stderr io.Writer
 	recompute := false
 	fs := flag.NewFlagSet("suggestions", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&format, "format", format, "table|json|ndjson|csv")
+	fs.StringVar(&format, "format", format, formatFlagUsage)
 	fs.StringVar(&rule, "rule", rule, "filter by rule id")
 	setFlagUsageSub(fs, "usage: toktop suggestions [flags]",
 		[]subcmdDoc{{"recompute", "rerun the rule engine, then list"}},
@@ -660,6 +660,10 @@ func runSuggestions(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
+	}
+	if err := validateListFormat(format); err != nil {
+		cliErr(stderr, err)
+		return 2
 	}
 	svc, store, err := openService(ctx, home)
 	if err != nil {
@@ -678,8 +682,11 @@ func runSuggestions(ctx context.Context, args []string, stdout, stderr io.Writer
 		cliErr(stderr, err)
 		return 1
 	}
-	return writeFormatted(stdout, stderr, format, sugs, []string{"id", "rule_id", "severity", "scope_kind", "scope_id", "recommendation"}, func(item trace.Suggestion) []string {
-		return []string{strconv.FormatInt(item.ID, 10), item.RuleID, item.Severity, item.ScopeKind, item.ScopeID, item.Recommendation}
+	// confidence surfaces provenance (observed vs estimated/inferred) in the default
+	// table/csv views, not just json — a synthesized finding must never read as
+	// authoritative.
+	return writeFormatted(stdout, stderr, format, sugs, []string{"id", "rule_id", "severity", "confidence", "scope_kind", "scope_id", "recommendation"}, func(item trace.Suggestion) []string {
+		return []string{strconv.FormatInt(item.ID, 10), item.RuleID, item.Severity, string(item.Confidence), item.ScopeKind, item.ScopeID, item.Recommendation}
 	})
 }
 
