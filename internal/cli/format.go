@@ -14,10 +14,14 @@ import (
 	"toktop.unceas.dev/internal/textutil"
 )
 
-// formatFlagUsage is the --format help for every writeFormatted-backed list
-// command — a single source so the advertised set can't drift from the formats
-// validateListFormat accepts and writeFormatted renders.
-const formatFlagUsage = "output format: table|json|ndjson|csv|markdown|html"
+// formatList is the single source of truth for the list commands' --format set:
+// formatFlagUsage (flag help), validateListFormat (the accept gate), and
+// writeFormatted's reject message all derive from it so the advertised, accepted,
+// and rendered sets cannot drift apart.
+const formatList = "table|json|ndjson|csv|markdown|html"
+
+// formatFlagUsage is the --format help for every writeFormatted-backed list command.
+const formatFlagUsage = "output format: " + formatList
 
 // validateFormat rejects a --format value outside `allowed` (treating "" as the
 // default). For the limited table|json commands; the full list set is
@@ -34,7 +38,7 @@ func validateFormat(format string, allowed ...string) error {
 // switch so every list command accepts the same formats — a command that skipped
 // this check would silently accept markdown/html that another rejects.
 func validateListFormat(format string) error {
-	return validateFormat(format, "table", "json", "ndjson", "csv", "markdown", "html")
+	return validateFormat(format, strings.Split(formatList, "|")...)
 }
 
 // Output rendering shared by every command: format dispatch (table/json/ndjson/
@@ -82,7 +86,7 @@ func writeFormatted[T any](stdout, stderr io.Writer, format string, items []T, h
 		writeTable(stdout, headers, items, row, "table")
 		return 0
 	default:
-		cliErr(stderr, fmt.Errorf("unknown --format %q (want table|json|ndjson|csv|markdown|html)", format))
+		cliErr(stderr, fmt.Errorf("unknown --format %q (want %s)", format, formatList))
 		return 2
 	}
 }

@@ -63,14 +63,6 @@ func (s *Service) GetTurn(ctx context.Context, turnID string) (trace.Turn, error
 	return turn, nil
 }
 
-func (s *Service) GetSession(ctx context.Context, id string) (trace.Session, error) {
-	sess, err := s.store.GetSession(ctx, id)
-	if err != nil {
-		return trace.Session{}, mapNotFound(err)
-	}
-	return sess, nil
-}
-
 func (s *Service) FindSessions(ctx context.Context, id string) ([]trace.Session, error) {
 	sessions, err := s.store.FindSessions(ctx, id)
 	if err != nil {

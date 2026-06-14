@@ -24,13 +24,15 @@ func (s *Server) handleDaemonStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDaemonIngest(w http.ResponseWriter, r *http.Request) {
+	// Decode (and close the body) before the runtime check, so the body is read
+	// and closed on every path — matching the other control routes' ordering.
+	var req runtime.TriggerRequest
+	if !decodeJSONBody(w, r, maxControlRequestBytes, &req) {
+		return
+	}
 	rt := s.runtime.Load()
 	if rt == nil {
 		writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "runtime not attached")
-		return
-	}
-	var req runtime.TriggerRequest
-	if !decodeJSONBody(w, r, maxControlRequestBytes, &req) {
 		return
 	}
 	if req.Mode == "" {

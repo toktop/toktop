@@ -48,7 +48,11 @@ const dbFileName = "toktop.db"
 // event, no longer stores its raw XML as the turn's user message. Old rows holding
 // the ack as a successful result (or the notification XML as a user message) must
 // be rebuilt.
-const schemaUserVersion = 9
+// Epoch 10: a <task-notification> with status `killed` now projects to interrupted
+// (was active), and a non-terminal `running` progress notification no longer
+// fabricates an end time. Old rows that classified a killed async run as active
+// must be rebuilt.
+const schemaUserVersion = 10
 
 var writerCacheKiB, readerCacheKiB, sqliteMmapBytes = memoryBudget(memory.TotalMemory())
 

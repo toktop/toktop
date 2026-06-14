@@ -119,17 +119,6 @@ func (s *Store) GetTurn(ctx context.Context, turnID string) (trace.Turn, error) 
 	return turns[0], nil
 }
 
-func (s *Store) GetSession(ctx context.Context, id string) (trace.Session, error) {
-	sessions, err := s.FindSessions(ctx, id)
-	if err != nil {
-		return trace.Session{}, err
-	}
-	if len(sessions) == 0 {
-		return trace.Session{}, sql.ErrNoRows
-	}
-	return sessions[0], nil
-}
-
 func (s *Store) FindSessions(ctx context.Context, id string) ([]trace.Session, error) {
 	rows, err := s.reader().QueryContext(ctx, sessionsBaseQuery+`
 		WHERE sessions.id = ? OR sessions.external_session_id = ?

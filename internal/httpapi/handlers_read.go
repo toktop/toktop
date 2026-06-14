@@ -113,6 +113,12 @@ func (s *Server) handleSessionHandoff(w http.ResponseWriter, r *http.Request) {
 		writeQueryError(w, err, "invalid_max_output_bytes")
 		return
 	}
+	if maxOutputBytes < 0 {
+		// Reject a negative byte cap instead of silently treating it as "full"
+		// (0 = full), mirroring search's `limit < 1` rejection.
+		writeError(w, http.StatusBadRequest, "invalid_max_output_bytes", "max_output_bytes must be >= 0")
+		return
+	}
 	session, turns, ambiguous, ok := s.loadSessionWithTurns(w, r)
 	if !ok {
 		return

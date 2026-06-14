@@ -103,7 +103,7 @@ func (p Package) codexPromptMD() string {
 	fmt.Fprintf(&b, "You are picking up a %s workflow %s. Workflow status: **%s**.\n\n",
 		p.Manifest.Provider, intro, p.Manifest.WorkflowStatus)
 	b.WriteString("## Hard rules\n")
-	b.WriteString("1. Do NOT re-run an agent whose result is captured (status `success` in `agent-results.ndjson`). Agents marked `failed` or `active` (incomplete) have NO captured result — do not trust a blank or ack-only output; resume, re-run, or reconcile against the final answer as the notes below direct.\n")
+	b.WriteString("1. Do NOT re-run an agent whose result is captured (status `success` in `agent-results.ndjson`). Agents marked `failed`, `interrupted` (stopped), or `active` (in-flight) have no authoritative result — do not trust a blank, partial, or ack-only output; resume, re-run, or reconcile against the final answer as the notes below direct.\n")
 	b.WriteString("2. Do NOT re-plan from scratch or guess from the current git diff.\n")
 	b.WriteString("3. Work only from `evidence`-tagged facts. Treat `inference` as a hint and `unknown` as not established.\n")
 	b.WriteString("4. Every claim you rely on must trace to a source pointer (`raw-pointers.ndjson`); re-read the transcript if unsure.\n")
@@ -117,7 +117,14 @@ func (p Package) codexPromptMD() string {
 	stopped := p.Manifest.InterruptedAgentRuns
 	final := p.Manifest.FinalSynthesisPresent
 	if !final {
-		b.WriteString("- The final synthesis/answer is missing. The agent runs completed; your job is to collect their results and produce the wrap-up the original session never emitted.\n")
+		b.WriteString("- The final synthesis/answer is missing.")
+		if inFlight == 0 && stopped == 0 {
+			// Every agent run reached a terminal state (success/failed); only the
+			// closing wrap-up is missing. When runs are in-flight or stopped, the
+			// bullets below say what to do instead of claiming results are ready.
+			b.WriteString(" The agent runs reached a terminal state — collect their captured results and produce the wrap-up the original session never emitted.")
+		}
+		b.WriteString("\n")
 	} else {
 		b.WriteString("- A final assistant message exists (see `final_answer` in the evidence index). Verify it against the agent results before continuing.\n")
 	}
@@ -133,7 +140,7 @@ func (p Package) codexPromptMD() string {
 	if stopped > 0 {
 		// Deliberately stopped (TaskStop): killed on purpose, so resuming would
 		// override an intentional decision.
-		fmt.Fprintf(&b, "- %d agent run(s) were deliberately stopped (status `interrupted`, via TaskStop) — no result was captured, but they were killed on purpose. The session likely used their partial results or abandoned them; reconcile against the final answer or the transcript rather than blindly resuming.\n", stopped)
+		fmt.Fprintf(&b, "- %d agent run(s) were deliberately stopped (status `interrupted` — a TaskStop or a `killed` notification). Any captured output is partial/non-authoritative and they were ended on purpose; reconcile against the final answer or the transcript rather than blindly resuming.\n", stopped)
 	}
 	if n := p.Manifest.FailedAgentRuns; n > 0 {
 		fmt.Fprintf(&b, "- %d agent run(s) failed; treat their output as unreliable and re-run if their result is needed.\n", n)

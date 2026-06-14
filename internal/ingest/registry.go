@@ -123,6 +123,31 @@ func IsAgentTool(provider, name string) bool {
 	return ok && slices.Contains(d.AgentToolNames(), name)
 }
 
+// AgentRunProjector is the optional seam by which a Provider maps one of its
+// agent-spawning tools' input_json into the neutral fields the handoff
+// reconstructs: the run's type/subagent label, its description, and its prompt.
+// Co-located with AgentToolNames so a provider owns ALL its agent-tool knowledge
+// (the tool names AND the JSON shape of their inputs); the neutral handoff layer
+// asks the provider rather than hardcoding any one provider's input keys.
+type AgentRunProjector interface {
+	AgentRunInput(toolName string, inputJSON []byte) (typ, description, prompt string)
+}
+
+// AgentRunInput projects an agent-tool call's input_json into neutral handoff
+// fields via the named provider's AgentRunProjector. Returns empty strings for an
+// unknown provider, one not implementing the seam, or input it cannot map.
+func AgentRunInput(provider, toolName string, inputJSON []byte) (typ, description, prompt string) {
+	p, ok := registry[provider]
+	if !ok {
+		return "", "", ""
+	}
+	pr, ok := p.(AgentRunProjector)
+	if !ok {
+		return "", "", ""
+	}
+	return pr.AgentRunInput(toolName, inputJSON)
+}
+
 // SourceRoot is a resolved discovery root and where it came from.
 type SourceRoot struct {
 	Path string

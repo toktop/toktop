@@ -2,10 +2,12 @@ package claudecode
 
 import (
 	"context"
+	"encoding/json"
 
 	"toktop.unceas.dev/internal/ingest"
 	"toktop.unceas.dev/internal/redact"
 	"toktop.unceas.dev/internal/source"
+	"toktop.unceas.dev/internal/textutil"
 )
 
 type provider struct{}
@@ -28,6 +30,26 @@ var agentToolNames = []string{"Task", "Agent", "Workflow"}
 
 // AgentToolNames satisfies ingest.AgentToolDeclarer.
 func (provider) AgentToolNames() []string { return agentToolNames }
+
+// agentInput is the shape of claude-code's agent-spawning tools' input_json. Task
+// and Agent use description/subagent_type/prompt; Workflow uses name/description.
+type agentInput struct {
+	Description  string `json:"description"`
+	SubagentType string `json:"subagent_type"`
+	Prompt       string `json:"prompt"`
+	Name         string `json:"name"`
+}
+
+// AgentRunInput satisfies ingest.AgentRunProjector: it projects an agent-tool
+// call's input_json into the neutral (type, description, prompt) the handoff
+// reconstructs. toolName is unused (every claude-code agent tool shares one input
+// shape) but kept for the interface so a provider with per-tool shapes can switch
+// on it.
+func (provider) AgentRunInput(_ string, inputJSON []byte) (typ, description, prompt string) {
+	var in agentInput
+	_ = json.Unmarshal(inputJSON, &in)
+	return textutil.FirstNonBlank(in.SubagentType, in.Name), in.Description, in.Prompt
+}
 
 func (provider) ResolveRoots(explicit, file []string) []ingest.SourceRoot {
 	// resolveRoots returns []SourceRoot, which is an alias of []ingest.SourceRoot

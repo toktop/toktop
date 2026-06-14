@@ -62,6 +62,10 @@ func runHandoffCreate(ctx context.Context, args []string, stdout, stderr io.Writ
 		cliErrf(stderr, "handoff create requires --session <id>")
 		return 2
 	}
+	if maxOutputBytes < 0 {
+		cliErrf(stderr, "--max-output-bytes must be >= 0 (0 = full)")
+		return 2
+	}
 	svc, store, err := openService(ctx, home)
 	if err != nil {
 		cliErr(stderr, err)

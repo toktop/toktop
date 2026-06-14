@@ -283,11 +283,6 @@ func (b *turnBuilder) recordAssistantMessage(msg message, when time.Time, rawEve
 		}
 		b.turn.ToolCalls = append(b.turn.ToolCalls, toolCall)
 	}
-	// A tool_use just recorded here may complete a tool_result that arrived
-	// out-of-order earlier in this turn.
-	if len(b.pendingResults) > 0 {
-		b.resolvePendingResults()
-	}
 }
 
 func (b *turnBuilder) attachToolResults(results []toolResult, when time.Time, rawEvent source.RawEvent) []trace.ParseError {
@@ -331,9 +326,9 @@ func (b *turnBuilder) applyResult(index int, result toolResult, when time.Time, 
 	}
 }
 
-// resolvePendingResults re-attempts buffered out-of-order tool_results after new
-// tool_uses were recorded, attaching any that now resolve and keeping the rest
-// buffered (their tool_use may yet arrive later in the turn).
+// resolvePendingResults re-attempts the buffered out-of-order tool_results,
+// attaching any whose tool_use has since been recorded and keeping the rest
+// buffered. Called once from finish(), after every tool_use in the turn exists.
 func (b *turnBuilder) resolvePendingResults() {
 	kept := b.pendingResults[:0]
 	for _, pr := range b.pendingResults {
@@ -389,8 +384,11 @@ func (b *turnBuilder) resolveToolCall(useID string) int {
 }
 
 func (b *turnBuilder) finish() (trace.Turn, []trace.ParseError) {
-	// Any tool_result still buffered never found its tool_use within the turn — a
-	// genuinely unmatched result, surfaced now that the turn is complete.
+	// Resolve out-of-order tool_results one final time now that every tool_use in
+	// the turn has been recorded (a single O(pending) pass; resolving incrementally
+	// after each assistant message would be O(pending × messages)). Whatever stays
+	// buffered never found its tool_use and is a genuinely unmatched result.
+	b.resolvePendingResults()
 	var parseErrors []trace.ParseError
 	for _, pr := range b.pendingResults {
 		parseErrors = append(parseErrors, unmatchedToolResultError(trace.SourceID(b.turn.Provider), b.sourceRootID, pr.rawEvent, pr.result))
@@ -640,12 +638,11 @@ func notificationTag(s, tag string) string {
 // applyAsyncCompletions reconciles background-task launches with their real
 // outcomes. A Workflow / background-Bash call's synchronous tool_result is only a
 // "launched in background" ack; the true result arrives later as a
-// <task-notification>. The three terminal fates a recovering agent must tell
-// apart:
+// <task-notification>. The terminal fates a recovering agent must tell apart:
 //   - a completion notification supersedes the ack (real output + status + end
-//     time) — the task finished (success/failed);
-//   - the task was deliberately killed (a successful TaskStop on its task id) →
-//     interrupted;
+//     time) — the task finished (success/failed), or was killed (interrupted);
+//   - no notification but a successful TaskStop on its task id → interrupted
+//     (deliberately stopped);
 //   - neither — launched but never completed or stopped within the transcript →
 //     active (in-flight / abandoned).
 // Without this, every ack is mistaken for a successful result.
@@ -656,22 +653,34 @@ func applyAsyncCompletions(turns []trace.Turn, completions map[string]asyncCompl
 		for ci := range turns[ti].ToolCalls {
 			call := &turns[ti].ToolCalls[ci]
 			if comp, ok := completions[call.UseID]; ok {
+				status := asyncCompletionStatus(comp.status)
 				call.Output = comp.output
 				call.OutputBytes = int64(len(comp.output))
-				call.Status = asyncCompletionStatus(comp.status)
-				call.EndedAt = comp.when
-				if !call.StartedAt.IsZero() && comp.when.After(call.StartedAt) {
-					call.DurationMs = comp.when.Sub(call.StartedAt).Milliseconds()
-				}
+				call.Status = status
 				call.RawResultEventID = trace.RawEventID(sourceRootID, comp.raw.SourceFile, comp.raw.LineNo, comp.raw.Hash())
+				// Only a terminal notification (success/failed/interrupted) ends the
+				// call; a non-terminal "running" progress update leaves it active with
+				// no fabricated end time.
+				if status != trace.StatusActive {
+					call.EndedAt = comp.when
+					if !call.StartedAt.IsZero() && comp.when.After(call.StartedAt) {
+						call.DurationMs = comp.when.Sub(call.StartedAt).Milliseconds()
+					}
+				}
 				dirty[ti] = true
 			} else if call.Status == trace.StatusSuccess && isAsyncLaunchAck(call.Output) {
-				if id := asyncLaunchTaskID(call.Output); id != "" && stopped[id] {
-					call.Status = trace.StatusInterrupted // deliberately stopped (TaskStop)
-				} else {
-					call.Status = trace.StatusActive // launched, never completed or stopped
+				// Require a parseable task id: a genuine launch ack always carries one
+				// ("Task ID: X" / "with ID: X"). Without it, the phrase match alone is
+				// not enough to downgrade a successful call — it may be a foreground
+				// tool whose output merely begins with that text.
+				if id := asyncLaunchTaskID(call.Output); id != "" {
+					if stopped[id] {
+						call.Status = trace.StatusInterrupted // deliberately stopped (TaskStop)
+					} else {
+						call.Status = trace.StatusActive // launched, never completed or stopped
+					}
+					dirty[ti] = true
 				}
-				dirty[ti] = true
 			}
 		}
 	}
@@ -719,13 +728,19 @@ func asyncLaunchTaskID(output string) string {
 	return ""
 }
 
-// asyncCompletionStatus maps a task-notification <status> to a tool-call status.
+// asyncCompletionStatus maps a <task-notification> <status> to a tool-call status.
+// Claude Code's task-status vocabulary is pending/running/completed/failed/killed.
+// "killed" is a terminal stop (TaskStop or abort) → interrupted; pending/running
+// (not yet terminal) and any unknown value → active, conservatively not treated as
+// a usable result.
 func asyncCompletionStatus(notificationStatus string) string {
 	switch notificationStatus {
 	case "completed":
 		return trace.StatusSuccess
 	case "failed":
 		return trace.StatusFailed
+	case "killed":
+		return trace.StatusInterrupted
 	default:
 		return trace.StatusActive
 	}

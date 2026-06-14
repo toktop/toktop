@@ -587,6 +587,10 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		cliErr(stderr, err)
 		return 2
 	}
+	if maxOutputBytes < 0 {
+		cliErrf(stderr, "--max-output-bytes must be >= 0 (0 = no clipping)")
+		return 2
+	}
 	filter, err := parseFilterFlags(since, "", "")
 	if err != nil {
 		cliErr(stderr, err)

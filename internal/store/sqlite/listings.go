@@ -635,11 +635,7 @@ func (s *Store) ListComponentsForTurn(ctx context.Context, turnID string) ([]tra
 	}
 	// Non-nil even when the turn has no components, so the array-typed
 	// /v1/turns/{id}/components endpoint serializes [] rather than null.
-	comps := byTurn[turnID]
-	if comps == nil {
-		comps = []trace.TurnComponent{}
-	}
-	return comps, nil
+	return nonNilSlice(byTurn[turnID]), nil
 }
 
 func (s *Store) ListSuggestions(ctx context.Context, ruleID string) ([]trace.Suggestion, error) {

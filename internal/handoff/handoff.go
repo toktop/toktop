@@ -10,7 +10,6 @@
 package handoff
 
 import (
-	"encoding/json"
 	"strings"
 	"time"
 
@@ -94,8 +93,8 @@ type Manifest struct {
 	// TaskStop); IncompleteAgentRuns counts those launched but never completed or
 	// stopped (in-flight / abandoned). Both lack a captured result, but the
 	// recovery differs: reconcile a stop vs resume an in-flight run.
-	InterruptedAgentRuns   int       `json:"interrupted_agent_runs,omitempty"`
-	IncompleteAgentRuns    int       `json:"incomplete_agent_runs,omitempty"`
+	InterruptedAgentRuns   int       `json:"interrupted_agent_runs"`
+	IncompleteAgentRuns    int       `json:"incomplete_agent_runs"`
 	FinalSynthesisPresent  bool      `json:"final_synthesis_present"`
 	// RecommendedEntrypoints names the package files in reading order; it is a
 	// directory-form (CLI) concept, so the HTTP handler clears it (omitempty) —
@@ -111,15 +110,6 @@ type Package struct {
 	Turns     []trace.Turn   `json:"turns"`
 	AgentRuns []AgentRun     `json:"agent_runs"`
 	Evidence  []EvidenceItem `json:"evidence"`
-}
-
-// agentInput is the shared shape of the agent-spawning tools' input_json. Task
-// and Agent use description/subagent_type/prompt; Workflow uses name/description.
-type agentInput struct {
-	Description  string `json:"description"`
-	SubagentType string `json:"subagent_type"`
-	Prompt       string `json:"prompt"`
-	Name         string `json:"name"`
 }
 
 // Build reconstructs the handoff package for one session from its turns (which
@@ -160,14 +150,13 @@ func detectAgentRuns(session trace.Session, turns []trace.Turn) []AgentRun {
 			if !ingest.IsAgentTool(session.Provider, call.Name) {
 				continue
 			}
-			var in agentInput
-			_ = json.Unmarshal([]byte(call.Input), &in)
+			typ, description, prompt := ingest.AgentRunInput(session.Provider, call.Name, []byte(call.Input))
 			runs = append(runs, AgentRun{
 				ID:          call.ID,
 				Tool:        call.Name,
-				Type:        textutil.FirstNonBlank(in.SubagentType, in.Name),
-				Description: in.Description,
-				Prompt:      in.Prompt,
+				Type:        typ,
+				Description: description,
+				Prompt:      prompt,
 				Result:      call.Output,
 				Status:      call.Status,
 				Error:       call.Error,
