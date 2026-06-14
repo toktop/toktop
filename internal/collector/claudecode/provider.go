@@ -20,6 +20,15 @@ func (provider) WatchSubdir() string { return "projects" }
 
 func (provider) TranscriptExt() string { return ".jsonl" }
 
+// agentToolNames are claude-code's built-in subagent / multi-agent spawning
+// tools, whose runs the handoff reconstructs. Declared here (the provider that
+// owns this knowledge) and consumed via ingest.IsAgentTool, not hardcoded in the
+// neutral handoff/rules layers. A package var so the lookup allocates nothing.
+var agentToolNames = []string{"Task", "Agent", "Workflow"}
+
+// AgentToolNames satisfies ingest.AgentToolDeclarer.
+func (provider) AgentToolNames() []string { return agentToolNames }
+
 func (provider) ResolveRoots(explicit, file []string) []ingest.SourceRoot {
 	// resolveRoots returns []SourceRoot, which is an alias of []ingest.SourceRoot
 	// (see discover.go), so no conversion is needed.

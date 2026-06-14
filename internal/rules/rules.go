@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"toktop.unceas.dev/internal/handoff"
+	"toktop.unceas.dev/internal/ingest"
 	"toktop.unceas.dev/internal/trace"
 )
 
@@ -76,7 +76,7 @@ func (WorkflowInterrupted) Evaluate(_ context.Context, index trace.Index, _ time
 			order = append(order, turn.SessionID)
 		}
 		for _, call := range turn.ToolCalls {
-			if handoff.IsAgentTool(call.Name) {
+			if ingest.IsAgentTool(turn.Provider, call.Name) {
 				a.agentRuns++
 				if call.Status == trace.StatusSuccess {
 					a.completedRuns++

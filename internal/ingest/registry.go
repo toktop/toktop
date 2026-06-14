@@ -99,6 +99,30 @@ func HookInstallerFor(name string) (HookInstaller, bool) {
 	return hi, ok
 }
 
+// AgentToolDeclarer is the optional seam by which a Provider declares the
+// built-in tool names that spawn a subagent / multi-agent workflow whose run the
+// handoff reconstructs and the workflow_interrupted rule counts (claude-code:
+// Task, Agent, Workflow). A single-agent provider (e.g. codex) has none and
+// simply does not implement it — keeping the per-provider tool-name knowledge on
+// the provider instead of hardcoded in the neutral downstream layers.
+type AgentToolDeclarer interface {
+	AgentToolNames() []string
+}
+
+// IsAgentTool reports whether tool name, for the named provider, spawns a
+// subagent whose run downstream (handoff, the workflow_interrupted rule) treats
+// as an agent run. False for an unknown provider or one declaring no agent tools.
+// Requires the provider to be registered — true on every real CLI/daemon path,
+// where cmd/toktop/main.go imports the built-in providers.
+func IsAgentTool(provider, name string) bool {
+	p, ok := registry[provider]
+	if !ok {
+		return false
+	}
+	d, ok := p.(AgentToolDeclarer)
+	return ok && slices.Contains(d.AgentToolNames(), name)
+}
+
 // SourceRoot is a resolved discovery root and where it came from.
 type SourceRoot struct {
 	Path string

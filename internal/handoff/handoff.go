@@ -14,25 +14,13 @@ import (
 	"strings"
 	"time"
 
+	"toktop.unceas.dev/internal/ingest"
 	"toktop.unceas.dev/internal/textutil"
 	"toktop.unceas.dev/internal/trace"
 )
 
 // SchemaVersion is the stable contract a consuming agent/script keys on.
 const SchemaVersion = "toktop.handoff.v1"
-
-// agentToolNames are the built-in tools that spawn a subagent whose run we
-// reconstruct. Claude Code uses "Task"; this environment also exposes "Agent"
-// and the multi-agent "Workflow" orchestrator.
-var agentToolNames = map[string]bool{
-	"Task":     true,
-	"Agent":    true,
-	"Workflow": true,
-}
-
-// IsAgentTool reports whether a tool name spawns a subagent whose run the handoff
-// reconstructs. Shared with the rule engine so the agent-tool list lives in one place.
-func IsAgentTool(name string) bool { return agentToolNames[name] }
 
 // Confidence labels how trustworthy an evidence claim is for an agent picking up
 // the work. evidence = proven by the transcript; inference = derived/heuristic;
@@ -169,7 +157,7 @@ func detectAgentRuns(session trace.Session, turns []trace.Turn) []AgentRun {
 		turn := &turns[ti]
 		for ci := range turn.ToolCalls {
 			call := &turn.ToolCalls[ci]
-			if !agentToolNames[call.Name] {
+			if !ingest.IsAgentTool(session.Provider, call.Name) {
 				continue
 			}
 			var in agentInput
