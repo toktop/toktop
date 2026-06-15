@@ -17,7 +17,7 @@ type SearchResult struct {
 	Snippet   string `json:"snippet"`
 }
 
-func (s *Store) Search(ctx context.Context, query string, limit int, kind, source string) ([]SearchResult, error) {
+func (s *Store) Search(ctx context.Context, query string, limit int, kind, source string, includeSubagents bool) ([]SearchResult, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		// Non-nil so an empty/blank query serializes results as [] (not null) on the
@@ -50,6 +50,12 @@ func (s *Store) Search(ctx context.Context, query string, limit int, kind, sourc
 	if source != "" {
 		where = append(where, "search_fts.source_id = ?")
 		args = append(args, source)
+	}
+	if !includeSubagents {
+		// is_subagent is denormalized onto search_documents (and the FTS table), so the
+		// default exclude is a direct column check — no sessions subquery — consistent
+		// with the listings' default exclude and with turns/raw_events.
+		where = append(where, "search_fts.is_subagent = 0")
 	}
 	args = append(args, limit)
 	rows, err := s.reader().QueryContext(ctx, `

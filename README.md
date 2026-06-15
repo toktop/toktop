@@ -159,7 +159,7 @@ keep a daemon running so the DB stays current automatically (see
 | `toktop models` | Model invocation usage (call / turn / token counts per provider+model) |
 | `toktop projects` | Per-project session / turn / tool counts |
 | `toktop suggestions` | Rule-engine findings (`suggestions recompute` reruns the rules) |
-| `toktop handoff create` | Assemble an Evidence-based Handoff Package for one session (cross-agent workflow recovery) |
+| `toktop handoff create` | Assemble an Evidence-based Handoff Package for one session — recovers completed sub-agent results so either agent can continue the other's interrupted work (Claude Code ⇄ Codex) |
 | `toktop sources` | Configured providers and their discovery roots |
 
 **Shared filter flags** (on `summary`, `sessions`, `turns`, `mcps`, `skills`, `tools`,
@@ -171,7 +171,16 @@ keep a daemon running so the DB stays current automatically (see
 --session <id>                  # session id or external session id
 --status success,failed         # turn/session status filter
 --since 24h    --until 7d       # duration (7d, 24h) or an RFC3339 timestamp
+--subagents                     # include subagent transcripts (excluded by default)
 ```
+
+`--subagents` opts a list/stats query (also `search` and `export`) into subagent
+transcripts — Claude Code's nested Task/Agent runs and Workflow internal agents, and
+Codex's spawned agents (`spawn_agent`). They are ingested and linked to their parent
+session, but every list, count, search, and export **excludes them by default** so
+the view is your own top-level sessions; pass `--subagents` to fold them in (e.g.
+`tools --subagents` to count tool use inside workflows). `status` is top-level only
+and has no such flag; `suggestions` rules are always top-level.
 
 **Output formats** — `--format table` (default) `| json | ndjson | csv | markdown | html`
 (`summary` and `search` are `table|json`). `sessions`, `turns`, and `status` page with
@@ -301,7 +310,7 @@ via config `addr=tcp://host:port`; off loopback it **requires a bearer token** r
 | `GET /v1/turns` · `/{id}` · `/{id}/timeline` · `/{id}/components` | Turns + per-turn detail |
 | `GET /v1/projects` · `/v1/tools` · `/v1/models` | Project / tool / model rollups |
 | `GET /v1/mcps` · `/v1/mcps/unused` · `/v1/skills` · `/v1/skills/unused` | MCP / skill usage |
-| `GET /v1/search` | Full-text search (`q`, `limit`, `kind`, `source`) |
+| `GET /v1/search` | Full-text search (`q`, `limit`, `kind`, `source`, `subagents`) |
 | `GET /v1/suggestions` · `POST /v1/suggestions:recompute` | Rule findings |
 | `POST /v1/export` | Full trace index (JSON) |
 | **`GET /v1/stream`** | **Live event stream (SSE)** |
@@ -310,6 +319,11 @@ via config `addr=tcp://host:port`; off loopback it **requires a bearer token** r
 | `GET /v1/daemon` · `:trigger` · `:pause` · `:resume` | Daemon state / control |
 | `GET /v1/sources` · `GET /v1/config` · `POST /v1/config:reload` | Sources / config |
 | `POST /v1/data:prune` · `GET /v1/data/retention` · `/profiles` · `:prune` | Data lifecycle |
+
+The list/stats/search routes accept the same filters as the CLI as query params
+(`source`, `project`, `session`, `status`, `since`, `until`, `sort`, `limit`,
+`offset`), including **`subagents=1`** to fold in subagent transcripts (excluded by
+default, mirroring the CLI `--subagents`).
 
 ---
 

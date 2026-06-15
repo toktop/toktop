@@ -23,6 +23,16 @@ type SessionFile struct {
 	Path        string
 	ProjectName string
 	ProjectPath string
+
+	// Subagent marker, set when Path is a nested transcript under a session's
+	// `subagents/` subtree (zero for a top-level session). SubagentKind is "task" or
+	// "workflow"; WorkflowRunID is the wf_… run id (workflow only). ParentExternalID
+	// is the parent session's external id, read straight from the path (the <uuid>
+	// directory that precedes `subagents/`, which IS the parent's external id) — so
+	// the link survives even when the transcript carries no in-file sessionId.
+	SubagentKind     string
+	WorkflowRunID    string
+	ParentExternalID string
 }
 
 // DiscoverRoots resolves the effective roots given only caller-supplied
@@ -104,28 +114,35 @@ func DiscoverSessions(ctx context.Context, roots []SourceRoot) ([]SessionFile, e
 				return err
 			}
 			if entry.IsDir() {
-				// Skip the subagents/ subtree: Claude Code nests workflow sub-agent
-				// transcripts and journal.jsonl metadata under a session's own dir.
-				// They are not independent user sessions — each agent transcript carries
-				// the PARENT session id (so one real UUID would explode into dozens of
-				// colliding sessions) and journal.jsonl is not a transcript at all (a
-				// 0-turn ghost). Exclude the whole subtree from top-level discovery.
-				if entry.Name() == "subagents" {
-					return filepath.SkipDir
-				}
 				return nil
 			}
 			if filepath.Ext(path) != ".jsonl" {
 				return nil
 			}
+			// journal.jsonl (a workflow run's resume journal) lives in the subagents/
+			// subtree and is .jsonl but is NOT a transcript (a 0-turn ghost of
+			// {started,result} records) — never ingest it.
+			if filepath.Base(path) == "journal.jsonl" {
+				return nil
+			}
 
 			projectName := projectNameFor(projectsDir, path)
-			sessions = append(sessions, SessionFile{
+			sf := SessionFile{
 				Root:        root,
 				Path:        path,
 				ProjectName: projectName,
 				ProjectPath: decodeProjectName(projectName),
-			})
+			}
+			// A transcript under a `subagents/` segment is a nested subagent run; the
+			// project stays the parent's (projectNameFor reads the leading segment).
+			// Its own (distinct) path hashes to a unique session id; the parent link is
+			// resolved downstream by external id (its in-file sessionId is the parent's).
+			if kind, runID, parentID, ok := classifySubagentPath(projectsDir, path); ok {
+				sf.SubagentKind = kind
+				sf.WorkflowRunID = runID
+				sf.ParentExternalID = parentID
+			}
+			sessions = append(sessions, sf)
 			return nil
 		})
 		if err != nil {
@@ -153,32 +170,53 @@ func SessionFileFromPath(path string, roots []SourceRoot) (SessionFile, bool) {
 		if !fsx.PathWithin(projectsDir, cleanPath) {
 			continue
 		}
-		// Mirror DiscoverSessions: a transcript inside a subagents/ subtree is a
-		// nested workflow artifact, not a top-level session — never ingest it via
-		// the single-file watch path either.
-		if underSubagents(projectsDir, cleanPath) {
+		// Mirror DiscoverSessions: never ingest a workflow run's journal.jsonl.
+		if filepath.Base(cleanPath) == "journal.jsonl" {
 			return SessionFile{}, false
 		}
 		projectName := projectNameFor(projectsDir, cleanPath)
-		return SessionFile{
+		sf := SessionFile{
 			Root:        root,
 			Path:        cleanPath,
 			ProjectName: projectName,
 			ProjectPath: decodeProjectName(projectName),
-		}, true
+		}
+		if kind, runID, parentID, ok := classifySubagentPath(projectsDir, cleanPath); ok {
+			sf.SubagentKind = kind
+			sf.WorkflowRunID = runID
+			sf.ParentExternalID = parentID
+		}
+		return sf, true
 	}
 	return SessionFile{}, false
 }
 
-// underSubagents reports whether transcriptPath lies inside a `subagents/`
-// segment relative to projectsDir — the nested workflow sub-agent / journal
-// subtree that DiscoverSessions skips.
-func underSubagents(projectsDir, transcriptPath string) bool {
+// classifySubagentPath inspects a transcript path under projectsDir and, when it
+// lies inside a `subagents/` segment, returns its kind ("task" | "workflow"), the
+// wf_… run id (workflow only), and the parent session's external id — the <uuid>
+// directory segment just before `subagents/`, which IS the parent's external id.
+// ok is false for a top-level transcript. Layout:
+//
+//	<proj>/<uuid>/subagents/agent-<id>.jsonl                       → task
+//	<proj>/<uuid>/subagents/workflows/wf_<id>/agent-<id>.jsonl     → workflow
+func classifySubagentPath(projectsDir, transcriptPath string) (kind, workflowRunID, parentExternalID string, ok bool) {
 	rel, err := filepath.Rel(projectsDir, transcriptPath)
 	if err != nil {
-		return false
+		return "", "", "", false
 	}
-	return slices.Contains(strings.Split(rel, string(filepath.Separator)), "subagents")
+	parts := strings.Split(rel, string(filepath.Separator))
+	idx := slices.Index(parts, "subagents")
+	// idx < 1 means either no `subagents/` segment (slices.Index → -1) or it is the
+	// leading segment with no parent <uuid> dir before it (idx 0); neither is a
+	// linkable nested subagent, so treat the path as top-level.
+	if idx < 1 {
+		return "", "", "", false
+	}
+	parentExternalID = parts[idx-1]
+	if idx+2 < len(parts) && parts[idx+1] == "workflows" {
+		return "workflow", parts[idx+2], parentExternalID, true
+	}
+	return "task", "", parentExternalID, true
 }
 
 func projectNameFor(projectsDir, transcriptPath string) string {

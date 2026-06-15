@@ -123,7 +123,12 @@ func (s *Server) handleSessionHandoff(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	pkg := handoff.Build(time.Now().UTC(), session, turns, maxOutputBytes)
+	subagentRuns, err := s.service.SubagentRuns(r.Context(), session.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "subagent_runs_failed", err.Error())
+		return
+	}
+	pkg := handoff.Build(time.Now().UTC(), session, turns, subagentRuns, maxOutputBytes)
 	// recommended_entrypoints names CLI directory files that don't exist over HTTP
 	// (the package is one JSON body here); ambiguous_session_ids mirrors the CLI's
 	// note for an external id that matched several sessions.
@@ -205,7 +210,12 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		source = resolved
 	}
-	results, err := s.service.Search(r.Context(), q, limit, kind, source)
+	includeSubagents, err := boolParam(values, "subagents", false)
+	if err != nil {
+		writeQueryError(w, err, "invalid_subagents")
+		return
+	}
+	results, err := s.service.Search(r.Context(), q, limit, kind, source, includeSubagents)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "search_failed", err.Error())
 		return
@@ -346,7 +356,12 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		}
 		since = cutoff
 	}
-	index, err := s.service.Snapshot(r.Context(), since)
+	includeSubagents, err := boolParam(r.URL.Query(), "subagents", false)
+	if err != nil {
+		writeQueryError(w, err, "invalid_subagents")
+		return
+	}
+	index, err := s.service.Snapshot(r.Context(), since, includeSubagents)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "snapshot_failed", err.Error())
 		return
@@ -396,14 +411,19 @@ func parseFilter(r *http.Request) (sqlite.Filter, error) {
 	if err != nil {
 		return sqlite.Filter{}, err
 	}
+	includeSubagents, err := boolParam(q, "subagents", false)
+	if err != nil {
+		return sqlite.Filter{}, err
+	}
 	filter := sqlite.Filter{
-		SourceIDs:  textutil.DedupNonEmpty(sourceIDs),
-		ProjectIDs: textutil.DedupNonEmpty(queryValues(q, "project", "projects")),
-		SessionIDs: textutil.DedupNonEmpty(queryValues(q, "session", "sessions")),
-		Statuses:   statuses,
-		Limit:      limit,
-		Offset:     offset,
-		SortBy:     q.Get("sort_by"),
+		SourceIDs:        textutil.DedupNonEmpty(sourceIDs),
+		ProjectIDs:       textutil.DedupNonEmpty(queryValues(q, "project", "projects")),
+		SessionIDs:       textutil.DedupNonEmpty(queryValues(q, "session", "sessions")),
+		Statuses:         statuses,
+		Limit:            limit,
+		Offset:           offset,
+		SortBy:           q.Get("sort_by"),
+		IncludeSubagents: includeSubagents,
 	}
 	if order := q.Get("sort"); order != "" {
 		filter.SortBy, filter.SortDesc = query.ParseSort(order)
@@ -510,4 +530,20 @@ func intParam(values url.Values, key string, fallback int) (int, error) {
 		return 0, &queryParamError{code: "invalid_" + key, msg: key + " must be an integer"}
 	}
 	return n, nil
+}
+
+// boolParam parses query parameter key as a boolean toggle, accepting the common
+// truthy/falsy spellings. Absent yields fallback; a present-but-unrecognized value
+// is rejected (code "invalid_<key>"), mirroring intParam rather than silently
+// swallowing a client typo.
+func boolParam(values url.Values, key string, fallback bool) (bool, error) {
+	raw := values.Get(key)
+	if strings.TrimSpace(raw) == "" {
+		return fallback, nil
+	}
+	on, ok := textutil.ParseOnOff(raw)
+	if !ok {
+		return false, &queryParamError{code: "invalid_" + key, msg: key + " must be a boolean (1/0, true/false, on/off)"}
+	}
+	return on, nil
 }

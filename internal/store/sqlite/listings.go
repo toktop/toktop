@@ -77,6 +77,12 @@ type Filter struct {
 	Offset   int
 	SortDesc bool
 	SortBy   string
+
+	// IncludeSubagents opts a query into subagent sessions; the default (false)
+	// excludes them everywhere, so lists/stats show only top-level sessions. It is
+	// a baseline predicate, not a user-supplied runtime constraint — see
+	// hasRuntimeConstraint, which deliberately omits it.
+	IncludeSubagents bool
 }
 
 // Activity-time expressions: when an entity actually started or ended its work.
@@ -290,7 +296,18 @@ func (s *Store) ListLiveSessions(ctx context.Context, f Filter) ([]LiveSessionIt
 
 func (s *Store) ListProjects(ctx context.Context, f Filter) ([]ProjectListItem, error) {
 	f = f.normalized()
-	clause, args := f.sessionWhere()
+	// The default is_subagent exclude must live in the LEFT JOIN's ON, not the WHERE:
+	// a right-table predicate in the WHERE collapses the LEFT JOIN to an inner join,
+	// dropping a project whose only sessions are subagents instead of showing it with
+	// a zero count. So ask sessionWhere to skip the subagent predicate and add it to
+	// the ON here; the other filters (source/status/since) stay in WHERE as before.
+	fNoSub := f
+	fNoSub.IncludeSubagents = true
+	clause, args := fNoSub.sessionWhere()
+	joinCond := "sessions.project_id = projects.id"
+	if !f.IncludeSubagents {
+		joinCond += " AND sessions.is_subagent = 0"
+	}
 	rows, err := s.reader().QueryContext(ctx, `
 		SELECT projects.id, projects.source_id, projects.name, COALESCE(projects.path, ''),
 		       COALESCE(COUNT(DISTINCT sessions.id), 0),
@@ -298,7 +315,7 @@ func (s *Store) ListProjects(ctx context.Context, f Filter) ([]ProjectListItem, 
 		       COALESCE(SUM(sessions.total_tool_calls), 0),
 		       COALESCE(MAX(`+sessionActivityTimeExpr+`), '')
 		FROM projects
-		LEFT JOIN sessions ON sessions.project_id = projects.id
+		LEFT JOIN sessions ON `+joinCond+`
 		`+clause+`
 		GROUP BY projects.id
 		ORDER BY MAX(`+sessionActivityTimeExpr+`) DESC, projects.name
@@ -758,6 +775,7 @@ func (f Filter) sessionWhere() (string, []any) {
 	if ids := f.Statuses; len(ids) > 0 {
 		wheres = append(wheres, inClause("sessions.status", ids, &args))
 	}
+	wheres = append(wheres, subagentExcludeWheres(f.IncludeSubagents, "sessions")...)
 	if !f.Since.IsZero() {
 		wheres = append(wheres, sessionEffectiveTimeExpr+" >= ?")
 		args = append(args, timeBound(f.Since))
@@ -791,6 +809,7 @@ func (f Filter) turnWhere() (string, []any) {
 	if ids := f.Statuses; len(ids) > 0 {
 		wheres = append(wheres, inClause("turns.status", ids, &args))
 	}
+	wheres = append(wheres, subagentExcludeWheres(f.IncludeSubagents, "turns")...)
 	if !f.Since.IsZero() {
 		wheres = append(wheres, turnActivityTimeExpr+" >= ?")
 		args = append(args, timeBound(f.Since))
@@ -817,6 +836,7 @@ func (f Filter) rawEventWhere() (string, []any) {
 			"("+external+" OR raw_events.session_external_id IN (SELECT external_session_id FROM sessions WHERE "+internal+"))")
 		args = append(args, subArgs...)
 	}
+	wheres = append(wheres, subagentExcludeWheres(f.IncludeSubagents, "raw_events")...)
 	if !f.Since.IsZero() {
 		wheres = append(wheres, rawEventEffectiveTimeExpr+" >= ?")
 		args = append(args, timeBound(f.Since))
@@ -834,6 +854,10 @@ func (f Filter) parseErrorWhere() (string, []any) {
 	if ids := f.SourceIDs; len(ids) > 0 {
 		wheres = append(wheres, inClause("parse_errors.source_id", ids, &args))
 	}
+	// is_subagent is denormalized onto parse_errors (by source file at ingest), so the
+	// default exclude is a direct indexable column check — no sessions subquery, no
+	// NULL-source_file NOT-IN trap.
+	wheres = append(wheres, subagentExcludeWheres(f.IncludeSubagents, "parse_errors")...)
 	if !f.Since.IsZero() {
 		wheres = append(wheres, "parse_errors.created_at >= ?")
 		args = append(args, timeBound(f.Since))
@@ -861,6 +885,9 @@ func (f Filter) joinedTurnWhere(args *[]any, timeColumn string) []string {
 	if ids := f.Statuses; len(ids) > 0 {
 		wheres = append(wheres, inClause("turns.status", ids, args))
 	}
+	// joinedTurnWhere's queries (tools/skills/mcps/models listings) all join sessions,
+	// so the marker reads off sessions directly — no tool_calls column.
+	wheres = append(wheres, subagentExcludeWheres(f.IncludeSubagents, "sessions")...)
 	if timeColumn == "" {
 		timeColumn = turnActivityTimeExpr
 	}
@@ -873,6 +900,17 @@ func (f Filter) joinedTurnWhere(args *[]any, timeColumn string) []string {
 		*args = append(*args, timeBound(f.Until))
 	}
 	return wheres
+}
+
+// subagentExcludeWheres is the default-exclude predicate for a table's
+// denormalized is_subagent column (nil when subagents are included). Centralizing
+// it keeps the "top-level only by default" rule in one place across every WHERE
+// builder and the full-index loaders, instead of repeating the literal.
+func subagentExcludeWheres(includeSubagents bool, table string) []string {
+	if includeSubagents {
+		return nil
+	}
+	return []string{table + ".is_subagent = 0"}
 }
 
 func (f Filter) hasRuntimeConstraint() bool {

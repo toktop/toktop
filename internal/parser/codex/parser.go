@@ -85,6 +85,18 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events []source.Raw
 			if meta.ID != "" {
 				session.ExternalID = trace.InternString(meta.ID)
 			}
+			if spawn := meta.Source.Subagent.ThreadSpawn; spawn != nil && spawn.ParentThreadID != "" {
+				// A real spawned codex agent: mark it and link by external id (the store
+				// resolves ParentSessionID). Gate on the structural thread_spawn marker
+				// (NOT just parent_thread_id — guardian/judge "other" subagent threads
+				// also carry a parent_thread_id, and marking those would hide them with no
+				// parent to surface them); also require the parent id so a parent-less
+				// spawn stays top-level/visible rather than becoming a hidden orphan.
+				session.IsSubagent = true
+				session.SubagentKind = "agent"
+				session.ParentExternalID = trace.InternString(spawn.ParentThreadID)
+				session.AgentType = trace.InternString(spawn.AgentRole)
+			}
 			if meta.CWD != "" {
 				session.ProjectPath = meta.CWD
 				session.ProjectName = trace.InternString(lastPathSegment(meta.CWD))
@@ -261,11 +273,29 @@ func (b *turnBuilder) handleResponseItem(raw json.RawMessage, when time.Time, ra
 		if failure := outputFailure(output); failure != "" {
 			call.Status = trace.StatusFailed
 			call.Error = failure
+		} else if call.Name == "spawn_agent" && spawnAgentID(output) == "" {
+			// A spawn_agent that returned no agent_id never launched an agent (e.g.
+			// "Full-history forked agents inherit…"). outputFailure only sees shell
+			// exit codes, so without this it would be mis-counted as a completed agent
+			// run in the handoff. (Mirrors collector/codex's AgentSpawnChildID — both
+			// are codex-local knowledge of the {agent_id} success shape.)
+			call.Status = trace.StatusFailed
+			call.Error = "spawn_agent returned no agent_id"
 		} else {
 			call.Status = trace.StatusSuccess
 		}
 	}
 	return nil
+}
+
+// spawnAgentID extracts the spawned agent's id from a spawn_agent function_call
+// output ({"agent_id":…,"nickname":…} on success; plain error text on failure).
+func spawnAgentID(output string) string {
+	var out struct {
+		AgentID string `json:"agent_id"`
+	}
+	_ = json.Unmarshal([]byte(output), &out)
+	return out.AgentID
 }
 
 func (b *turnBuilder) parseError(rawEvent source.RawEvent, message string) trace.ParseError {
@@ -388,6 +418,20 @@ type envelope struct {
 type sessionMeta struct {
 	ID  string `json:"id"`
 	CWD string `json:"cwd"`
+	// Subagent linkage (set only on a spawned agent's rollout). A codex subagent is
+	// a flat rollout in sessions/ — indistinguishable by path — marked in-file by a
+	// nested source.subagent.thread_spawn object. Its PRESENCE is the discriminator:
+	// guardian/judge threads instead carry source.subagent.other and must stay
+	// top-level even though they too can have a parent_thread_id. thread_spawn carries
+	// the launching session's id (the parent's external id) and the spawned agent_role.
+	Source struct {
+		Subagent struct {
+			ThreadSpawn *struct {
+				ParentThreadID string `json:"parent_thread_id"`
+				AgentRole      string `json:"agent_role"`
+			} `json:"thread_spawn"`
+		} `json:"subagent"`
+	} `json:"source"`
 }
 
 type turnContext struct {

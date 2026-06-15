@@ -40,6 +40,18 @@ type RawSession struct {
 	ProjectName  string     `json:"project_name,omitempty"`
 	ProjectPath  string     `json:"project_path,omitempty"`
 	RawEventList []RawEvent `json:"raw_events"`
+
+	// Subagent marker, populated by the collector when SourceFile is a nested
+	// subagent transcript (empty otherwise). ParentExternalID is the parent
+	// session's external id when the collector can derive it without parsing
+	// events (claude-code reads it from the subagent's path); the parser may also
+	// fill it from the in-file sessionId. The store resolves it to an internal id.
+	IsSubagent       bool   `json:"is_subagent,omitempty"`
+	ParentExternalID string `json:"parent_external_id,omitempty"`
+	ParentToolUseID  string `json:"parent_tool_use_id,omitempty"`
+	WorkflowRunID    string `json:"workflow_run_id,omitempty"`
+	SubagentKind     string `json:"subagent_kind,omitempty"`
+	AgentType        string `json:"agent_type,omitempty"`
 }
 
 type Fingerprint struct {

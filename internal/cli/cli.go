@@ -221,13 +221,13 @@ func storeWipeGuard(home string) sqlite.WipeGuard {
 	}
 }
 
-func loadIndex(ctx context.Context, home string, since time.Time) (trace.Index, error) {
+func loadIndex(ctx context.Context, home string, since time.Time, includeSubagents bool) (trace.Index, error) {
 	store, err := openStore(ctx, home)
 	if err != nil {
 		return trace.Index{}, err
 	}
 	defer store.Close()
-	return store.LoadIndex(ctx, since)
+	return store.LoadIndex(ctx, since, includeSubagents)
 }
 
 func writeJSON(stdout, stderr io.Writer, value any) int {

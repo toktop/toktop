@@ -25,7 +25,7 @@ func (p Package) Write(dir string) error {
 		{"agent-results.ndjson", func(path string) error { return writeNDJSON(path, p.AgentRuns) }},
 		{"raw-pointers.ndjson", func(path string) error { return writeNDJSON(path, p.rawPointers()) }},
 		{"evidence-index.md", func(path string) error { return os.WriteFile(path, []byte(p.evidenceIndexMD()), 0o644) }},
-		{"codex-prompt.md", func(path string) error { return os.WriteFile(path, []byte(p.codexPromptMD()), 0o644) }},
+		{"receiver-prompt.md", func(path string) error { return os.WriteFile(path, []byte(p.receiverPromptMD()), 0o644) }},
 		{"README.md", func(path string) error { return os.WriteFile(path, []byte(p.readmeMD()), 0o644) }},
 	}
 	for _, w := range writers {
@@ -93,57 +93,57 @@ func (p Package) evidenceIndexMD() string {
 	return b.String()
 }
 
-func (p Package) codexPromptMD() string {
+// receiverPromptMD is the provider-neutral instructions for whatever agent picks
+// up this package (codex, claude-code, or other). It names no provider-specific
+// tool (no Workflow/TaskStop/resume-recipe): cross-agent recovery reuses the
+// captured sub-agent RESULTS, not a literal resume. Agent-centric guidance is
+// gated on there being agent runs, so a single-agent source emits no inert rules.
+func (p Package) receiverPromptMD() string {
 	var b strings.Builder
 	b.WriteString("# Handoff prompt for the receiving agent\n\n")
 	intro := "recorded for reference"
 	if p.Manifest.WorkflowStatus != "completed" {
 		intro = "recorded but not finished"
 	}
-	fmt.Fprintf(&b, "You are picking up a %s workflow %s. Workflow status: **%s**.\n\n",
+	fmt.Fprintf(&b, "You are picking up a %s session %s. Status: **%s**.\n\n",
 		p.Manifest.Provider, intro, p.Manifest.WorkflowStatus)
+	hasAgents := p.Manifest.AgentRuns > 0
+
 	b.WriteString("## Hard rules\n")
-	b.WriteString("1. Do NOT re-run an agent whose result is captured (status `success` in `agent-results.ndjson`). Agents marked `failed`, `interrupted` (stopped), or `active` (in-flight) have no authoritative result — do not trust a blank, partial, or ack-only output; resume, re-run, or reconcile against the final answer as the notes below direct.\n")
-	b.WriteString("2. Do NOT re-plan from scratch or guess from the current git diff.\n")
-	b.WriteString("3. Work only from `evidence`-tagged facts. Treat `inference` as a hint and `unknown` as not established.\n")
-	b.WriteString("4. Every claim you rely on must trace to a source pointer (`raw-pointers.ndjson`); re-read the transcript if unsure.\n")
-	b.WriteString("5. Do not modify code until the human confirms.\n\n")
-	b.WriteString("## Start here\n")
+	rule := 0
+	add := func(s string) { rule++; fmt.Fprintf(&b, "%d. %s\n", rule, s) }
+	if hasAgents {
+		add("Do NOT redo a sub-agent whose result is captured (in `agent-results.ndjson`, each with a `source` pointing at that sub-agent's own transcript you can re-read). For a run with no captured result, redo the work from its prompt/description or its captured transcript (the run's `source`) — do not trust a blank or partial output.")
+	}
+	add("Do NOT re-plan from scratch or guess from the current git diff.")
+	add("Work only from `evidence`-tagged facts. Treat `inference` as a hint and `unknown` as not established.")
+	add("Every claim you rely on must trace to a source pointer (`raw-pointers.ndjson`); re-read the transcript if unsure.")
+	add("Do not modify code until the human confirms.")
+
+	b.WriteString("\n## Start here\n")
 	for i, e := range p.Manifest.RecommendedEntrypoints {
 		fmt.Fprintf(&b, "%d. `%s`\n", i+1, e)
 	}
+
 	b.WriteString("\n## What is left\n")
-	inFlight := p.Manifest.IncompleteAgentRuns
-	stopped := p.Manifest.InterruptedAgentRuns
-	final := p.Manifest.FinalSynthesisPresent
-	if !final {
-		b.WriteString("- The final synthesis/answer is missing.")
-		if inFlight == 0 && stopped == 0 {
-			// Every agent run reached a terminal state (success/failed); only the
-			// closing wrap-up is missing. When runs are in-flight or stopped, the
-			// bullets below say what to do instead of claiming results are ready.
-			b.WriteString(" The agent runs reached a terminal state — collect their captured results and produce the wrap-up the original session never emitted.")
-		}
-		b.WriteString("\n")
+	if p.Manifest.FinalSynthesisPresent {
+		b.WriteString("- A final answer exists (see `final_answer` in the evidence index). Verify it against the captured results before continuing.\n")
 	} else {
-		b.WriteString("- A final assistant message exists (see `final_answer` in the evidence index). Verify it against the agent results before continuing.\n")
+		b.WriteString("- The final answer is missing — the session was interrupted before wrap-up.\n")
 	}
-	if inFlight > 0 {
-		// In-flight runs (launched, never completed or stopped) have no captured
-		// result; they may still be running.
-		if final {
-			fmt.Fprintf(&b, "- %d agent run(s) were still in flight (status `active`, no captured result), yet the session still produced a final answer — reconcile against the final answer first, then resume or re-run only what it did not already cover.\n", inFlight)
-		} else {
-			fmt.Fprintf(&b, "- %d agent run(s) were still in flight (status `active`, no captured result). Resume or re-run them — a background Workflow's captured ack holds the run id and script path to resume from.\n", inFlight)
+	if hasAgents {
+		if n := p.Manifest.CompletedAgentRuns; n > 0 {
+			fmt.Fprintf(&b, "- %d sub-agent run(s) completed; their results are captured in `agent-results.ndjson` (each `source` points at that sub-agent's transcript). **Reuse them — do not redo this work.**\n", n)
 		}
-	}
-	if stopped > 0 {
-		// Deliberately stopped (TaskStop): killed on purpose, so resuming would
-		// override an intentional decision.
-		fmt.Fprintf(&b, "- %d agent run(s) were deliberately stopped (status `interrupted` — a TaskStop or a `killed` notification). Any captured output is partial/non-authoritative and they were ended on purpose; reconcile against the final answer or the transcript rather than blindly resuming.\n", stopped)
-	}
-	if n := p.Manifest.FailedAgentRuns; n > 0 {
-		fmt.Fprintf(&b, "- %d agent run(s) failed; treat their output as unreliable and re-run if their result is needed.\n", n)
+		if n := p.Manifest.IncompleteAgentRuns; n > 0 {
+			fmt.Fprintf(&b, "- %d run(s) have no captured result (launched, never finished). Redo that work from the run's prompt/description or its captured transcript (`source`), or reconcile against the final answer.\n", n)
+		}
+		if n := p.Manifest.InterruptedAgentRuns; n > 0 {
+			fmt.Fprintf(&b, "- %d run(s) were deliberately stopped; any output is partial and they were ended on purpose — reconcile rather than blindly redo.\n", n)
+		}
+		if n := p.Manifest.FailedAgentRuns; n > 0 {
+			fmt.Fprintf(&b, "- %d run(s) failed; treat their output as unreliable and redo if needed.\n", n)
+		}
 	}
 	return b.String()
 }
@@ -155,7 +155,7 @@ func (p Package) readmeMD() string {
 	b.WriteString("Read-only, auditable snapshot of one session's workflow for cross-agent recovery.\n\n")
 	b.WriteString("| file | contents |\n|---|---|\n")
 	b.WriteString("| `manifest.json` | entry point: status, counts, recommended reading order |\n")
-	b.WriteString("| `codex-prompt.md` | constraints for the agent picking up the work |\n")
+	b.WriteString("| `receiver-prompt.md` | constraints for the agent picking up the work |\n")
 	b.WriteString("| `evidence-index.md` | human-readable facts with provenance + confidence |\n")
 	b.WriteString("| `agent-results.ndjson` | one reconstructed agent run per line |\n")
 	b.WriteString("| `turns.json` | the session's turns (with tool calls) |\n")

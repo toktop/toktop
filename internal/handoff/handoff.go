@@ -1,12 +1,16 @@
 // Package handoff assembles an Evidence-based Handoff Package from a single
-// ingested session: a read-only, auditable directory another agent (e.g. Codex
-// picking up an interrupted Claude Code workflow) can consume without re-deriving
-// or re-running the original agents.
+// ingested session: a read-only, auditable directory another agent can consume
+// without re-deriving or re-running the original agents. It is symmetric across
+// providers — a claude-code session can be picked up in codex and vice versa.
 //
 // Everything here is read-side reconstruction over the provider-neutral trace
-// model — no schema changes, no new persisted tables. Agent runs are recovered
-// from the agent-spawning tool calls (Task / Agent / Workflow), and every emitted
-// fact carries provenance back to the raw transcript (file + raw event id).
+// model — no new persisted tables, no provider-specific knowledge. Agent runs are
+// recovered two ways: from the parent's agent-spawning tool calls (each provider
+// declares its own — claude-code Task/Agent/Workflow, codex spawn_agent) for the
+// orchestrator view, and from the actual linked subagent sessions for their REAL
+// results (what an interrupted run's ack lacks). Every fact carries provenance back
+// to the raw transcript (file + raw event id), and the receiver prompt names no
+// provider-specific tool, so either side can produce or consume a package.
 package handoff
 
 import (
@@ -46,9 +50,13 @@ type SourcePointer struct {
 
 // AgentRun is one reconstructed subagent invocation.
 type AgentRun struct {
-	ID          string        `json:"id"`
-	Tool        string        `json:"tool"`                   // Task | Agent | Workflow
-	Type        string        `json:"type,omitempty"`         // subagent_type
+	ID string `json:"id"`
+	// Tool is the spawning tool's name for a run derived from a parent tool call
+	// (claude-code Task/Agent/Workflow, codex spawn_agent); for a subagent session
+	// appended with no matching parent call it holds the neutral SubagentKind
+	// ("task"/"workflow"/"agent") instead. Prefer Type for display.
+	Tool        string        `json:"tool"`
+	Type        string        `json:"type,omitempty"`         // subagent_type / agent role
 	Description string        `json:"description,omitempty"`  // short task description
 	Prompt      string        `json:"prompt,omitempty"`       // the agent's input
 	Result      string        `json:"result,omitempty"`       // the agent's output
@@ -117,10 +125,14 @@ type Package struct {
 // maxOutputBytes > 0 clips large tool outputs and agent results inlined into the
 // package (turns.json / agent-results.ndjson); the raw transcript pointers still
 // reach the full bytes. 0 leaves everything full.
-func Build(now time.Time, session trace.Session, turns []trace.Turn, maxOutputBytes int) Package {
+func Build(now time.Time, session trace.Session, turns []trace.Turn, subagentRuns []SubagentRun, maxOutputBytes int) Package {
 	// Detect and build evidence from the full content first, then clip what gets
 	// inlined — so detection/claims are never weakened by the size cap.
 	agents := detectAgentRuns(session, turns)
+	// Fold in the actual completed sub-agent runs (ingested as linked sessions):
+	// these carry the REAL results an interrupted Workflow's ack lacks — the payoff
+	// of capturing subagents. Provider-neutral (works for claude-code and codex).
+	agents = mergeSubagentRuns(session, agents, subagentRuns)
 	evidence := buildEvidence(session, turns, agents)
 	manifest := buildManifest(now, session, turns, agents)
 	if maxOutputBytes > 0 {
@@ -179,6 +191,113 @@ func detectAgentRuns(session trace.Session, turns []trace.Turn) []AgentRun {
 	return runs
 }
 
+// SubagentRun is one completed sub-agent session linked to the packaged parent
+// (via parent_session_id), carrying its REAL recovered result — the work an
+// interrupted Workflow's ack does not. Provider-neutral; the read layer assembles
+// it from the linked subagent sessions (see query.Service.SubagentRuns).
+type SubagentRun struct {
+	SessionID       string
+	ExternalID      string // the subagent's external/thread id (codex spawn_agent output's agent_id)
+	TranscriptPath  string
+	AgentType       string
+	SubagentKind    string
+	WorkflowRunID   string
+	ParentToolUseID string
+	Status          string
+	Result          string // the sub-agent's final assistant message
+	StartedAt       time.Time
+	EndedAt         time.Time
+}
+
+// mergeSubagentRuns folds the linked sub-agent sessions into the tool-call-derived
+// agent runs. A sub-agent whose ParentToolUseID matches a spawning tool call (a
+// claude-code Task/Agent) ENRICHES that run — pointing its source at the sub-agent
+// transcript and filling a result the synchronous tool_result lacked. Everything
+// else (a Workflow's internal agents, codex spawned agents) is APPENDED as its own
+// run: the parent's single spawn/orchestrator call is one run, its agents another.
+func mergeSubagentRuns(session trace.Session, agents []AgentRun, subs []SubagentRun) []AgentRun {
+	// Two ways a spawn tool call links to its subagent session: the child records the
+	// launching tool_use id on its own side (claude-code Task → ParentToolUseID), or
+	// the spawn's OUTPUT names the child it launched (codex spawn_agent → child
+	// external id, via the provider seam). Either lets us ENRICH the one spawn run
+	// instead of double-listing it alongside the real subagent run.
+	byUseID := make(map[string]int, len(agents))
+	byChildID := make(map[string]int, len(agents))
+	for i := range agents {
+		if id := agents[i].Source.ToolCallID; id != "" {
+			byUseID[id] = i
+		}
+		if childID := ingest.AgentSpawnChildID(session.Provider, agents[i].Tool, []byte(agents[i].Result)); childID != "" {
+			byChildID[childID] = i
+		}
+	}
+	// enrich folds a completed subagent session into its spawn run: the session is the
+	// authoritative record, so adopt its terminal status + real result, and repoint the
+	// source at its transcript while KEEPING the spawn call's TurnID/ToolCallID (they
+	// locate the spawn in turns.json and are file-independent) — dropping the parent-file
+	// raw-event ids, which do not apply to the subagent file.
+	enrich := func(idx int, s SubagentRun) {
+		if st := subagentRunStatus(s.Status); st == trace.StatusSuccess {
+			agents[idx].Status = st
+		}
+		if s.Result != "" {
+			agents[idx].Result = s.Result
+			agents[idx].OutputBytes = int64(len(s.Result))
+		}
+		// The parent's Task/Agent tool input often omits subagent_type, so the spawn
+		// run's Type is empty; the linked session carries the real agent type.
+		if agents[idx].Type == "" {
+			agents[idx].Type = s.AgentType
+		}
+		p := agents[idx].Source
+		p.SessionID = s.SessionID
+		p.File = s.TranscriptPath
+		p.UseEventID = ""
+		p.ResultEventID = ""
+		agents[idx].Source = p
+	}
+	for _, s := range subs {
+		if s.ParentToolUseID != "" {
+			if idx, ok := byUseID[s.ParentToolUseID]; ok {
+				enrich(idx, s)
+				continue
+			}
+		}
+		if s.ExternalID != "" {
+			if idx, ok := byChildID[s.ExternalID]; ok {
+				enrich(idx, s)
+				continue
+			}
+		}
+		agents = append(agents, AgentRun{
+			ID:          "subagent:" + s.SessionID,
+			Tool:        s.SubagentKind,
+			Type:        s.AgentType,
+			Result:      s.Result,
+			Status:      subagentRunStatus(s.Status),
+			StartedAt:   s.StartedAt,
+			EndedAt:     s.EndedAt,
+			OutputBytes: int64(len(s.Result)),
+			Source:      SourcePointer{Provider: session.Provider, SessionID: s.SessionID, File: s.TranscriptPath},
+		})
+	}
+	return agents
+}
+
+// subagentRunStatus maps a subagent SESSION status to the agent-run vocabulary the
+// manifest/evidence classify on. Both parsers only ever set a session to `completed`
+// (it has turns) or `unknown` (0-turn ghost) — never `failed`/`interrupted` — so this
+// maps `completed`→`success` (an authoritative result, not mis-counted as in-flight)
+// and lets `unknown` fall through to incomplete. A session that ran to completion but
+// whose work failed is not distinguishable at the session level (the concrete codex
+// failed-spawn case is caught earlier, at the tool-call status).
+func subagentRunStatus(sessionStatus string) string {
+	if sessionStatus == trace.StatusCompleted {
+		return trace.StatusSuccess
+	}
+	return sessionStatus
+}
+
 func buildManifest(now time.Time, session trace.Session, turns []trace.Turn, agents []AgentRun) Manifest {
 	completed, failed, interrupted, incomplete := 0, 0, 0, 0
 	for _, a := range agents {
@@ -207,7 +326,7 @@ func buildManifest(now time.Time, session trace.Session, turns []trace.Turn, age
 	if len(agents) > 0 {
 		entrypoints = append(entrypoints, "agent-results.ndjson")
 	}
-	entrypoints = append(entrypoints, "codex-prompt.md")
+	entrypoints = append(entrypoints, "receiver-prompt.md")
 	return Manifest{
 		Schema:                 SchemaVersion,
 		GeneratedAt:            now,

@@ -113,6 +113,26 @@ type Session struct {
 	TurnCount      int       `json:"turn_count"`
 	ToolCallCount  int       `json:"tool_call_count"`
 	Tokens         Tokens    `json:"tokens"`
+
+	// Subagent linkage. A subagent session is a provider's nested agent transcript
+	// (Claude Code: a Task/Agent run or a Workflow's internal agent), ingested as a
+	// first-class but marked+linked session so aggregations can include it while
+	// default listings exclude it. All fields are empty for a top-level session and
+	// for providers without subagents (e.g. codex) — parity: a field is filled only
+	// when the source carries it.
+	IsSubagent bool `json:"is_subagent,omitzero"`
+	// ParentExternalID is the external/thread id of the launching session, as each
+	// provider reports it (claude-code: the subagent's in-file sessionId, which IS
+	// the parent's external id; codex: payload.parent_thread_id). It is the neutral
+	// link the parser sets; the store resolves it to the internal ParentSessionID by
+	// matching a top-level session's external id (same provider). One mechanism for
+	// both providers — claude-code's nested path is no longer needed to link.
+	ParentExternalID string `json:"parent_external_id,omitzero"`
+	ParentSessionID  string `json:"parent_session_id,omitzero"`  // the launching session's internal ID (resolved by the store from ParentExternalID)
+	ParentToolUseID  string `json:"parent_tool_use_id,omitzero"` // the parent tool_use that spawned it (Task/Agent); empty for workflow agents
+	WorkflowRunID    string `json:"workflow_run_id,omitzero"`    // the workflow run id (wf_…) for a Workflow's internal agent
+	SubagentKind     string `json:"subagent_kind,omitzero"`      // "task" | "workflow" (claude-code) | "agent" (codex)
+	AgentType        string `json:"agent_type,omitzero"`         // the subagent's declared type / role (e.g. "Explore", "explorer")
 }
 
 type Turn struct {

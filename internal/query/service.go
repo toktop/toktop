@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"toktop.unceas.dev/internal/handoff"
 	"toktop.unceas.dev/internal/rules"
 	"toktop.unceas.dev/internal/store/sqlite"
 	"toktop.unceas.dev/internal/trace"
@@ -78,6 +79,33 @@ func (s *Service) SessionTurns(ctx context.Context, sessionID string) ([]trace.T
 	return s.store.TurnsForSession(ctx, sessionID)
 }
 
+// SubagentRuns returns the completed sub-agent runs linked to parentID, mapped to
+// the neutral handoff input. The store→handoff mapping lives here once so the
+// handoff package stays store-agnostic.
+func (s *Service) SubagentRuns(ctx context.Context, parentID string) ([]handoff.SubagentRun, error) {
+	rows, err := s.store.SubagentRunsForParent(ctx, parentID)
+	if err != nil {
+		return nil, err
+	}
+	runs := make([]handoff.SubagentRun, len(rows))
+	for i, r := range rows {
+		runs[i] = handoff.SubagentRun{
+			SessionID:       r.SessionID,
+			ExternalID:      r.ExternalID,
+			TranscriptPath:  r.TranscriptPath,
+			AgentType:       r.AgentType,
+			SubagentKind:    r.SubagentKind,
+			WorkflowRunID:   r.WorkflowRunID,
+			ParentToolUseID: r.ParentToolUseID,
+			Status:          r.Status,
+			Result:          r.Result,
+			StartedAt:       r.StartedAt,
+			EndedAt:         r.EndedAt,
+		}
+	}
+	return runs, nil
+}
+
 func (s *Service) ListProjects(ctx context.Context, f sqlite.Filter) ([]sqlite.ProjectListItem, error) {
 	return s.store.ListProjects(ctx, f)
 }
@@ -110,8 +138,8 @@ func (s *Service) ListComponents(ctx context.Context, turnID string) ([]trace.Tu
 	return s.store.ListComponentsForTurn(ctx, turnID)
 }
 
-func (s *Service) Search(ctx context.Context, query string, limit int, kind, source string) ([]sqlite.SearchResult, error) {
-	return s.store.Search(ctx, query, limit, kind, source)
+func (s *Service) Search(ctx context.Context, query string, limit int, kind, source string, includeSubagents bool) ([]sqlite.SearchResult, error) {
+	return s.store.Search(ctx, query, limit, kind, source, includeSubagents)
 }
 
 func (s *Service) Suggestions(ctx context.Context, ruleID string) ([]trace.Suggestion, error) {
@@ -124,7 +152,9 @@ func (s *Service) RecomputeSuggestions(ctx context.Context, now time.Time) ([]tr
 	// load silently hid older signals here while the CLI's full-history path still
 	// surfaced them. MCPUnused30d applies its own 30-day cutoff, so a full load
 	// does not widen it.
-	index, err := s.store.LoadIndex(ctx, time.Time{})
+	// Rules analyze the user's own (top-level) sessions; subagents are excluded so
+	// 2000+ nested runs don't flood suggestions.
+	index, err := s.store.LoadIndex(ctx, time.Time{}, false)
 	if err != nil {
 		return nil, err
 	}
@@ -138,8 +168,8 @@ func (s *Service) RecomputeSuggestions(ctx context.Context, now time.Time) ([]tr
 // Snapshot loads the trace index for export. A zero since loads everything; a
 // non-zero since selects sessions by effective time and includes all turns for
 // those sessions.
-func (s *Service) Snapshot(ctx context.Context, since time.Time) (trace.Index, error) {
-	return s.store.LoadIndex(ctx, since)
+func (s *Service) Snapshot(ctx context.Context, since time.Time, includeSubagents bool) (trace.Index, error) {
+	return s.store.LoadIndex(ctx, since, includeSubagents)
 }
 
 var ErrNotFound = errors.New("not found")

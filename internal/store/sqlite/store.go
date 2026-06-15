@@ -52,7 +52,27 @@ const dbFileName = "toktop.db"
 // (was active), and a non-terminal `running` progress notification no longer
 // fabricates an end time. Old rows that classified a killed async run as active
 // must be rebuilt.
-const schemaUserVersion = 10
+// Epoch 11: claudecode now ingests subagent transcripts (Task/Agent runs and a
+// Workflow's internal agents) as marked+linked sessions (is_subagent + parent
+// linkage), where before the whole subagents/ subtree was skipped. A clean rebuild
+// from the transcripts backfills the new rows and populates the denormalized
+// is_subagent on every turn/raw_event consistently, rather than relying on the
+// additive migration's default-0 for pre-existing rows.
+// Epoch 12: codex subagents are now ingested too (a spawned thread is a flat
+// rollout marked in-file by thread_source/parent_thread_id), and the parent link
+// is unified across providers onto parent_external_id (00005 gained that column,
+// resolved to parent_session_id by a post-pass) instead of claudecode's path hash.
+// The edited 00005 + the new projection require a rebuild of any epoch-11 db.
+// Epoch 13: codex subagent marking is now gated on a non-empty parent_thread_id, so
+// orphan subagent-sourced rollouts (e.g. judge/guardian threads) stay top-level
+// instead of being hidden; old rows that mis-marked them must be rebuilt. 00005 also
+// gained the partial unresolved-subagent index.
+// Epoch 14: codex subagent marking now keys on the structural source.subagent.
+// thread_spawn marker (not parent_thread_id, which guardian "other" threads also
+// carry, so they were wrongly hidden); a failed spawn_agent call (no agent_id) now
+// projects to failed instead of success; and is_subagent is denormalized onto
+// parse_errors + the search index (00005). Old rows must be rebuilt.
+const schemaUserVersion = 14
 
 var writerCacheKiB, readerCacheKiB, sqliteMmapBytes = memoryBudget(memory.TotalMemory())
 

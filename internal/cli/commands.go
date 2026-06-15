@@ -154,7 +154,9 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 	filter.Limit = limit
 	filter.Offset = offset
-	if err := applyMultiFilter(&filter, sources, projects, sessions, statuses); err != nil {
+	// Live status is a top-level-session view; subagents never carry live hook
+	// status, so it has no --subagents toggle and always excludes them.
+	if err := applyMultiFilter(&filter, sources, projects, sessions, statuses, false); err != nil {
 		cliErr(stderr, err)
 		return 2
 	}
@@ -305,6 +307,7 @@ func runProjects(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	fs.Var(&statuses, "status", "status filter; may be repeated or comma-separated")
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
+	subagents := addSubagentsFlag(fs)
 	setFlagUsage(fs, "usage: toktop projects [flags]", "List projects with session / turn / tool-call counts.")
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
@@ -318,7 +321,7 @@ func runProjects(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		cliErr(stderr, err)
 		return 2
 	}
-	if err := applyMultiFilter(&filter, sources, projectFilter, sessions, statuses); err != nil {
+	if err := applyMultiFilter(&filter, sources, projectFilter, sessions, statuses, *subagents); err != nil {
 		cliErr(stderr, err)
 		return 2
 	}
@@ -358,6 +361,7 @@ func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs.Var(&projects, "project", "project id filter; may be repeated or comma-separated")
 	fs.Var(&sessions, "session", "session id or external session id filter; may be repeated or comma-separated")
 	fs.Var(&statuses, "status", "turn status filter; may be repeated or comma-separated")
+	subagents := addSubagentsFlag(fs)
 	setFlagUsage(fs, "usage: toktop tools [flags]", "Roll up tool-call usage (call / turn / failed counts per tool).")
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
@@ -371,7 +375,7 @@ func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		cliErr(stderr, err)
 		return 2
 	}
-	if err := applyMultiFilter(&filter, sources, projects, sessions, statuses); err != nil {
+	if err := applyMultiFilter(&filter, sources, projects, sessions, statuses, *subagents); err != nil {
 		cliErr(stderr, err)
 		return 2
 	}
@@ -411,6 +415,7 @@ func runModels(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs.Var(&projects, "project", "project id filter; may be repeated or comma-separated")
 	fs.Var(&sessions, "session", "session id or external session id filter; may be repeated or comma-separated")
 	fs.Var(&statuses, "status", "turn status filter; may be repeated or comma-separated")
+	subagents := addSubagentsFlag(fs)
 	setFlagUsage(fs, "usage: toktop models [flags]", "Roll up model invocation usage (call / turn / token counts per model).")
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
@@ -424,7 +429,7 @@ func runModels(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		cliErr(stderr, err)
 		return 2
 	}
-	if err := applyMultiFilter(&filter, sources, projects, sessions, statuses); err != nil {
+	if err := applyMultiFilter(&filter, sources, projects, sessions, statuses, *subagents); err != nil {
 		cliErr(stderr, err)
 		return 2
 	}
@@ -472,6 +477,7 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.Var(&projects, "project", "project id filter; may be repeated or comma-separated")
 	fs.Var(&sessions, "session", "session id or external session id filter; may be repeated or comma-separated")
 	fs.Var(&statuses, "status", "turn status filter; may be repeated or comma-separated")
+	subagents := addSubagentsFlag(fs)
 	setFlagUsageSub(fs, "usage: toktop mcps [flags]",
 		[]subcmdDoc{{"unused", "list declared MCP servers with zero observed calls (no filters)"}},
 		"Roll up MCP server usage. The availability column counts turns where the server was observed available.")
@@ -523,7 +529,7 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		cliErr(stderr, err)
 		return 2
 	}
-	if err := applyMultiFilter(&filter, sources, projects, sessions, statuses); err != nil {
+	if err := applyMultiFilter(&filter, sources, projects, sessions, statuses, *subagents); err != nil {
 		cliErr(stderr, err)
 		return 2
 	}
@@ -559,6 +565,7 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs.Var(&projects, "project", "project id filter; may be repeated or comma-separated")
 	fs.Var(&sessions, "session", "session id or external session id filter; may be repeated or comma-separated")
 	fs.Var(&statuses, "status", "turn status filter; may be repeated or comma-separated")
+	subagents := addSubagentsFlag(fs)
 	setFlagUsageSub(fs, "usage: toktop skills [flags]",
 		[]subcmdDoc{{"unused", "list installed skills with zero inferred uses (no filters)"}},
 		"Roll up skill usage (installed skills + inferred-used counts).")
@@ -611,7 +618,7 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		cliErr(stderr, err)
 		return 2
 	}
-	if err := applyMultiFilter(&filter, sources, projects, sessions, statuses); err != nil {
+	if err := applyMultiFilter(&filter, sources, projects, sessions, statuses, *subagents); err != nil {
 		cliErr(stderr, err)
 		return 2
 	}
@@ -1229,7 +1236,7 @@ func checkPaging(limit, offset int, stderr io.Writer) int {
 // applyMultiFilter populates the shared list filters. Source tokens are folded
 // and validated, and status tokens are checked against the canonical set (unknown
 // name => error, callers exit 2); project/session are opaque ids passed through.
-func applyMultiFilter(filter *sqlite.Filter, sources, projects, sessions, statuses rootList) error {
+func applyMultiFilter(filter *sqlite.Filter, sources, projects, sessions, statuses rootList, includeSubagents bool) error {
 	tokens, err := resolveFilterTokens(sources)
 	if err != nil {
 		return err
@@ -1243,7 +1250,18 @@ func applyMultiFilter(filter *sqlite.Filter, sources, projects, sessions, status
 	filter.ProjectIDs = append(filter.ProjectIDs, splitFlagValues(projects)...)
 	filter.SessionIDs = append(filter.SessionIDs, splitFlagValues(sessions)...)
 	filter.Statuses = append(filter.Statuses, splitFlagValues(statuses)...)
+	filter.IncludeSubagents = includeSubagents
 	return nil
+}
+
+// subagentsFlagUsage is the one description every list/stats command gives the
+// --subagents toggle, so the help text never drifts between commands.
+const subagentsFlagUsage = "include subagent transcripts (sub-runs spawned by Task/Agent/Workflow); excluded by default"
+
+// addSubagentsFlag registers the shared --subagents toggle on a command's flag set
+// and returns the bound value, mirroring how each command registers --sources etc.
+func addSubagentsFlag(fs *flag.FlagSet) *bool {
+	return fs.Bool("subagents", false, subagentsFlagUsage)
 }
 
 // splitFlagValues flattens repeat/comma-joined flag values into a deduped token

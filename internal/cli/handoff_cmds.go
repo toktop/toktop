@@ -86,7 +86,12 @@ func runHandoffCreate(ctx context.Context, args []string, stdout, stderr io.Writ
 		cliErr(stderr, err)
 		return 1
 	}
-	pkg := handoff.Build(time.Now().UTC(), sess, turns, maxOutputBytes)
+	subagentRuns, err := svc.SubagentRuns(ctx, sess.ID)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	pkg := handoff.Build(time.Now().UTC(), sess, turns, subagentRuns, maxOutputBytes)
 	// Record the same disambiguation the stderr note above reported, so the
 	// written manifest.json is self-describing about an ambiguous external id.
 	if len(matches) > 1 {

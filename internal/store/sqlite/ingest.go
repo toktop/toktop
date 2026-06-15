@@ -82,6 +82,11 @@ func (s *Store) saveIngestImpl(ctx context.Context, index trace.Index, rawEvents
 	}()
 
 	sourceID := trace.SourceID(index.Source)
+	// is_subagent is denormalized onto turns (by session id) and raw_events (by
+	// source file — raw_events.session_external_id is the shared PARENT uuid and
+	// cannot tell a subagent's events apart). Derive both maps once from the marked
+	// sessions; a session absent from these maps is top-level (is_subagent = 0).
+	subagentSessions, subagentFiles := subagentMaps(index.Sessions)
 	if err = upsertSource(ctx, tx, sourceID, index.Source); err != nil {
 		return err
 	}
@@ -95,7 +100,7 @@ func (s *Store) saveIngestImpl(ctx context.Context, index trace.Index, rawEvents
 	if err = deleteSourceFiles(ctx, tx, sourceID, processedFiles); err != nil {
 		return err
 	}
-	if err = insertRawEvents(ctx, tx, sourceID, rootIDs, rawEvents, index.ParserVersion); err != nil {
+	if err = insertRawEvents(ctx, tx, sourceID, rootIDs, rawEvents, index.ParserVersion, subagentFiles); err != nil {
 		return err
 	}
 	if err = insertProjects(ctx, tx, sourceID, index.Sessions); err != nil {
@@ -105,8 +110,11 @@ func (s *Store) saveIngestImpl(ctx context.Context, index trace.Index, rawEvents
 	if err != nil {
 		return err
 	}
+	if err = resolveSubagentParents(ctx, tx); err != nil {
+		return err
+	}
 
-	if err = insertTurnsAndChildren(ctx, tx, index, sessionProject); err != nil {
+	if err = insertTurnsAndChildren(ctx, tx, index, sessionProject, subagentSessions); err != nil {
 		return err
 	}
 	if err = updateSessionLastTurn(ctx, tx, index.Turns); err != nil {
@@ -135,10 +143,10 @@ func (s *Store) saveIngestImpl(ctx context.Context, index trace.Index, rawEvents
 			return err
 		}
 	}
-	if err = insertParseErrors(ctx, tx, sourceID, index.ParseErrorList); err != nil {
+	if err = insertParseErrors(ctx, tx, sourceID, index.ParseErrorList, subagentFiles); err != nil {
 		return err
 	}
-	if err = insertSearchDocuments(ctx, tx, sourceID, index); err != nil {
+	if err = insertSearchDocuments(ctx, tx, sourceID, index, subagentSessions); err != nil {
 		return err
 	}
 	if err = updateIngestOffsets(ctx, tx, rootIDs, rawEvents, processedFiles, fingerprints); err != nil {
@@ -240,7 +248,7 @@ func deleteSourceFiles(ctx context.Context, tx *sql.Tx, sourceID string, files [
 	return nil
 }
 
-func insertRawEvents(ctx context.Context, tx *sql.Tx, sourceID string, rootIDs map[string]string, events []source.RawEvent, parserVersion string) error {
+func insertRawEvents(ctx context.Context, tx *sql.Tx, sourceID string, rootIDs map[string]string, events []source.RawEvent, parserVersion string, subagentFiles map[string]bool) error {
 	if len(events) == 0 {
 		return nil
 	}
@@ -256,19 +264,21 @@ func insertRawEvents(ctx context.Context, tx *sql.Tx, sourceID string, rootIDs m
 	// the pipelined writer keeps up with parse+redact (see bulk.go / StreamSessions).
 	const prefix = `INSERT OR IGNORE INTO raw_events(
 		id, source_id, source_root_id, source_kind, source_file,
-		byte_offset, line_no, event_time, session_external_id,
+		byte_offset, line_no, event_time, session_external_id, is_subagent,
 		message_external_id, parent_external_id, event_type, role,
 		raw_hash, parser_version, parse_status, parse_error, imported_at)`
 	// Constant columns (source_kind, message/parent_external_id, parse_error) stay
-	// inline literals rather than binds, keeping this at 14 binds/row as the per-row
-	// stmt was (mattn binds one parameter per cgocall).
-	const rowGroup = `(?, ?, ?, 'transcript', ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, '', ?)`
+	// inline literals rather than binds, keeping this at 15 binds/row (mattn binds
+	// one parameter per cgocall). is_subagent must be a bind, not a constant: a
+	// batch mixes top-level and subagent files, and a subagent's events carry the
+	// shared PARENT external id, so only the source_file distinguishes them.
+	const rowGroup = `(?, ?, ?, 'transcript', ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, '', ?)`
 	for _, event := range events {
 		if _, ok := rootIDs[event.SourceRoot]; !ok {
 			return fmt.Errorf("raw event source root %q has no source_roots row", event.SourceRoot)
 		}
 	}
-	if err := execRows(ctx, tx, prefix, rowGroup, 14, len(events), func(i int) []any {
+	if err := execRows(ctx, tx, prefix, rowGroup, 15, len(events), func(i int) []any {
 		event := events[i]
 		rootID := rootIDs[event.SourceRoot]
 		rawHash := event.Hash()
@@ -288,7 +298,7 @@ func insertRawEvents(ctx context.Context, tx *sql.Tx, sourceID string, rootIDs m
 		}
 		return []any{
 			eventID, sourceID, rootID, event.SourceFile,
-			event.ByteOffset, event.LineNo, eventTime, event.SessionID,
+			event.ByteOffset, event.LineNo, eventTime, event.SessionID, boolInt(subagentFiles[event.SourceFile]),
 			event.EventType, role,
 			rawHash, parserVersion, parseStatus, now,
 		}
@@ -392,6 +402,21 @@ func insertProjects(ctx context.Context, tx *sql.Tx, sourceID string, sessions [
 	return nil
 }
 
+// subagentMaps derives, from the batch's sessions, the lookups the denormalized
+// is_subagent writes need: session id → true and transcript path → true, each
+// holding only the subagent sessions (a key's absence means top-level).
+func subagentMaps(sessions []trace.Session) (byID, byFile map[string]bool) {
+	byID = make(map[string]bool)
+	byFile = make(map[string]bool)
+	for _, s := range sessions {
+		if s.IsSubagent {
+			byID[s.ID] = true
+			byFile[s.TranscriptPath] = true
+		}
+	}
+	return byID, byFile
+}
+
 func insertSessions(ctx context.Context, tx *sql.Tx, sourceID string, rootIDs map[string]string, sessions []trace.Session, parserVersion string) (map[string]string, error) {
 	if len(sessions) == 0 {
 		return nil, nil
@@ -404,8 +429,9 @@ func insertSessions(ctx context.Context, tx *sql.Tx, sourceID string, rootIDs ma
 			total_turns, total_tool_calls,
 			total_input_tokens, total_output_tokens,
 			cache_read_tokens, cache_write_tokens, cache_write_long_tokens,
+			is_subagent, parent_external_id, parent_session_id, parent_tool_use_id, workflow_run_id, subagent_kind, agent_type,
 			parser_version, created_at, updated_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("prepare sessions: %w", err)
@@ -426,6 +452,8 @@ func insertSessions(ctx context.Context, tx *sql.Tx, sourceID string, rootIDs ma
 			session.TurnCount, session.ToolCallCount,
 			session.Tokens.Input, session.Tokens.Output,
 			session.Tokens.CacheRead, session.Tokens.CacheWrite, session.Tokens.CacheWriteLong,
+			boolInt(session.IsSubagent), sqlNullStr(session.ParentExternalID), sqlNullStr(session.ParentSessionID), sqlNullStr(session.ParentToolUseID),
+			sqlNullStr(session.WorkflowRunID), sqlNullStr(session.SubagentKind), sqlNullStr(session.AgentType),
 			parserVersion, now, now,
 		)
 		if err != nil {
@@ -435,7 +463,35 @@ func insertSessions(ctx context.Context, tx *sql.Tx, sourceID string, rootIDs ma
 	return sessionProject, nil
 }
 
-func insertTurnsAndChildren(ctx context.Context, tx *sql.Tx, index trace.Index, sessionProject map[string]string) error {
+// resolveSubagentParents fills parent_session_id for subagent sessions from their
+// parent_external_id, by matching a top-level session's external id within the same
+// provider. One mechanism for both providers (claude-code's subagent shares the
+// parent's external id; codex carries parent_thread_id). It is run after every
+// session insert and only touches still-unresolved rows, so a subagent ingested
+// before its parent (a later batch/run) is linked once the parent lands. Idempotent.
+// The ORDER BY makes the match deterministic in the rare case several top-level
+// sessions share one external id (a resumed/forked session): the earliest wins.
+func resolveSubagentParents(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE sessions SET parent_session_id = (
+			SELECT p.id FROM sessions p
+			WHERE p.external_session_id = sessions.parent_external_id
+			  AND p.is_subagent = 0
+			  AND p.source_id = sessions.source_id
+			ORDER BY p.created_at, p.id
+			LIMIT 1
+		)
+		WHERE is_subagent = 1
+		  AND parent_external_id IS NOT NULL AND parent_external_id != ''
+		  AND parent_session_id IS NULL
+	`)
+	if err != nil {
+		return fmt.Errorf("resolve subagent parents: %w", err)
+	}
+	return nil
+}
+
+func insertTurnsAndChildren(ctx context.Context, tx *sql.Tx, index trace.Index, sessionProject map[string]string, subagentSessions map[string]bool) error {
 	if len(index.Turns) == 0 {
 		return nil
 	}
@@ -469,16 +525,16 @@ func insertTurnsAndChildren(ctx context.Context, tx *sql.Tx, index trace.Index, 
 		id, session_id, project_id, turn_index,
 		user_message, assistant_final,
 		started_at, ended_at, duration_ms, status,
-		invocation_count, tool_call_count,
+		invocation_count, tool_call_count, is_subagent,
 		total_input_tokens, total_output_tokens, cache_read_tokens, cache_write_tokens, cache_write_long_tokens,
 		created_at, updated_at)`
-	if err := execRows(ctx, tx, turnPrefix, placeholders(19), 19, len(turns), func(i int) []any {
+	if err := execRows(ctx, tx, turnPrefix, placeholders(20), 20, len(turns), func(i int) []any {
 		turn := &turns[i]
 		return []any{
 			turn.ID, turn.SessionID, sqlNullStr(sessionProject[turn.SessionID]), turn.Index,
 			turn.UserMessage, turn.AssistantFinal,
 			timeText(turn.StartedAt), timeText(turn.EndedAt), turn.DurationMs, turn.Status,
-			turn.InvocationCount, turn.ToolCallCount,
+			turn.InvocationCount, turn.ToolCallCount, boolInt(subagentSessions[turn.SessionID]),
 			turn.Tokens.Input, turn.Tokens.Output, turn.Tokens.CacheRead, turn.Tokens.CacheWrite, turn.Tokens.CacheWriteLong,
 			now, now,
 		}
@@ -681,14 +737,17 @@ func insertMCPServers(ctx context.Context, tx *sql.Tx, sourceID string, servers 
 	return nil
 }
 
-func insertParseErrors(ctx context.Context, tx *sql.Tx, sourceID string, errors []trace.ParseError) error {
+func insertParseErrors(ctx context.Context, tx *sql.Tx, sourceID string, errors []trace.ParseError, subagentFiles map[string]bool) error {
 	if len(errors) == 0 {
 		return nil
 	}
 	now := nowUTC()
+	// is_subagent denormalized by source file (mirrors insertRawEvents): parse_errors
+	// has no session link, so the file is the only marker, and an indexable column
+	// avoids the NULL-source_file NOT-IN trap a sessions subquery would hit.
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO parse_errors(source_id, source_root_id, source_file, line_no, raw_event_id, message, parser_version, created_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO parse_errors(source_id, source_root_id, source_file, line_no, raw_event_id, message, parser_version, is_subagent, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return fmt.Errorf("prepare parse_errors: %w", err)
@@ -701,7 +760,8 @@ func insertParseErrors(ctx context.Context, tx *sql.Tx, sourceID string, errors 
 		}
 		_, err = stmt.ExecContext(ctx,
 			sid, sqlNullStr(parseErr.SourceRootID), parseErr.SourceFile, parseErr.LineNo,
-			sqlNullStr(parseErr.RawEventID), parseErr.Message, parseErr.ParserVersion, now,
+			sqlNullStr(parseErr.RawEventID), parseErr.Message, parseErr.ParserVersion,
+			boolInt(subagentFiles[parseErr.SourceFile]), now,
 		)
 		if err != nil {
 			return fmt.Errorf("insert parse_error: %w", err)
@@ -710,7 +770,7 @@ func insertParseErrors(ctx context.Context, tx *sql.Tx, sourceID string, errors 
 	return nil
 }
 
-func insertSearchDocuments(ctx context.Context, tx *sql.Tx, sourceID string, index trace.Index) error {
+func insertSearchDocuments(ctx context.Context, tx *sql.Tx, sourceID string, index trace.Index, subagentSessions map[string]bool) error {
 	// Fields are already redacted-or-raw in place by redact.ApplyToIndex, so index
 	// them directly. The document text is concatenated in SQL (`? || ' ' || ?`)
 	// rather than in Go: the joined per-row string — roughly the whole FTS payload —
@@ -720,12 +780,14 @@ func insertSearchDocuments(ctx context.Context, tx *sql.Tx, sourceID string, ind
 	// batched passes (one row shape each); this reassigns search_documents.rowid
 	// relative to the old interleaved order, which is internally consistent (the FTS
 	// trigger keys off new.rowid) and unobservable to queries keyed off id/kind.
+	// is_subagent is denormalized by session id so default search excludes subagents
+	// via a direct FTS column check instead of a sessions subquery.
 	turns := index.Turns
-	const prefix = `INSERT INTO search_documents(kind, id, source_id, session_id, turn_id, source_file, text)`
+	const prefix = `INSERT INTO search_documents(kind, id, source_id, session_id, turn_id, source_file, text, is_subagent)`
 
-	if err := execRows(ctx, tx, prefix, "('turn', ?, ?, ?, ?, ?, ? || ' ' || ?)", 7, len(turns), func(i int) []any {
+	if err := execRows(ctx, tx, prefix, "('turn', ?, ?, ?, ?, ?, ? || ' ' || ?, ?)", 8, len(turns), func(i int) []any {
 		turn := &turns[i]
-		return []any{turn.ID, sourceID, turn.SessionID, turn.ID, turn.TranscriptPath, turn.UserMessage, turn.AssistantFinal}
+		return []any{turn.ID, sourceID, turn.SessionID, turn.ID, turn.TranscriptPath, turn.UserMessage, turn.AssistantFinal, boolInt(subagentSessions[turn.SessionID])}
 	}); err != nil {
 		return fmt.Errorf("index turn search: %w", err)
 	}
@@ -741,9 +803,9 @@ func insertSearchDocuments(ctx context.Context, tx *sql.Tx, sourceID string, ind
 			calls = append(calls, callDoc{turn.SessionID, turn.ID, turn.TranscriptPath, &turn.ToolCalls[ci]})
 		}
 	}
-	if err := execRows(ctx, tx, prefix, "('tool_call', ?, ?, ?, ?, ?, ? || ' ' || ? || ' ' || ?)", 8, len(calls), func(i int) []any {
+	if err := execRows(ctx, tx, prefix, "('tool_call', ?, ?, ?, ?, ?, ? || ' ' || ? || ' ' || ?, ?)", 9, len(calls), func(i int) []any {
 		d := calls[i]
-		return []any{d.call.ID, sourceID, d.sessionID, d.turnID, d.transcriptPath, d.call.Name, d.call.Input, d.call.Output}
+		return []any{d.call.ID, sourceID, d.sessionID, d.turnID, d.transcriptPath, d.call.Name, d.call.Input, d.call.Output, boolInt(subagentSessions[d.sessionID])}
 	}); err != nil {
 		return fmt.Errorf("index tool_call search: %w", err)
 	}
@@ -762,6 +824,14 @@ func sqlNullInt(value int) any {
 		return nil
 	}
 	return value
+}
+
+// boolInt renders a Go bool as the 0/1 a NOT NULL INTEGER column expects.
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // timeLayout is a fixed-width canonical timestamp layout. Unlike

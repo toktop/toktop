@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"toktop.unceas.dev/internal/collector"
 	"toktop.unceas.dev/internal/source"
@@ -24,6 +25,18 @@ func CollectSessionFile(ctx context.Context, file SessionFile) (source.RawSessio
 		SourceFile:  file.Path,
 		ProjectName: file.ProjectName,
 		ProjectPath: file.ProjectPath,
+	}
+	if file.SubagentKind != "" {
+		raw.IsSubagent = true
+		raw.SubagentKind = file.SubagentKind
+		raw.WorkflowRunID = file.WorkflowRunID
+		// Parent link comes straight from the path (the <uuid> dir before subagents/),
+		// so it survives even a transcript with no in-file sessionId.
+		raw.ParentExternalID = file.ParentExternalID
+		// The sibling agent-<id>.meta.json carries {agentType, description, toolUseId}.
+		// toolUseId links a Task/Agent run back to its launching tool call (workflow
+		// agents have only agentType, so ParentToolUseID stays empty for them).
+		raw.AgentType, raw.ParentToolUseID = readSubagentMeta(file.Path)
 	}
 	var parseErrors []trace.ParseError
 	// Authoritative working directory recorded in the transcript. We prefer this
@@ -74,4 +87,24 @@ func CollectSessionFile(ctx context.Context, file SessionFile) (source.RawSessio
 		raw.ProjectPath = transcriptCwd
 	}
 	return raw, parseErrors, nil
+}
+
+// readSubagentMeta best-effort reads the agent-<id>.meta.json sibling of a
+// subagent transcript and returns its agentType and toolUseId. A missing or
+// malformed meta file is not fatal — the subagent transcript still ingests with
+// empty linkage, so both return "".
+func readSubagentMeta(transcriptPath string) (agentType, toolUseID string) {
+	metaPath := strings.TrimSuffix(transcriptPath, ".jsonl") + ".meta.json"
+	data, ok := collector.ReadFileOK(metaPath)
+	if !ok {
+		return "", ""
+	}
+	var meta struct {
+		AgentType string `json:"agentType"`
+		ToolUseID string `json:"toolUseId"`
+	}
+	if json.Unmarshal(data, &meta) != nil {
+		return "", ""
+	}
+	return meta.AgentType, meta.ToolUseID
 }

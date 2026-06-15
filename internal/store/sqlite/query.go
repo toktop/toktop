@@ -13,16 +13,23 @@ import (
 // session effective time, then loads every turn for those sessions. That keeps
 // parent sessions and child turns coherent for scoped export/rule snapshots
 // instead of independently clipping turns by their own timestamps.
-func (s *Store) LoadIndex(ctx context.Context, since time.Time) (trace.Index, error) {
+func (s *Store) LoadIndex(ctx context.Context, since time.Time, includeSubagents bool) (trace.Index, error) {
 	index := trace.Index{GeneratedAt: time.Now().UTC()}
 	if err := s.loadProvidersAndRoots(ctx, &index); err != nil {
 		return trace.Index{}, err
 	}
+	// Top-level only by default (consistent with loadAllSessions/loadAllTurns);
+	// export opts in via includeSubagents. Rules always pass false.
 	rawCountQuery := `SELECT COUNT(*) FROM raw_events`
 	var rawCountArgs []any
+	var rawWheres []string
+	rawWheres = append(rawWheres, subagentExcludeWheres(includeSubagents, "raw_events")...)
 	if !since.IsZero() {
-		rawCountQuery += ` WHERE ` + rawEventEffectiveTimeExpr + ` >= ?`
+		rawWheres = append(rawWheres, rawEventEffectiveTimeExpr+" >= ?")
 		rawCountArgs = append(rawCountArgs, timeBound(since))
+	}
+	if clause := whereClause(rawWheres); clause != "" {
+		rawCountQuery += " " + clause
 	}
 	rawCount, err := s.scalarInt(ctx, rawCountQuery, rawCountArgs...)
 	if err != nil {
@@ -36,13 +43,13 @@ func (s *Store) LoadIndex(ctx context.Context, since time.Time) (trace.Index, er
 	}
 	index.ParseErrorList = parseErrors
 
-	sessions, err := s.loadAllSessions(ctx, since)
+	sessions, err := s.loadAllSessions(ctx, since, includeSubagents)
 	if err != nil {
 		return trace.Index{}, err
 	}
 	index.Sessions = sessions
 
-	turns, err := s.loadAllTurns(ctx, since)
+	turns, err := s.loadAllTurns(ctx, since, includeSubagents)
 	if err != nil {
 		return trace.Index{}, err
 	}
@@ -120,8 +127,12 @@ func (s *Store) GetTurn(ctx context.Context, turnID string) (trace.Turn, error) 
 }
 
 func (s *Store) FindSessions(ctx context.Context, id string) ([]trace.Session, error) {
+	// A subagent shares its parent's external_session_id, so matching that id alone
+	// would resolve to the parent AND every subagent. Restrict the external-id match
+	// to top-level sessions; an exact internal id still resolves any session (so a
+	// subagent is reachable when named explicitly).
 	rows, err := s.reader().QueryContext(ctx, sessionsBaseQuery+`
-		WHERE sessions.id = ? OR sessions.external_session_id = ?
+		WHERE sessions.id = ? OR (sessions.external_session_id = ? AND sessions.is_subagent = 0)
 		ORDER BY (sessions.id = ?) DESC, sessions.id`, id, id, id)
 	if err != nil {
 		return nil, fmt.Errorf("query session: %w", err)
@@ -131,6 +142,60 @@ func (s *Store) FindSessions(ctx context.Context, id string) ([]trace.Session, e
 		return nil, err
 	}
 	return sessions, nil
+}
+
+// SubagentRunRow is one completed sub-agent session linked to a parent, with its
+// recovered final result (its last non-empty assistant message), for the handoff.
+type SubagentRunRow struct {
+	SessionID       string
+	ExternalID      string
+	TranscriptPath  string
+	AgentType       string
+	SubagentKind    string
+	WorkflowRunID   string
+	ParentToolUseID string
+	Status          string
+	Result          string
+	StartedAt       time.Time
+	EndedAt         time.Time
+}
+
+// SubagentRunsForParent returns the subagent sessions linked to parentID, each with
+// its LAST NON-EMPTY assistant message as the recovered result — what an interrupted
+// Workflow's ack lacks. (Not sessions.last_turn_id's assistant_final, which is empty
+// when the final turn ends on a tool call.) Provider-neutral (parent_session_id is
+// resolved at ingest for both claude-code and codex).
+func (s *Store) SubagentRunsForParent(ctx context.Context, parentID string) ([]SubagentRunRow, error) {
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT sessions.id, COALESCE(sessions.external_session_id, ''), sessions.transcript_path,
+		       COALESCE(sessions.agent_type, ''), COALESCE(sessions.subagent_kind, ''),
+		       COALESCE(sessions.workflow_run_id, ''), COALESCE(sessions.parent_tool_use_id, ''),
+		       sessions.status,
+		       COALESCE((SELECT t.assistant_final FROM turns t
+		                 WHERE t.session_id = sessions.id AND TRIM(t.assistant_final) <> ''
+		                 ORDER BY t.turn_index DESC LIMIT 1), ''),
+		       COALESCE(sessions.started_at, ''), COALESCE(sessions.ended_at, '')
+		FROM sessions
+		WHERE sessions.parent_session_id = ? AND sessions.is_subagent = 1
+		ORDER BY COALESCE(sessions.workflow_run_id, ''), COALESCE(sessions.started_at, ''), sessions.id
+	`, parentID)
+	if err != nil {
+		return nil, fmt.Errorf("query subagent runs: %w", err)
+	}
+	defer rows.Close()
+	out := make([]SubagentRunRow, 0)
+	for rows.Next() {
+		var r SubagentRunRow
+		var startedAt, endedAt sql.NullString
+		if err := rows.Scan(&r.SessionID, &r.ExternalID, &r.TranscriptPath, &r.AgentType, &r.SubagentKind,
+			&r.WorkflowRunID, &r.ParentToolUseID, &r.Status, &r.Result, &startedAt, &endedAt); err != nil {
+			return nil, fmt.Errorf("scan subagent run: %w", err)
+		}
+		r.StartedAt = parseTimeOpt(startedAt)
+		r.EndedAt = parseTimeOpt(endedAt)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) TurnsForSession(ctx context.Context, sessionID string) ([]trace.Turn, error) {
@@ -220,20 +285,29 @@ const sessionsBaseQuery = `
 	       COALESCE(sessions.started_at, ''), COALESCE(sessions.ended_at, ''),
 	       sessions.status, sessions.total_turns, sessions.total_tool_calls,
 	       sessions.total_input_tokens, sessions.total_output_tokens,
-	       sessions.cache_read_tokens, sessions.cache_write_tokens, sessions.cache_write_long_tokens
+	       sessions.cache_read_tokens, sessions.cache_write_tokens, sessions.cache_write_long_tokens,
+	       COALESCE(sessions.is_subagent, 0),
+	       COALESCE(sessions.parent_external_id, ''),
+	       COALESCE(sessions.parent_session_id, ''), COALESCE(sessions.parent_tool_use_id, ''),
+	       COALESCE(sessions.workflow_run_id, ''), COALESCE(sessions.subagent_kind, ''),
+	       COALESCE(sessions.agent_type, '')
 	FROM sessions
 	JOIN sources ON sources.id = sessions.source_id
 	LEFT JOIN projects ON projects.id = sessions.project_id
 `
 
-func (s *Store) loadAllSessions(ctx context.Context, since time.Time) ([]trace.Session, error) {
-	q := sessionsBaseQuery
+func (s *Store) loadAllSessions(ctx context.Context, since time.Time, includeSubagents bool) ([]trace.Session, error) {
+	// The full-projection path (export + rules) is top-level only by default, so
+	// suggestions/export stay scoped to the user's own sessions; export opts in via
+	// includeSubagents. Stats use the listing path (Filter.IncludeSubagents).
+	var wheres []string
 	var args []any
+	wheres = append(wheres, subagentExcludeWheres(includeSubagents, "sessions")...)
 	if !since.IsZero() {
-		q += ` WHERE ` + sessionEffectiveTimeExpr + ` >= ?`
+		wheres = append(wheres, sessionEffectiveTimeExpr+" >= ?")
 		args = append(args, timeBound(since))
 	}
-	q += ` ORDER BY ` + sessionEffectiveTimeExpr + `, sessions.id`
+	q := sessionsBaseQuery + whereClause(wheres) + ` ORDER BY ` + sessionEffectiveTimeExpr + `, sessions.id`
 	rows, err := s.reader().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("load sessions: %w", err)
@@ -250,6 +324,7 @@ func scanSessions(rows *sql.Rows) ([]trace.Session, error) {
 	for rows.Next() {
 		var session trace.Session
 		var startedAt, endedAt sql.NullString
+		var isSubagent int
 		if err := rows.Scan(
 			&session.ID, &session.Provider, &session.ExternalID,
 			&session.ProjectID, &session.ProjectName, &session.ProjectPath,
@@ -258,9 +333,15 @@ func scanSessions(rows *sql.Rows) ([]trace.Session, error) {
 			&session.Status, &session.TurnCount, &session.ToolCallCount,
 			&session.Tokens.Input, &session.Tokens.Output,
 			&session.Tokens.CacheRead, &session.Tokens.CacheWrite, &session.Tokens.CacheWriteLong,
+			&isSubagent,
+			&session.ParentExternalID,
+			&session.ParentSessionID, &session.ParentToolUseID,
+			&session.WorkflowRunID, &session.SubagentKind,
+			&session.AgentType,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
+		session.IsSubagent = isSubagent != 0
 		session.StartedAt = parseTimeOpt(startedAt)
 		session.EndedAt = parseTimeOpt(endedAt)
 		sessions = append(sessions, session)
@@ -286,18 +367,19 @@ const turnsBaseQuery = `
 	LEFT JOIN projects ON projects.id = turns.project_id
 `
 
-func (s *Store) loadAllTurns(ctx context.Context, since time.Time) ([]trace.Turn, error) {
-	q := turnsBaseQuery
+func (s *Store) loadAllTurns(ctx context.Context, since time.Time, includeSubagents bool) ([]trace.Turn, error) {
+	var wheres []string
 	var args []any
+	wheres = append(wheres, subagentExcludeWheres(includeSubagents, "turns")...)
 	if !since.IsZero() {
-		q += ` WHERE turns.session_id IN (
+		wheres = append(wheres, `turns.session_id IN (
 			SELECT sessions.id
 			FROM sessions
-			WHERE ` + sessionEffectiveTimeExpr + ` >= ?
-		)`
+			WHERE `+sessionEffectiveTimeExpr+` >= ?
+		)`)
 		args = append(args, timeBound(since))
 	}
-	q += ` ORDER BY ` + turnActivityTimeExpr + `, turns.turn_index, turns.id`
+	q := turnsBaseQuery + whereClause(wheres) + ` ORDER BY ` + turnActivityTimeExpr + `, turns.turn_index, turns.id`
 	rows, err := s.reader().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("load turns: %w", err)

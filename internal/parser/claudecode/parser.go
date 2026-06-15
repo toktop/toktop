@@ -36,6 +36,19 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events []source.Raw
 		Status:         trace.StatusUnknown,
 	}
 	session.ID = trace.SessionID(sourceRootID, raw.SourceFile)
+	if raw.IsSubagent {
+		// Identity is hashed from this subagent's OWN transcript path (above), so it
+		// is distinct from the parent and every sibling — no UUID collision. The
+		// parent link comes from the path (the <uuid> dir before subagents/, which IS
+		// the parent's external id), so it is set even when the transcript carries no
+		// in-file sessionId; the store resolves ParentSessionID from it.
+		session.IsSubagent = true
+		session.SubagentKind = trace.InternString(raw.SubagentKind)
+		session.AgentType = trace.InternString(raw.AgentType)
+		session.ParentToolUseID = raw.ParentToolUseID
+		session.WorkflowRunID = raw.WorkflowRunID
+		session.ParentExternalID = trace.InternString(raw.ParentExternalID)
+	}
 
 	turns := make([]trace.Turn, 0)
 	var current *turnBuilder

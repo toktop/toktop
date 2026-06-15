@@ -148,6 +148,31 @@ func AgentRunInput(provider, toolName string, inputJSON []byte) (typ, descriptio
 	return pr.AgentRunInput(toolName, inputJSON)
 }
 
+// AgentSpawnResolver is the optional seam by which a Provider extracts, from an
+// agent-spawning tool call's OUTPUT, the external id of the subagent it launched —
+// when that link lives in the spawn result rather than on the child (codex's
+// spawn_agent returns {"agent_id": …}; claude-code's Task instead records the
+// launching tool_use on the child's own .meta.json, so it does not implement this).
+// It lets the handoff dedup a spawn run against the linked subagent session.
+type AgentSpawnResolver interface {
+	AgentSpawnChildID(toolName string, outputJSON []byte) string
+}
+
+// AgentSpawnChildID returns the external id of the subagent a spawn tool call
+// launched, via the named provider's AgentSpawnResolver. Empty for an unknown
+// provider, one not implementing the seam, or output it cannot map.
+func AgentSpawnChildID(provider, toolName string, outputJSON []byte) string {
+	p, ok := registry[provider]
+	if !ok {
+		return ""
+	}
+	r, ok := p.(AgentSpawnResolver)
+	if !ok {
+		return ""
+	}
+	return r.AgentSpawnChildID(toolName, outputJSON)
+}
+
 // SourceRoot is a resolved discovery root and where it came from.
 type SourceRoot struct {
 	Path string

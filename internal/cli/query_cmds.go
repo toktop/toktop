@@ -59,6 +59,7 @@ func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&sortFlag, "sort", sortFlag, "started_desc|started_asc|turns_desc")
+	subagents := addSubagentsFlag(fs)
 	setFlagUsage(fs, "usage: toktop sessions [flags]   (sessions inspect <id> for one session)", "List sessions, most-recent first; page with --limit/--offset.")
 	// Dispatch `sessions inspect <id>` regardless of where flags sit.
 	if _, rest, firstPos, ok := firstLeafSubcommand(args, valueFlagSet(fs), "inspect"); ok {
@@ -84,7 +85,7 @@ func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	}
 	filter.Limit = limit
 	filter.Offset = offset
-	if err := applyMultiFilter(&filter, sources, projects, sessionsFilter, statuses); err != nil {
+	if err := applyMultiFilter(&filter, sources, projects, sessionsFilter, statuses, *subagents); err != nil {
 		cliErr(stderr, err)
 		return 2
 	}
@@ -207,6 +208,7 @@ func runTurns(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&sortFlag, "sort", sortFlag, "started_desc|started_asc|tokens_desc|duration_desc")
+	subagents := addSubagentsFlag(fs)
 	setFlagUsage(fs, "usage: toktop turns [flags]   (turns inspect|timeline|components <id> for one)", "List turns, most-recent first; page with --limit/--offset.")
 	// Dispatch leaf subcommands regardless of where flags sit (e.g.
 	// `turns --format json inspect ID`, or a leaf-only `--kind skill` before the
@@ -241,7 +243,7 @@ func runTurns(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	filter.Limit = limit
 	filter.Offset = offset
-	if err := applyMultiFilter(&filter, sources, projects, sessionsFilter, statuses); err != nil {
+	if err := applyMultiFilter(&filter, sources, projects, sessionsFilter, statuses, *subagents); err != nil {
 		cliErr(stderr, err)
 		return 2
 	}
@@ -434,6 +436,7 @@ func runSummary(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	fs.Var(&statuses, "status", "status filter; may be repeated or comma-separated")
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
+	subagents := addSubagentsFlag(fs)
 	setFlagUsage(fs, "usage: toktop summary [flags]", "Show imported trace counts (raw events, sessions, turns, invocations, tool calls) and token totals.")
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
@@ -447,7 +450,7 @@ func runSummary(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		cliErr(stderr, err)
 		return 2
 	}
-	if err := applyMultiFilter(&filter, sources, projects, sessionsFilter, statuses); err != nil {
+	if err := applyMultiFilter(&filter, sources, projects, sessionsFilter, statuses, *subagents); err != nil {
 		cliErr(stderr, err)
 		return 2
 	}
@@ -489,6 +492,7 @@ func runSearch(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs.SetOutput(stderr)
 	fs.IntVar(&limit, "limit", limit, "maximum results")
 	fs.StringVar(&format, "format", format, "output format: table or json")
+	subagents := addSubagentsFlag(fs)
 	setFlagUsage(fs, "usage: toktop search [flags] <query>", "Full-text search over turn text and tool calls (FTS5). Filter with kind:/source: tokens.")
 	if code := parseFlags(fs, args, stdout); code >= 0 {
 		return code
@@ -516,7 +520,7 @@ func runSearch(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return 1
 	}
 	defer store.Close()
-	results, err := store.Search(ctx, strings.Join(terms, " "), limit, filters["kind"], filters["source"])
+	results, err := store.Search(ctx, strings.Join(terms, " "), limit, filters["kind"], filters["source"], *subagents)
 	if err != nil {
 		cliErrf(stderr, "search: %v", err)
 		return 1
@@ -579,6 +583,7 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs.StringVar(&output, "output", output, "output path or - for stdout")
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.IntVar(&maxOutputBytes, "max-output-bytes", maxOutputBytes, "clip tool-call outputs larger than N bytes to head+tail (0 = no clipping; full bytes stay in the transcript)")
+	subagents := addSubagentsFlag(fs)
 	setFlagUsage(fs, "usage: toktop export [flags]", "Export the trace index as json or ndjson (to stdout or --output).")
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
@@ -596,7 +601,7 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		cliErr(stderr, err)
 		return 2
 	}
-	index, err := loadIndex(ctx, home, filter.Since)
+	index, err := loadIndex(ctx, home, filter.Since, *subagents)
 	if err != nil {
 		cliErrf(stderr, "load index: %v", err)
 		return 1

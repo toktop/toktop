@@ -96,6 +96,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeQueryError(w, err, "invalid_filter")
 		return
 	}
+	// Live status is top-level only: subagents never carry live hook status. Force it
+	// off regardless of ?subagents=, matching the CLI `status` (which has no flag).
+	filter.IncludeSubagents = false
 	watchTargets, err := parseWatchTargets(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_watch", err.Error())
