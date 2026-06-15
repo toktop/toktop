@@ -72,7 +72,13 @@ const dbFileName = "toktop.db"
 // carry, so they were wrongly hidden); a failed spawn_agent call (no agent_id) now
 // projects to failed instead of success; and is_subagent is denormalized onto
 // parse_errors + the search index (00005). Old rows must be rebuilt.
-const schemaUserVersion = 14
+// Epoch 15: migrations 00002-00005 were squashed into the 00001 baseline so a
+// fresh install builds the final schema in one pass. The resulting schema is
+// byte-for-byte the same as the old chain produced (verified by table/index/
+// trigger/FK fingerprint diff), but folding deletes the goose history those
+// versions recorded, so an existing epoch-14 db is wiped and rebuilt from the
+// transcripts to converge its goose_db_version onto the new single baseline.
+const schemaUserVersion = 15
 
 var writerCacheKiB, readerCacheKiB, sqliteMmapBytes = memoryBudget(memory.TotalMemory())
 
