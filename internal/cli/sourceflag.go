@@ -48,16 +48,12 @@ func resolveSourceFlag(values rootList) ([]string, error) {
 	return resolveTokens(values, foldProvider)
 }
 
-// resolveFilterTokens resolves --sources for FILTER (query) commands: like
-// resolveSourceFlag, but a raw 16-hex SourceID passes through unvalidated — the
-// sole carve-out, so `--sources <16hexid>` keeps matching instead of exit-2.
+// resolveFilterTokens resolves --sources for FILTER (query) commands into the
+// content-hashed source_ids the store filters on, sharing query.ResolveSourceToken
+// with the HTTP filter builder so alias resolution + validation can't drift. A raw
+// 16-hex SourceID passes through; a provider alias is folded, validated, resolved.
 func resolveFilterTokens(values rootList) ([]string, error) {
-	return resolveTokens(values, func(raw string) (string, error) {
-		if query.LooksLikeSourceID(raw) {
-			return raw, nil
-		}
-		return foldProvider(raw)
-	})
+	return resolveTokens(values, query.ResolveSourceToken)
 }
 
 // scopeSources resolves the effective provider set for SCOPE commands (ingest,

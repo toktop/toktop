@@ -43,8 +43,7 @@ examples:
 		return 0
 	}
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: toktop hooks <status|install|uninstall> [flags]")
-		return 2
+		return printUsage(stderr, "usage: toktop hooks <status|install|uninstall> [flags]")
 	}
 	home, ok := resolveHome(stderr)
 	if !ok {
@@ -66,8 +65,7 @@ examples:
 			cliErrf(stderr, "unknown hook subcommand %q (want status|install|uninstall)", firstPos)
 			return 2
 		}
-		fmt.Fprintln(stderr, "usage: toktop hooks <status|install|uninstall> [flags]")
-		return 2
+		return printUsage(stderr, "usage: toktop hooks <status|install|uninstall> [flags]")
 	}
 	args = rest
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {

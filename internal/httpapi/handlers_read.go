@@ -12,7 +12,6 @@ import (
 
 	"toktop.unceas.dev/internal/handoff"
 	"toktop.unceas.dev/internal/httpapi/internal/eventlog"
-	"toktop.unceas.dev/internal/ingest"
 	"toktop.unceas.dev/internal/liveevent"
 	"toktop.unceas.dev/internal/query"
 	"toktop.unceas.dev/internal/store/sqlite"
@@ -369,19 +368,10 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, index)
 }
 
-// resolveSourceFilter maps a source query param to the content-hashed source_id
-// the store filters on: a value that already looks like an id passes through;
-// otherwise a provider name is validated and resolved. Shared by parseFilter and
-// handleSearch so the list filters and search agree on resolution + validation.
+// resolveSourceFilter delegates to query.ResolveSourceToken so the HTTP filter
+// builder and search agree with the CLI on source alias resolution + validation.
 func resolveSourceFilter(app string) (string, error) {
-	if query.LooksLikeSourceID(app) {
-		return app, nil
-	}
-	name := ingest.NormalizeName(app)
-	if !ingest.HasProvider(name) {
-		return "", fmt.Errorf("unknown source %q", app)
-	}
-	return query.ResolveSourceFilter(name), nil
+	return query.ResolveSourceToken(app)
 }
 
 func parseFilter(r *http.Request) (sqlite.Filter, error) {
@@ -395,11 +385,8 @@ func parseFilter(r *http.Request) (sqlite.Filter, error) {
 		sourceIDs = append(sourceIDs, id)
 	}
 	statuses := textutil.DedupNonEmpty(queryValues(q, "status", "statuses"))
-	validStatuses := trace.StatusValues()
-	for _, status := range statuses {
-		if !slices.Contains(validStatuses, status) {
-			return sqlite.Filter{}, fmt.Errorf("unknown status %q", status)
-		}
+	if err := query.ValidateStatuses(statuses); err != nil {
+		return sqlite.Filter{}, err
 	}
 	// limit/offset default to 0 (the store's "default page" sentinel); a present
 	// but unparseable value is rejected, not silently swallowed (see intParam).

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"strconv"
 	"strings"
@@ -140,22 +141,45 @@ func ensureAPIToken(stderr io.Writer) (string, error) {
 	return token, nil
 }
 
+// daemonLoopFlagSet defines the run/serve flags. daemonDispatchValueFlags derives
+// part of its set from it, so keep every run/serve flag here.
+func daemonLoopFlagSet(once, noAuth *bool, sourcesFlag *rootList, token *string) *flag.FlagSet {
+	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
+	fs.BoolVar(once, "once", *once, "run one scan and exit")
+	fs.Var(sourcesFlag, "sources", "providers to watch/import (default: auto-detected on-disk providers); may be repeated or comma-separated")
+	fs.StringVar(token, "token", *token, "bearer token (serve)")
+	fs.BoolVar(noAuth, "no-auth", *noAuth, "disable bearer token enforcement (serve, loopback only)")
+	return fs
+}
+
+// daemonDispatchValueFlags derives runDaemon's dispatch value-flag set by unioning
+// the subcommand flag sets that introduce value flags (run/serve: --sources,
+// --token; trigger: --mode, --path). Deriving from the real flag sets keeps the
+// dispatcher from drifting when a flag is renamed.
+func daemonDispatchValueFlags() map[string]bool {
+	flags := valueFlagSet(daemonLoopFlagSet(new(bool), new(bool), new(rootList), new(string)))
+	maps.Copy(flags, valueFlagSet(daemonControlFlagSet("trigger", new(string), new(bool), new(string), new(string), new(bool))))
+	return flags
+}
+
 func runDaemon(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if printUsageForHelp(args, stdout, "usage: toktop daemon <run|serve|stop|status|pause|resume|trigger> [flags]") {
+	const usage = "usage: toktop daemon <run|serve|stop|status|pause|resume|trigger> [flags]"
+	if printUsageForHelp(args, stdout, usage) {
 		return 0
 	}
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: toktop daemon <run|serve|stop|status|pause|resume|trigger> [flags]")
-		return 2
+	sub, rest, firstPos, found := firstLeafSubcommand(args, daemonDispatchValueFlags(), "run", "serve", "stop", "status", "pause", "resume", "trigger")
+	if !found {
+		if firstPos != "" {
+			cliErrf(stderr, "unknown daemon subcommand %q (want run|serve|stop|status|pause|resume|trigger)", firstPos)
+			return 2
+		}
+		return printUsage(stderr, usage)
 	}
-	sub := args[0]
-	rest := args[1:]
 	switch sub {
 	case "run":
 		return runDaemonLoop(ctx, rest, false, stdout, stderr)
 	case "serve":
 		return runDaemonLoop(ctx, rest, true, stdout, stderr)
-
 	case "status":
 		return runDaemonControl(ctx, "GET", "/v1/daemon", "status", rest, stdout, stderr)
 	case "pause":
@@ -174,7 +198,6 @@ func runDaemon(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		}
 		return runDaemonStop(stdout, stderr)
 	}
-	cliErrf(stderr, "unknown daemon subcommand %q (want run|serve|stop|status|pause|resume|trigger)", sub)
 	return 2
 }
 
@@ -247,12 +270,8 @@ func runDaemonLoop(ctx context.Context, args []string, serveAPIDefault bool, std
 	serveAPI := serveAPIDefault
 	token := ""
 	noAuth := false
-	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
+	fs := daemonLoopFlagSet(&once, &noAuth, &sourcesFlag, &token)
 	fs.SetOutput(stderr)
-	fs.BoolVar(&once, "once", once, "run one scan and exit")
-	fs.Var(&sourcesFlag, "sources", "providers to watch/import (default: auto-detected on-disk providers); may be repeated or comma-separated")
-	fs.StringVar(&token, "token", token, "bearer token (serve)")
-	fs.BoolVar(&noAuth, "no-auth", noAuth, "disable bearer token enforcement (serve, loopback only)")
 	// Clean `daemon run|serve -h` usage instead of flag's default "Usage of
 	// daemon:" header, matching the other leaf commands.
 	if serveAPIDefault {

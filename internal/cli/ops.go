@@ -26,6 +26,7 @@ func runSources(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	fs := flag.NewFlagSet("sources", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
+	output := addOutputFlag(fs)
 	setFlagUsage(fs, "usage: toktop sources [flags]", "List configured providers and their discovery roots (and whether each exists).")
 	// `list` is an optional alias for the default listing; accept it regardless
 	// of where flags sit, like every other keyworded command.
@@ -66,7 +67,7 @@ func runSources(ctx context.Context, args []string, stdout, stderr io.Writer) in
 			rows = append(rows, sourceRoot{Source: name, Root: root, Exists: fsx.DirExists(root)})
 		}
 	}
-	return writeFormatted(stdout, stderr, format, rows, []string{"source", "root", "exists"}, func(r sourceRoot) []string {
+	return emitList(*output, stdout, stderr, format, rows, []string{"source", "root", "exists"}, func(r sourceRoot) []string {
 		return []string{r.Source, emptyDash(r.Root), boolYesNo(r.Exists)}
 	})
 }
@@ -79,16 +80,36 @@ type configEntry struct {
 	Source string `json:"source,omitempty"`
 }
 
+// configGetFlagSet defines `config get` flags. runConfig derives its dispatch
+// value-flag set from it, so keep every config-get flag here — a flag defined
+// elsewhere would be invisible to the dispatcher.
+func configGetFlagSet(format *string) *flag.FlagSet {
+	fs := flag.NewFlagSet("config get", flag.ContinueOnError)
+	fs.StringVar(format, "format", *format, formatSingleEntityUsage)
+	setFlagUsage(fs, "usage: toktop config get [--format table|json] [key]", "Show effective config values with their source (default / file config.json / env).")
+	return fs
+}
+
+// configDispatchValueFlags derives runConfig's dispatch value-flag set from the
+// only config subcommand with a value flag (get: --format); path/set/unset take
+// none. Deriving from the real flag set keeps the dispatcher from drifting.
+func configDispatchValueFlags() map[string]bool {
+	return valueFlagSet(configGetFlagSet(new(string)))
+}
+
 func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if printUsageForHelp(args, stdout, "usage: toktop config <get|path|set|unset> [key] [value]") {
+	const usage = "usage: toktop config <get|path|set|unset> [key] [value]"
+	if printUsageForHelp(args, stdout, usage) {
 		return 0
 	}
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: toktop config <get|path|set|unset> [key] [value]")
-		return 2
+	sub, rest, firstPos, found := firstLeafSubcommand(args, configDispatchValueFlags(), "get", "path", "set", "unset")
+	if !found {
+		if firstPos != "" {
+			cliErrf(stderr, "unknown config subcommand %q (want get|path|set|unset)", firstPos)
+			return 2
+		}
+		return printUsage(stderr, usage)
 	}
-	sub := args[0]
-	rest := args[1:]
 	home, ok := resolveHome(stderr)
 	if !ok {
 		return 1
@@ -114,10 +135,8 @@ func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return 0
 	case "get":
 		format := "table"
-		fs := flag.NewFlagSet("config get", flag.ContinueOnError)
+		fs := configGetFlagSet(&format)
 		fs.SetOutput(stderr)
-		fs.StringVar(&format, "format", format, "output format: table or json")
-		setFlagUsage(fs, "usage: toktop config get [--format table|json] [key]", "Show effective config values with their source (default / file config.json / env).")
 		if code := parseFlags(fs, rest, stdout); code >= 0 {
 			return code
 		}
@@ -127,8 +146,7 @@ func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		}
 		keyArgs := fs.Args()
 		if len(keyArgs) > 1 {
-			fmt.Fprintln(stderr, "usage: toktop config get [--format table|json] [key]")
-			return 2
+			return printUsage(stderr, "usage: toktop config get [--format table|json] [key]")
 		}
 		var snap *config.Snapshot
 		fileErr := ""
@@ -239,8 +257,7 @@ func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			return 0
 		}
 		if len(rest) != 2 {
-			fmt.Fprintln(stderr, "usage: toktop config set <key> <value>")
-			return 2
+			return printUsage(stderr, "usage: toktop config set <key> <value>")
 		}
 		if err := config.SetKey(cfgPath, rest[0], rest[1]); err != nil {
 			cliErr(stderr, err)
@@ -254,8 +271,7 @@ func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			return 0
 		}
 		if len(rest) != 1 {
-			fmt.Fprintln(stderr, "usage: toktop config unset <key>")
-			return 2
+			return printUsage(stderr, "usage: toktop config unset <key>")
 		}
 		if err := config.UnsetKey(cfgPath, rest[0]); err != nil {
 			cliErr(stderr, err)
@@ -265,7 +281,6 @@ func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		fmt.Fprintf(stdout, "unset %s\n", rest[0])
 		return 0
 	}
-	cliErrf(stderr, "unknown config subcommand %q (want get|path|set|unset)", sub)
 	return 2
 }
 
@@ -321,8 +336,7 @@ func runEmit(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	if strings.TrimSpace(evType) == "" {
-		fmt.Fprintln(stderr, "usage: toktop emit --type <event_type> [--session --provider --status ...]")
-		return 2
+		return printUsage(stderr, "usage: toktop emit --type <event_type> [--session --provider --status ...]")
 	}
 	home, ok := resolveHome(stderr)
 	if !ok {
@@ -399,21 +413,29 @@ func daemonControlDesc(name string) string {
 	return ""
 }
 
+// daemonControlFlagSet defines the daemon status/pause/resume/trigger flags
+// (trigger adds --mode/--path/--sync). daemonDispatchValueFlags derives from it,
+// so keep every control flag here.
+func daemonControlFlagSet(name string, token *string, noAuth *bool, mode, triggerPath *string, sync *bool) *flag.FlagSet {
+	fs := flag.NewFlagSet("daemon "+name, flag.ContinueOnError)
+	fs.StringVar(token, "token", *token, "bearer token (default: read api-token file)")
+	fs.BoolVar(noAuth, "no-auth", *noAuth, "do not send a bearer token")
+	if name == "trigger" {
+		fs.StringVar(mode, "mode", *mode, "ingest mode: full|file|once")
+		fs.StringVar(triggerPath, "path", *triggerPath, "transcript path (required for --mode file)")
+		fs.BoolVar(sync, "sync", *sync, "wait for the ingest to finish")
+	}
+	return fs
+}
+
 func runDaemonControl(ctx context.Context, method, path, name string, args []string, stdout, stderr io.Writer) int {
 	token := ""
 	noAuth := false
 	mode := ""
 	triggerPath := ""
 	sync := false
-	fs := flag.NewFlagSet("daemon "+name, flag.ContinueOnError)
+	fs := daemonControlFlagSet(name, &token, &noAuth, &mode, &triggerPath, &sync)
 	fs.SetOutput(stderr)
-	fs.StringVar(&token, "token", token, "bearer token (default: read api-token file)")
-	fs.BoolVar(&noAuth, "no-auth", noAuth, "do not send a bearer token")
-	if path == "/v1/daemon:trigger" {
-		fs.StringVar(&mode, "mode", mode, "ingest mode: full|file|once")
-		fs.StringVar(&triggerPath, "path", triggerPath, "transcript path (required for --mode file)")
-		fs.BoolVar(&sync, "sync", sync, "wait for the ingest to finish")
-	}
 	// Clean `daemon <sub> -h` usage instead of flag's default "Usage of daemon:"
 	// header, matching the other leaf commands.
 	setFlagUsage(fs, "usage: toktop daemon "+name+" [flags]", daemonControlDesc(name))

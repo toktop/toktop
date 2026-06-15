@@ -22,8 +22,7 @@ func runHandoff(ctx context.Context, args []string, stdout, stderr io.Writer) in
 			cliErrf(stderr, "unknown handoff subcommand %q (want create)", firstPos)
 			return 2
 		}
-		fmt.Fprintln(stderr, usage)
-		return 2
+		return printUsage(stderr, usage)
 	}
 	switch sub {
 	case "create":

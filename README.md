@@ -183,8 +183,10 @@ the view is your own top-level sessions; pass `--subagents` to fold them in (e.g
 and has no such flag; `suggestions` rules are always top-level.
 
 **Output formats** — `--format table` (default) `| json | ndjson | csv | markdown | html`
-(`summary` and `search` are `table|json`). `sessions`, `turns`, and `status` page with
-`--limit` / `--offset`; `sessions` and `turns` also take `--sort`.
+(`summary` and `search` are `table|json`, stdout only — redirect with shell `>`). Every
+full-format list command also takes `--output <path>` (default `-` = stdout, else a file).
+`sessions`, `turns`, and `status` page with `--limit` / `--offset` (default 20); `sessions`
+and `turns` also take `--sort`.
 
 ```bash
 toktop turns --sources claude-code --since 24h --sort tokens_desc --limit 10

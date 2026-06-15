@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 
@@ -40,7 +39,7 @@ func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		return 1
 	}
 
-	limit := 20
+	limit := defaultPageLimit
 	format := "table"
 	since := ""
 	until := ""
@@ -49,13 +48,10 @@ func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	fs := flag.NewFlagSet("sessions", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	offset := 0
-	fs.IntVar(&limit, "limit", limit, "maximum sessions per page")
-	fs.IntVar(&offset, "offset", offset, "rows to skip (page past --limit)")
+	addLimitOffsetFlags(fs, &limit, &offset)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
-	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
-	fs.Var(&projects, "project", "project id filter; may be repeated or comma-separated")
-	fs.Var(&sessionsFilter, "session", "session id or external session id filter; may be repeated or comma-separated")
-	fs.Var(&statuses, "status", "status filter; may be repeated or comma-separated")
+	output := addOutputFlag(fs)
+	addFilterFlags(fs, &sources, &projects, &sessionsFilter, &statuses)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&sortFlag, "sort", sortFlag, "started_desc|started_asc|turns_desc")
@@ -100,7 +96,7 @@ func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		cliErr(stderr, err)
 		return 1
 	}
-	return writeFormatted(stdout, stderr, format, page.Items, []string{"id", "external", "provider", "status", "turns", "tools", "tokens", "project", "started", "kind", "subagents"}, func(session trace.Session) []string {
+	return emitList(*output, stdout, stderr, format, page.Items, []string{"id", "external", "provider", "status", "turns", "tools", "tokens", "project", "started", "kind", "subagents"}, func(session trace.Session) []string {
 		return []string{session.ID, emptyDash(session.ExternalID), session.Provider, session.Status,
 			strconv.Itoa(session.TurnCount), strconv.Itoa(session.ToolCallCount),
 			textutil.FormatCount(session.Tokens.Input + session.Tokens.Output), session.ProjectName, formatTime(session.StartedAt),
@@ -117,7 +113,7 @@ func runSession(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	format := "table"
 	fs := flag.NewFlagSet("sessions inspect", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&format, "format", format, "output format: table or json")
+	fs.StringVar(&format, "format", format, formatSingleEntityUsage)
 	setFlagUsage(fs, "usage: toktop sessions inspect [flags] <session_id>", "Show one session (turns, tools, skills) by internal or external id.")
 	if code := parseFlags(fs, args, stdout); code >= 0 {
 		return code
@@ -127,8 +123,7 @@ func runSession(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: toktop sessions inspect [flags] <session_id>")
-		return 2
+		return printUsage(stderr, "usage: toktop sessions inspect [flags] <session_id>")
 	}
 	sessionID := fs.Arg(0)
 
@@ -190,7 +185,7 @@ func runTurns(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 1
 	}
 
-	limit := 20
+	limit := defaultPageLimit
 	format := "table"
 	since := ""
 	until := ""
@@ -199,13 +194,10 @@ func runTurns(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs := flag.NewFlagSet("turns", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	offset := 0
-	fs.IntVar(&limit, "limit", limit, "maximum turns per page")
-	fs.IntVar(&offset, "offset", offset, "rows to skip (page past --limit)")
+	addLimitOffsetFlags(fs, &limit, &offset)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
-	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
-	fs.Var(&projects, "project", "project id filter; may be repeated or comma-separated")
-	fs.Var(&sessionsFilter, "session", "session id or external session id filter; may be repeated or comma-separated")
-	fs.Var(&statuses, "status", "status filter; may be repeated or comma-separated")
+	output := addOutputFlag(fs)
+	addFilterFlags(fs, &sources, &projects, &sessionsFilter, &statuses)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&sortFlag, "sort", sortFlag, "started_desc|started_asc|tokens_desc|duration_desc")
@@ -259,7 +251,7 @@ func runTurns(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		cliErr(stderr, err)
 		return 1
 	}
-	return writeFormatted(stdout, stderr, format, page.Items, []string{"id", "provider", "session_id", "session_external", "sub", "status", "tools", "tokens", "project", "started", "user"}, func(turn trace.Turn) []string {
+	return emitList(*output, stdout, stderr, format, page.Items, []string{"id", "provider", "session_id", "session_external", "sub", "status", "tools", "tokens", "project", "started", "user"}, func(turn trace.Turn) []string {
 		return []string{turn.ID, turn.Provider, turn.SessionID, emptyDash(turn.SessionExternalID), boolDash(turn.IsSubagent), turn.Status,
 			strconv.Itoa(turn.ToolCallCount), textutil.FormatCount(turn.Tokens.Input + turn.Tokens.Output),
 			turn.ProjectName, formatTime(turn.StartedAt), oneLine(turn.UserMessage, 80)}
@@ -275,7 +267,7 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	format := "table"
 	fs := flag.NewFlagSet("turns inspect", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&format, "format", format, "output format: table or json")
+	fs.StringVar(&format, "format", format, formatSingleEntityUsage)
 	setFlagUsage(fs, "usage: toktop turns inspect [flags] <turn_id>", "Show one turn (user/assistant text, tools, skills) by id.")
 	if code := parseFlags(fs, args, stdout); code >= 0 {
 		return code
@@ -285,8 +277,7 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: toktop turns inspect [flags] <turn_id>")
-		return 2
+		return printUsage(stderr, "usage: toktop turns inspect [flags] <turn_id>")
 	}
 	turnID := fs.Arg(0)
 
@@ -337,14 +328,14 @@ func runTurnComponents(ctx context.Context, args []string, stdout, stderr io.Wri
 	fs := flag.NewFlagSet("turns components", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
+	output := addOutputFlag(fs)
 	fs.StringVar(&kind, "kind", kind, "filter by kind: builtin_tool|mcp_server|mcp_tool|skill")
 	setFlagUsage(fs, "usage: toktop turns components [flags] <turn_id>", "List the components (tools, skills) attributed to one turn.")
 	if code := parseFlags(fs, args, stdout); code >= 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: toktop turns components [flags] <turn_id>")
-		return 2
+		return printUsage(stderr, "usage: toktop turns components [flags] <turn_id>")
 	}
 	if err := validateListFormat(format); err != nil {
 		cliErr(stderr, err)
@@ -382,7 +373,7 @@ func runTurnComponents(ctx context.Context, args []string, stdout, stderr io.Wri
 		}
 		components = filtered
 	}
-	return writeFormatted(stdout, stderr, format, components, []string{"kind", "name", "relation", "confidence"}, func(c trace.TurnComponent) []string {
+	return emitList(*output, stdout, stderr, format, components, []string{"kind", "name", "relation", "confidence"}, func(c trace.TurnComponent) []string {
 		return []string{c.ComponentKind, c.ComponentName, c.Relation, string(c.Confidence)}
 	})
 }
@@ -396,13 +387,13 @@ func runTurnTimeline(ctx context.Context, args []string, stdout, stderr io.Write
 	fs := flag.NewFlagSet("turns timeline", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
+	output := addOutputFlag(fs)
 	setFlagUsage(fs, "usage: toktop turns timeline [flags] <turn_id>", "Show the chronological event timeline (prompt, invocations, tool calls) for one turn.")
 	if code := parseFlags(fs, args, stdout); code >= 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: toktop turns timeline [flags] <turn_id>")
-		return 2
+		return printUsage(stderr, "usage: toktop turns timeline [flags] <turn_id>")
 	}
 	if err := validateListFormat(format); err != nil {
 		cliErr(stderr, err)
@@ -422,7 +413,7 @@ func runTurnTimeline(ctx context.Context, args []string, stdout, stderr io.Write
 	if format == "json" {
 		return writeJSON(stdout, stderr, timeline)
 	}
-	return writeFormatted(stdout, stderr, format, timeline.Entries, []string{"at", "kind", "label", "status", "duration_ms", "tokens", "detail"}, func(e httpapi.TimelineEntry) []string {
+	return emitList(*output, stdout, stderr, format, timeline.Entries, []string{"at", "kind", "label", "status", "duration_ms", "tokens", "detail"}, func(e httpapi.TimelineEntry) []string {
 		return []string{formatTime(e.At), e.Kind, e.Label, emptyDash(e.Status), strconv.FormatInt(e.DurationMs, 10), textutil.FormatCount(e.Tokens), oneLine(e.Detail, 80)}
 	})
 }
@@ -438,11 +429,8 @@ func runSummary(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	var sources, projects, sessionsFilter, statuses rootList
 	fs := flag.NewFlagSet("summary", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&format, "format", format, "output format: table or json")
-	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
-	fs.Var(&projects, "project", "project id filter; may be repeated or comma-separated")
-	fs.Var(&sessionsFilter, "session", "session id or external session id filter; may be repeated or comma-separated")
-	fs.Var(&statuses, "status", "status filter; may be repeated or comma-separated")
+	fs.StringVar(&format, "format", format, formatSingleEntityUsage)
+	addFilterFlags(fs, &sources, &projects, &sessionsFilter, &statuses)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	subagents := addSubagentsFlag(fs)
@@ -495,12 +483,12 @@ func runSearch(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	if !ok {
 		return 1
 	}
-	limit := 20
+	limit := defaultPageLimit
 	format := "table"
 	fs := flag.NewFlagSet("search", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.IntVar(&limit, "limit", limit, "maximum results")
-	fs.StringVar(&format, "format", format, "output format: table or json")
+	fs.StringVar(&format, "format", format, formatSingleEntityUsage)
 	subagents := addSubagentsFlag(fs)
 	setFlagUsage(fs, "usage: toktop search [flags] <query>", "Full-text search over turn text and tool calls (FTS5). Filter with kind:/source: tokens.")
 	if code := parseFlags(fs, args, stdout); code >= 0 {
@@ -515,8 +503,7 @@ func runSearch(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return 2
 	}
 	if fs.NArg() == 0 {
-		fmt.Fprintln(stderr, "usage: toktop search [flags] <query>")
-		return 2
+		return printUsage(stderr, "usage: toktop search [flags] <query>")
 	}
 	terms, filters, err := splitSearchTokens(fs.Args())
 	if err != nil {
@@ -567,7 +554,7 @@ func splitSearchTokens(args []string) ([]string, map[string]string, error) {
 		if len(tokens) == 0 {
 			return nil, nil, fmt.Errorf("empty source filter %q", source)
 		}
-		filters["source"] = query.ResolveSourceFilter(tokens[0])
+		filters["source"] = tokens[0]
 	}
 	switch kind := filters["kind"]; kind {
 	case "", "turn", "tool_call":
@@ -583,13 +570,12 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return 1
 	}
 	format := "json"
-	output := "-"
 	since := ""
 	maxOutputBytes := 0
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, "output format: json or ndjson")
-	fs.StringVar(&output, "output", output, "output path or - for stdout")
+	output := addOutputFlag(fs)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.IntVar(&maxOutputBytes, "max-output-bytes", maxOutputBytes, "clip tool-call outputs larger than N bytes to head+tail (0 = no clipping; full bytes stay in the transcript)")
 	subagents := addSubagentsFlag(fs)
@@ -616,16 +602,10 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return 1
 	}
 	trace.ClipToolCalls(index.Turns, maxOutputBytes)
-	w := stdout
-	var file *os.File
-	if output != "-" {
-		file, err = os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-		if err != nil {
-			cliErrf(stderr, "write export: %v", err)
-			return 1
-		}
-		defer file.Close()
-		w = file
+	w, err := openOutput(*output, stdout)
+	if err != nil {
+		cliErrf(stderr, "write export: %v", err)
+		return 1
 	}
 	switch format {
 	case "json":
@@ -635,13 +615,8 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	case "ndjson":
 		err = writeNDJSONIndex(w, index)
 	}
-	if err != nil {
-		cliErrf(stderr, "marshal export: %v", err)
-		return 1
-	}
-	if file != nil {
-		err = file.Close()
-		file = nil
+	if cerr := w.Close(); err == nil {
+		err = cerr
 	}
 	if err != nil {
 		cliErrf(stderr, "write export: %v", err)

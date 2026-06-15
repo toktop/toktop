@@ -32,7 +32,7 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return 1
 	}
 	format := "table"
-	limit := 100
+	limit := defaultPageLimit
 	offset := 0
 	since := ""
 	until := ""
@@ -42,14 +42,11 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
-	fs.IntVar(&limit, "limit", limit, "maximum sessions per page")
-	fs.IntVar(&offset, "offset", offset, "rows to skip (page past --limit)")
+	output := addOutputFlag(fs)
+	addLimitOffsetFlags(fs, &limit, &offset)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
-	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
-	fs.Var(&projects, "project", "project id filter; may be repeated or comma-separated")
-	fs.Var(&sessions, "session", "session id or external session id filter; may be repeated or comma-separated")
-	fs.Var(&statuses, "status", "status filter; may be repeated or comma-separated")
+	addFilterFlags(fs, &sources, &projects, &sessions, &statuses)
 	fs.StringVar(&token, "token", token, "bearer token (default: read api-token file)")
 	fs.BoolVar(&noAuth, "no-auth", noAuth, "do not send a bearer token")
 	setFlagUsage(fs,
@@ -103,7 +100,7 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	// consumers see. The direct store read below omits that overlay (it can lag
 	// the broker), so it is used only when no daemon is reachable.
 	if err := ensureDaemon(ctx, home, addr, snap.Autostart, stderr); err != nil {
-		fmt.Fprintf(stderr, "toktop: %v\n", err)
+		cliErr(stderr, err)
 	}
 	q := url.Values{}
 	for _, v := range srcTokens {
@@ -133,7 +130,7 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	q.Set("sort", "started_desc")
 	switch items, err := liveStatusFromServer(ctx, addr, clientToken(token, noAuth), q); {
 	case err == nil:
-		return writeFormatted(stdout, stderr, format, items, cols, row)
+		return emitList(*output, stdout, stderr, format, items, cols, row)
 	case !errors.Is(err, errStreamServerUnreachable):
 		cliErr(stderr, err)
 		return 1
@@ -165,7 +162,7 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		cliErr(stderr, err)
 		return 1
 	}
-	return writeFormatted(stdout, stderr, format, page.Items, cols, row)
+	return emitList(*output, stdout, stderr, format, page.Items, cols, row)
 }
 
 func runStream(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -237,7 +234,7 @@ func runStream(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	// With no daemon there is no producer and nothing to tail, so surface that
 	// plainly instead of silently reading a frozen on-disk log.
 	if err := ensureDaemon(ctx, home, addr, snap.Autostart, stderr); err != nil {
-		fmt.Fprintf(stderr, "toktop: %v\n", err)
+		cliErr(stderr, err)
 	}
 	err = streamFromServer(ctx, addr, clientToken(token, noAuth), targets, statusOnly, emit)
 	switch {
@@ -297,14 +294,12 @@ func runProjects(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	format := "table"
 	since := ""
 	until := ""
-	var sources, projectFilter, sessions, statuses rootList
+	var sources, projects, sessions, statuses rootList
 	fs := flag.NewFlagSet("projects", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
-	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
-	fs.Var(&projectFilter, "project", "project id filter; may be repeated or comma-separated")
-	fs.Var(&sessions, "session", "session id or external session id filter; may be repeated or comma-separated")
-	fs.Var(&statuses, "status", "status filter; may be repeated or comma-separated")
+	output := addOutputFlag(fs)
+	addFilterFlags(fs, &sources, &projects, &sessions, &statuses)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	subagents := addSubagentsFlag(fs)
@@ -321,7 +316,7 @@ func runProjects(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		cliErr(stderr, err)
 		return 2
 	}
-	if err := applyMultiFilter(&filter, sources, projectFilter, sessions, statuses, *subagents); err != nil {
+	if err := applyMultiFilter(&filter, sources, projects, sessions, statuses, *subagents); err != nil {
 		cliErr(stderr, err)
 		return 2
 	}
@@ -331,12 +326,12 @@ func runProjects(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		return 1
 	}
 	defer store.Close()
-	projects, err := svc.ListProjects(ctx, filter)
+	rows, err := svc.ListProjects(ctx, filter)
 	if err != nil {
 		cliErr(stderr, err)
 		return 1
 	}
-	return writeFormatted(stdout, stderr, format, projects, []string{"id", "source_id", "name", "path", "sessions", "turns", "tool_calls", "last_activity"}, func(item sqlite.ProjectListItem) []string {
+	return emitList(*output, stdout, stderr, format, rows, []string{"id", "source_id", "name", "path", "sessions", "turns", "tool_calls", "last_activity"}, func(item sqlite.ProjectListItem) []string {
 		return []string{item.ID, item.SourceID, item.Name, item.Path,
 			strconv.Itoa(item.SessionCount), strconv.Itoa(item.TurnCount),
 			strconv.Itoa(item.ToolCallCount), formatTime(item.LastActivity)}
@@ -355,12 +350,10 @@ func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs := flag.NewFlagSet("tools", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
+	output := addOutputFlag(fs)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
-	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
-	fs.Var(&projects, "project", "project id filter; may be repeated or comma-separated")
-	fs.Var(&sessions, "session", "session id or external session id filter; may be repeated or comma-separated")
-	fs.Var(&statuses, "status", "turn status filter; may be repeated or comma-separated")
+	addFilterFlags(fs, &sources, &projects, &sessions, &statuses)
 	subagents := addSubagentsFlag(fs)
 	setFlagUsage(fs, "usage: toktop tools [flags]", "Roll up tool-call usage (call / turn / failed counts per tool).")
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
@@ -390,7 +383,7 @@ func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		cliErr(stderr, err)
 		return 1
 	}
-	return writeFormatted(stdout, stderr, format, tools, []string{"kind", "name", "mcp_server", "calls", "turns", "failed", "last_used"}, func(item sqlite.ToolListItem) []string {
+	return emitList(*output, stdout, stderr, format, tools, []string{"kind", "name", "mcp_server", "calls", "turns", "failed", "last_used"}, func(item sqlite.ToolListItem) []string {
 		return []string{item.Kind, item.Name, item.MCPServer,
 			strconv.Itoa(item.CallCount), strconv.Itoa(item.TurnCount),
 			strconv.Itoa(item.FailedCount), formatTime(item.LastUsedAt)}
@@ -409,12 +402,10 @@ func runModels(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs := flag.NewFlagSet("models", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
+	output := addOutputFlag(fs)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
-	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
-	fs.Var(&projects, "project", "project id filter; may be repeated or comma-separated")
-	fs.Var(&sessions, "session", "session id or external session id filter; may be repeated or comma-separated")
-	fs.Var(&statuses, "status", "turn status filter; may be repeated or comma-separated")
+	addFilterFlags(fs, &sources, &projects, &sessions, &statuses)
 	subagents := addSubagentsFlag(fs)
 	setFlagUsage(fs, "usage: toktop models [flags]", "Roll up model invocation usage (call / turn / token counts per model).")
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
@@ -444,7 +435,7 @@ func runModels(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		cliErr(stderr, err)
 		return 1
 	}
-	return writeFormatted(stdout, stderr, format, models, []string{"provider", "model", "calls", "turns", "input_tokens", "output_tokens", "cache_read", "cache_write", "last_used"}, func(item sqlite.ModelListItem) []string {
+	return emitList(*output, stdout, stderr, format, models, []string{"provider", "model", "calls", "turns", "input_tokens", "output_tokens", "cache_read", "cache_write", "last_used"}, func(item sqlite.ModelListItem) []string {
 		return []string{item.Provider, emptyDash(item.Model),
 			strconv.Itoa(item.CallCount), strconv.Itoa(item.TurnCount),
 			strconv.Itoa(item.InputTokens), strconv.Itoa(item.OutputTokens),
@@ -472,12 +463,10 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("mcps", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
+	output := addOutputFlag(fs)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
-	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
-	fs.Var(&projects, "project", "project id filter; may be repeated or comma-separated")
-	fs.Var(&sessions, "session", "session id or external session id filter; may be repeated or comma-separated")
-	fs.Var(&statuses, "status", "turn status filter; may be repeated or comma-separated")
+	addFilterFlags(fs, &sources, &projects, &sessions, &statuses)
 	subagents := addSubagentsFlag(fs)
 	setFlagUsageSub(fs, "usage: toktop mcps [flags]",
 		[]subcmdDoc{{"unused", "list declared MCP servers with zero observed calls (no filters)"}},
@@ -516,7 +505,7 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			cliErr(stderr, err)
 			return 1
 		}
-		return writeFormatted(stdout, stderr, format, mcps, mcpCols, mcpRow)
+		return emitList(*output, stdout, stderr, format, mcps, mcpCols, mcpRow)
 	}
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
@@ -545,7 +534,7 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		cliErr(stderr, err)
 		return 1
 	}
-	return writeFormatted(stdout, stderr, format, mcps, mcpCols, mcpRow)
+	return emitList(*output, stdout, stderr, format, mcps, mcpCols, mcpRow)
 }
 
 func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -560,12 +549,10 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs := flag.NewFlagSet("skills", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
+	output := addOutputFlag(fs)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
-	fs.Var(&sources, "sources", "provider filter such as claude-code or codex; may be repeated or comma-separated")
-	fs.Var(&projects, "project", "project id filter; may be repeated or comma-separated")
-	fs.Var(&sessions, "session", "session id or external session id filter; may be repeated or comma-separated")
-	fs.Var(&statuses, "status", "turn status filter; may be repeated or comma-separated")
+	addFilterFlags(fs, &sources, &projects, &sessions, &statuses)
 	subagents := addSubagentsFlag(fs)
 	setFlagUsageSub(fs, "usage: toktop skills [flags]",
 		[]subcmdDoc{{"unused", "list installed skills with zero inferred uses (no filters)"}},
@@ -603,7 +590,7 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			cliErr(stderr, err)
 			return 1
 		}
-		return writeFormatted(stdout, stderr, format, skills, []string{"source", "name", "scope", "description", "source_path"}, func(item sqlite.SkillListItem) []string {
+		return emitList(*output, stdout, stderr, format, skills, []string{"source", "name", "scope", "description", "source_path"}, func(item sqlite.SkillListItem) []string {
 			return []string{item.SourceID, item.Name, item.Scope, textutil.Truncate(item.Description, 80), item.SourcePath}
 		})
 	}
@@ -634,7 +621,7 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		cliErr(stderr, err)
 		return 1
 	}
-	return writeFormatted(stdout, stderr, format, skills, []string{"source", "name", "scope", "installed", "inferred_used", "last_used", "source_path"}, func(item sqlite.SkillListItem) []string {
+	return emitList(*output, stdout, stderr, format, skills, []string{"source", "name", "scope", "installed", "inferred_used", "last_used", "source_path"}, func(item sqlite.SkillListItem) []string {
 		installed := "no"
 		if item.Installed {
 			installed = "yes"
@@ -654,6 +641,7 @@ func runSuggestions(ctx context.Context, args []string, stdout, stderr io.Writer
 	fs := flag.NewFlagSet("suggestions", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
+	output := addOutputFlag(fs)
 	fs.StringVar(&rule, "rule", rule, "filter by rule id")
 	setFlagUsageSub(fs, "usage: toktop suggestions [flags]",
 		[]subcmdDoc{{"recompute", "rerun the rule engine, then list"}},
@@ -693,7 +681,7 @@ func runSuggestions(ctx context.Context, args []string, stdout, stderr io.Writer
 	// confidence surfaces provenance (observed vs estimated/inferred) in the default
 	// table/csv views, not just json — a synthesized finding must never read as
 	// authoritative.
-	return writeFormatted(stdout, stderr, format, sugs, []string{"id", "rule_id", "severity", "confidence", "scope_kind", "scope_id", "recommendation"}, func(item trace.Suggestion) []string {
+	return emitList(*output, stdout, stderr, format, sugs, []string{"id", "rule_id", "severity", "confidence", "scope_kind", "scope_id", "recommendation"}, func(item trace.Suggestion) []string {
 		return []string{strconv.FormatInt(item.ID, 10), item.RuleID, item.Severity, string(item.Confidence), item.ScopeKind, item.ScopeID, item.Recommendation}
 	})
 }
@@ -705,7 +693,7 @@ func runSuggestions(ctx context.Context, args []string, stdout, stderr io.Writer
 func retentionStatusFlagSet(profile, format *string) *flag.FlagSet {
 	fs := flag.NewFlagSet("data retention status", flag.ContinueOnError)
 	fs.StringVar(profile, "profile", *profile, "privacy|balanced|archive")
-	fs.StringVar(format, "format", *format, "output format: table or json")
+	fs.StringVar(format, "format", *format, formatSingleEntityUsage)
 	setFlagUsage(fs, "usage: toktop data retention status [--profile <p>] [--format table|json]",
 		"Show the effective retention windows for a profile (does not delete anything).")
 	return fs
@@ -725,8 +713,7 @@ func runRetention(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			cliErrf(stderr, "unknown retention subcommand %q (want status|profiles)", firstPos)
 			return 2
 		}
-		fmt.Fprintln(stderr, "usage: toktop data retention <status|profiles> [flags]")
-		return 2
+		return printUsage(stderr, "usage: toktop data retention <status|profiles> [flags]")
 	}
 	if sub == "profiles" {
 		if printUsageForHelp(rest, stdout, "usage: toktop data retention profiles") {
@@ -838,8 +825,7 @@ func runData(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			cliErrf(stderr, "unknown data subcommand %q (want prune|retention)", firstPos)
 			return 2
 		}
-		fmt.Fprintln(stderr, "usage: toktop data <prune|retention> [flags]")
-		return 2
+		return printUsage(stderr, "usage: toktop data <prune|retention> [flags]")
 	}
 	switch sub {
 	case "prune":
@@ -873,8 +859,7 @@ func runDB(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			cliErrf(stderr, "unknown db subcommand %q (want stats|path|optimize|reindex|checkpoint)", firstPos)
 			return 2
 		}
-		fmt.Fprintln(stderr, usage)
-		return 2
+		return printUsage(stderr, usage)
 	}
 	switch sub {
 	case "stats":
@@ -934,7 +919,7 @@ type dbStatsReport struct {
 // flag here — a flag defined elsewhere would be invisible to the dispatcher.
 func dbStatsFlagSet(format *string) *flag.FlagSet {
 	fs := flag.NewFlagSet("db stats", flag.ContinueOnError)
-	fs.StringVar(format, "format", *format, "output format: table or json")
+	fs.StringVar(format, "format", *format, formatSingleEntityUsage)
 	setFlagUsage(fs, "usage: toktop db stats [--format table|json]", "Show the DB file path, sidecar sizes, FTS rows, and per-table row counts.")
 	return fs
 }
@@ -1014,7 +999,7 @@ func runDBOptimize(ctx context.Context, args []string, stdout, stderr io.Writer)
 	format := "table"
 	fs := flag.NewFlagSet("db optimize", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&format, "format", format, "output format: table or json")
+	fs.StringVar(&format, "format", format, formatSingleEntityUsage)
 	setFlagUsage(fs, "usage: toktop db optimize [--format table|json]", "Run SQLite/FTS maintenance without rebuilding the projection.")
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
@@ -1075,7 +1060,7 @@ func runDBReindex(ctx context.Context, args []string, stdout, stderr io.Writer) 
 // every db-checkpoint flag here.
 func dbCheckpointFlagSet(format, mode *string) *flag.FlagSet {
 	fs := flag.NewFlagSet("db checkpoint", flag.ContinueOnError)
-	fs.StringVar(format, "format", *format, "output format: table or json")
+	fs.StringVar(format, "format", *format, formatSingleEntityUsage)
 	fs.StringVar(mode, "mode", *mode, "checkpoint mode: passive, full, restart, or truncate")
 	setFlagUsage(fs, "usage: toktop db checkpoint [--mode passive|full|restart|truncate] [--format table|json]", "Run a SQLite WAL checkpoint.")
 	return fs
@@ -1211,16 +1196,11 @@ func parseFilterFlags(since, until, sort string, allowedSorts ...string) (sqlite
 	return filter, nil
 }
 
-// validateStatuses rejects any --status token outside the canonical set, so the
-// daemon (server) path and the local-store path (applyMultiFilter) share one check.
+// validateStatuses rejects any --status token outside the canonical set, sharing
+// query.ValidateStatuses with the HTTP filter builder so the check and message stay
+// identical across surfaces.
 func validateStatuses(statuses rootList) error {
-	validStatusValues := trace.StatusValues()
-	for _, s := range splitFlagValues(statuses) {
-		if !slices.Contains(validStatusValues, s) {
-			return fmt.Errorf("unknown --status %q (want one of: %s)", s, strings.Join(validStatusValues, ", "))
-		}
-	}
-	return nil
+	return query.ValidateStatuses(splitFlagValues(statuses))
 }
 
 // checkPaging validates the shared --limit/--offset bounds for paginated listings:
@@ -1238,16 +1218,14 @@ func checkPaging(limit, offset int, stderr io.Writer) int {
 // and validated, and status tokens are checked against the canonical set (unknown
 // name => error, callers exit 2); project/session are opaque ids passed through.
 func applyMultiFilter(filter *sqlite.Filter, sources, projects, sessions, statuses rootList, includeSubagents bool) error {
-	tokens, err := resolveFilterTokens(sources)
+	ids, err := resolveFilterTokens(sources)
 	if err != nil {
 		return err
 	}
 	if err := validateStatuses(statuses); err != nil {
 		return err
 	}
-	for _, tok := range tokens {
-		filter.SourceIDs = append(filter.SourceIDs, query.ResolveSourceFilter(tok))
-	}
+	filter.SourceIDs = append(filter.SourceIDs, ids...)
 	filter.ProjectIDs = append(filter.ProjectIDs, splitFlagValues(projects)...)
 	filter.SessionIDs = append(filter.SessionIDs, splitFlagValues(sessions)...)
 	filter.Statuses = append(filter.Statuses, splitFlagValues(statuses)...)
@@ -1263,6 +1241,35 @@ const subagentsFlagUsage = "include subagent transcripts (sub-runs spawned by Ta
 // and returns the bound value, mirroring how each command registers --sources etc.
 func addSubagentsFlag(fs *flag.FlagSet) *bool {
 	return fs.Bool("subagents", false, subagentsFlagUsage)
+}
+
+// Canonical help for the shared --sources/--project/--session/--status filter
+// quartet, so the text never drifts between commands.
+const (
+	sourcesFlagUsage = "provider filter such as claude-code or codex; may be repeated or comma-separated"
+	projectFlagUsage = "project id filter; may be repeated or comma-separated"
+	sessionFlagUsage = "session id or external session id filter; may be repeated or comma-separated"
+	statusFlagUsage  = "status filter; may be repeated or comma-separated"
+)
+
+// defaultPageLimit is the shared default --limit for every paginated listing.
+const defaultPageLimit = 20
+
+// addFilterFlags registers the shared --sources/--project/--session/--status
+// quartet with canonical help. The bound rootLists are passed in (not returned) so
+// a dropped argument is a compile error. Mirrors addSubagentsFlag.
+func addFilterFlags(fs *flag.FlagSet, sources, projects, sessions, statuses *rootList) {
+	fs.Var(sources, "sources", sourcesFlagUsage)
+	fs.Var(projects, "project", projectFlagUsage)
+	fs.Var(sessions, "session", sessionFlagUsage)
+	fs.Var(statuses, "status", statusFlagUsage)
+}
+
+// addLimitOffsetFlags registers the shared --limit/--offset paging flags with
+// canonical help, so every paginated command pages identically.
+func addLimitOffsetFlags(fs *flag.FlagSet, limit, offset *int) {
+	fs.IntVar(limit, "limit", *limit, "maximum rows per page")
+	fs.IntVar(offset, "offset", *offset, "rows to skip (page past --limit)")
 }
 
 // splitFlagValues flattens repeat/comma-joined flag values into a deduped token

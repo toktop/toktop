@@ -3,8 +3,10 @@ package cli
 import (
 	"encoding/csv"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -22,6 +24,10 @@ const formatList = "table|json|ndjson|csv|markdown|html"
 
 // formatFlagUsage is the --format help for every writeFormatted-backed list command.
 const formatFlagUsage = "output format: " + formatList
+
+// formatSingleEntityUsage is the --format help for single-object views (inspect /
+// summary / config get / db stats), which render one object as table or json.
+const formatSingleEntityUsage = "output format: table or json"
 
 // validateFormat rejects a --format value outside `allowed` (treating "" as the
 // default). For the limited table|json commands; the full list set is
@@ -89,6 +95,46 @@ func writeFormatted[T any](stdout, stderr io.Writer, format string, items []T, h
 		cliErr(stderr, fmt.Errorf("unknown --format %q (want %s)", format, formatList))
 		return 2
 	}
+}
+
+const outputFlagUsage = "output path, or - for stdout"
+
+// addOutputFlag registers the shared --output flag (default "-" = stdout) and
+// returns the bound value, so every data-emitting command resolves its destination
+// identically. Mirrors addSubagentsFlag; pairs with openOutput.
+func addOutputFlag(fs *flag.FlagSet) *string {
+	return fs.String("output", "-", outputFlagUsage)
+}
+
+// openOutput resolves an --output value to a writer: "-" (or empty) is stdout with
+// a no-op Close; any other value opens that path (0o600, truncating). The single
+// file-vs-stdout resolver behind every command's --output.
+func openOutput(path string, stdout io.Writer) (io.WriteCloser, error) {
+	if path == "-" || path == "" {
+		return nopWriteCloser{stdout}, nil
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+}
+
+type nopWriteCloser struct{ io.Writer }
+
+func (nopWriteCloser) Close() error { return nil }
+
+// emitList renders items through writeFormatted to the --output destination,
+// closing a file sink and surfacing its close error. The one line every list
+// command uses, so --format + --output behave identically across them.
+func emitList[T any](output string, stdout, stderr io.Writer, format string, items []T, headers []string, row func(T) []string) int {
+	w, err := openOutput(output, stdout)
+	if err != nil {
+		cliErrf(stderr, "write output: %v", err)
+		return 1
+	}
+	code := writeFormatted(w, stderr, format, items, headers, row)
+	if cerr := w.Close(); cerr != nil && code == 0 {
+		cliErrf(stderr, "write output: %v", cerr)
+		return 1
+	}
+	return code
 }
 
 func writeTable[T any](w io.Writer, headers []string, items []T, row func(T) []string, style string) {

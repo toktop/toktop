@@ -2,11 +2,13 @@ package query
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/karrick/tparse/v2"
 
+	"toktop.unceas.dev/internal/ingest"
 	"toktop.unceas.dev/internal/trace"
 )
 
@@ -27,6 +29,34 @@ func ResolveSourceFilter(v string) string {
 		return v
 	}
 	return trace.SourceID(v)
+}
+
+// ResolveSourceToken maps a raw --sources / ?source= token to the content-hashed
+// source_id the store filters on: a value that already looks like an id passes
+// through; otherwise a provider alias is normalized and validated against the
+// registry. Shared by the CLI and HTTP filter builders so source alias resolution
+// and validation cannot drift between the two surfaces.
+func ResolveSourceToken(raw string) (string, error) {
+	if LooksLikeSourceID(raw) {
+		return raw, nil
+	}
+	name := ingest.NormalizeName(raw)
+	if !ingest.HasProvider(name) {
+		return "", fmt.Errorf("unknown source %q (registered: %s)", raw, strings.Join(ingest.SortedProviders(), ", "))
+	}
+	return ResolveSourceFilter(name), nil
+}
+
+// ValidateStatuses rejects any status outside the canonical set, so the CLI and
+// HTTP filter builders share one check and one message.
+func ValidateStatuses(statuses []string) error {
+	valid := trace.StatusValues()
+	for _, s := range statuses {
+		if !slices.Contains(valid, s) {
+			return fmt.Errorf("unknown status %q (want one of: %s)", s, strings.Join(valid, ", "))
+		}
+	}
+	return nil
 }
 
 // ParseSort splits a sort token like "started_desc" / "turns_asc" into its
