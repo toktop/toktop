@@ -444,10 +444,11 @@ func runModels(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		cliErr(stderr, err)
 		return 1
 	}
-	return writeFormatted(stdout, stderr, format, models, []string{"provider", "model", "calls", "turns", "input_tokens", "output_tokens", "last_used"}, func(item sqlite.ModelListItem) []string {
+	return writeFormatted(stdout, stderr, format, models, []string{"provider", "model", "calls", "turns", "input_tokens", "output_tokens", "cache_read", "cache_write", "last_used"}, func(item sqlite.ModelListItem) []string {
 		return []string{item.Provider, emptyDash(item.Model),
 			strconv.Itoa(item.CallCount), strconv.Itoa(item.TurnCount),
-			strconv.Itoa(item.InputTokens), strconv.Itoa(item.OutputTokens), formatTime(item.LastUsedAt)}
+			strconv.Itoa(item.InputTokens), strconv.Itoa(item.OutputTokens),
+			strconv.Itoa(item.CacheReadTokens), strconv.Itoa(item.CacheWriteTokens), formatTime(item.LastUsedAt)}
 	})
 }
 

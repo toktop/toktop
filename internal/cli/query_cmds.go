@@ -100,10 +100,11 @@ func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		cliErr(stderr, err)
 		return 1
 	}
-	return writeFormatted(stdout, stderr, format, page.Items, []string{"id", "external", "provider", "status", "turns", "tools", "tokens", "project", "started"}, func(session trace.Session) []string {
+	return writeFormatted(stdout, stderr, format, page.Items, []string{"id", "external", "provider", "status", "turns", "tools", "tokens", "project", "started", "kind", "subagents"}, func(session trace.Session) []string {
 		return []string{session.ID, emptyDash(session.ExternalID), session.Provider, session.Status,
 			strconv.Itoa(session.TurnCount), strconv.Itoa(session.ToolCallCount),
-			textutil.FormatCount(session.Tokens.Input + session.Tokens.Output), session.ProjectName, formatTime(session.StartedAt)}
+			textutil.FormatCount(session.Tokens.Input + session.Tokens.Output), session.ProjectName, formatTime(session.StartedAt),
+			emptyDash(session.SubagentKind), emptyDashInt(session.SubagentCount)}
 	})
 }
 
@@ -258,8 +259,8 @@ func runTurns(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		cliErr(stderr, err)
 		return 1
 	}
-	return writeFormatted(stdout, stderr, format, page.Items, []string{"id", "provider", "session_id", "status", "tools", "tokens", "project", "started", "user"}, func(turn trace.Turn) []string {
-		return []string{turn.ID, turn.Provider, turn.SessionID, turn.Status,
+	return writeFormatted(stdout, stderr, format, page.Items, []string{"id", "provider", "session_id", "session_external", "sub", "status", "tools", "tokens", "project", "started", "user"}, func(turn trace.Turn) []string {
+		return []string{turn.ID, turn.Provider, turn.SessionID, emptyDash(turn.SessionExternalID), boolDash(turn.IsSubagent), turn.Status,
 			strconv.Itoa(turn.ToolCallCount), textutil.FormatCount(turn.Tokens.Input + turn.Tokens.Output),
 			turn.ProjectName, formatTime(turn.StartedAt), oneLine(turn.UserMessage, 80)}
 	})
@@ -304,6 +305,14 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	fmt.Fprintf(stdout, "Turn %s\n", turn.ID)
+	fmt.Fprintf(stdout, "Session: %s", turn.SessionID)
+	if turn.SessionExternalID != "" {
+		fmt.Fprintf(stdout, " (external %s)", turn.SessionExternalID)
+	}
+	if turn.IsSubagent {
+		fmt.Fprint(stdout, " [subagent]")
+	}
+	fmt.Fprintln(stdout)
 	fmt.Fprintf(stdout, "Project: %s\n", turn.ProjectName)
 	fmt.Fprintf(stdout, "Status: %s\n", turn.Status)
 	fmt.Fprintf(stdout, "Tokens: input %s  output %s  cache read %s  cache write %s\n",

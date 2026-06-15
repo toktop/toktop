@@ -133,13 +133,18 @@ type Session struct {
 	WorkflowRunID    string `json:"workflow_run_id,omitzero"`    // the workflow run id (wf_…) for a Workflow's internal agent
 	SubagentKind     string `json:"subagent_kind,omitzero"`      // "task" | "workflow" (claude-code) | "agent" (codex)
 	AgentType        string `json:"agent_type,omitzero"`         // the subagent's declared type / role (e.g. "Explore", "explorer")
+	// SubagentCount is how many subagent sessions link to this one as parent (0 for a
+	// session that spawned none). Computed at read time, not stored.
+	SubagentCount int `json:"subagent_count,omitzero"`
 }
 
 type Turn struct {
-	ID              string    `json:"id"`
-	Provider        string    `json:"provider"`
-	SessionID       string    `json:"session_id"`
-	ProjectID       string    `json:"project_id,omitzero"`
+	ID                string `json:"id"`
+	Provider          string `json:"provider"`
+	SessionID         string `json:"session_id"`
+	SessionExternalID string `json:"session_external_id,omitzero"` // the parent session's original/native id (Claude Code/Codex UUID)
+	IsSubagent        bool   `json:"is_subagent,omitzero"`         // this turn belongs to a subagent session
+	ProjectID         string `json:"project_id,omitzero"`
 	ProjectName     string    `json:"project_name,omitzero"`
 	ProjectPath     string    `json:"project_path,omitzero"`
 	TranscriptPath  string    `json:"transcript_path"`

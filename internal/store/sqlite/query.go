@@ -290,7 +290,8 @@ const sessionsBaseQuery = `
 	       COALESCE(sessions.parent_external_id, ''),
 	       COALESCE(sessions.parent_session_id, ''), COALESCE(sessions.parent_tool_use_id, ''),
 	       COALESCE(sessions.workflow_run_id, ''), COALESCE(sessions.subagent_kind, ''),
-	       COALESCE(sessions.agent_type, '')
+	       COALESCE(sessions.agent_type, ''),
+	       (SELECT COUNT(*) FROM sessions c WHERE c.parent_session_id = sessions.id)
 	FROM sessions
 	JOIN sources ON sources.id = sessions.source_id
 	LEFT JOIN projects ON projects.id = sessions.project_id
@@ -338,6 +339,7 @@ func scanSessions(rows *sql.Rows) ([]trace.Session, error) {
 			&session.ParentSessionID, &session.ParentToolUseID,
 			&session.WorkflowRunID, &session.SubagentKind,
 			&session.AgentType,
+			&session.SubagentCount,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
@@ -350,7 +352,9 @@ func scanSessions(rows *sql.Rows) ([]trace.Session, error) {
 }
 
 const turnsBaseQuery = `
-	SELECT turns.id, sources.kind, turns.session_id, COALESCE(turns.project_id, ''),
+	SELECT turns.id, sources.kind, turns.session_id,
+	       COALESCE(sessions.external_session_id, ''), turns.is_subagent,
+	       COALESCE(turns.project_id, ''),
 	       COALESCE(projects.name, ''), COALESCE(projects.path, ''),
 	       COALESCE(sessions.transcript_path, ''),
 	       turns.turn_index,
@@ -396,8 +400,11 @@ func scanTurns(rows *sql.Rows) ([]trace.Turn, error) {
 	for rows.Next() {
 		var turn trace.Turn
 		var startedAt, endedAt sql.NullString
+		var isSubagent int
 		if err := rows.Scan(
-			&turn.ID, &turn.Provider, &turn.SessionID, &turn.ProjectID,
+			&turn.ID, &turn.Provider, &turn.SessionID,
+			&turn.SessionExternalID, &isSubagent,
+			&turn.ProjectID,
 			&turn.ProjectName, &turn.ProjectPath,
 			&turn.TranscriptPath,
 			&turn.Index,
@@ -410,6 +417,7 @@ func scanTurns(rows *sql.Rows) ([]trace.Turn, error) {
 		); err != nil {
 			return nil, fmt.Errorf("scan turn: %w", err)
 		}
+		turn.IsSubagent = isSubagent != 0
 		turn.StartedAt = parseTimeOpt(startedAt)
 		turn.EndedAt = parseTimeOpt(endedAt)
 		turns = append(turns, turn)

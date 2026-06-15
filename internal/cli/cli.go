@@ -300,6 +300,23 @@ func emptyDash(value string) string {
 	return value
 }
 
+// emptyDashInt renders a count as "-" when zero, so a column that is zero for most
+// rows (e.g. subagent count) stays quiet instead of a wall of "0".
+func emptyDashInt(n int) string {
+	if n == 0 {
+		return "-"
+	}
+	return strconv.Itoa(n)
+}
+
+// boolDash renders a boolean flag as a compact ✓/- table marker.
+func boolDash(b bool) string {
+	if b {
+		return "✓"
+	}
+	return "-"
+}
+
 func oneLine(value string, limit int) string {
 	return textutil.Truncate(strings.Join(strings.Fields(value), " "), limit)
 }

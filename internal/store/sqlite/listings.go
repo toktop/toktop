@@ -339,13 +339,16 @@ func (s *Store) ListProjects(ctx context.Context, f Filter) ([]ProjectListItem, 
 }
 
 type ModelListItem struct {
-	Provider     string    `json:"provider"`
-	Model        string    `json:"model"`
-	CallCount    int       `json:"call_count"`
-	TurnCount    int       `json:"turn_count"`
-	InputTokens  int       `json:"input_tokens"`
-	OutputTokens int       `json:"output_tokens"`
-	LastUsedAt   time.Time `json:"last_used_at,omitzero"`
+	Provider             string    `json:"provider"`
+	Model                string    `json:"model"`
+	CallCount            int       `json:"call_count"`
+	TurnCount            int       `json:"turn_count"`
+	InputTokens          int       `json:"input_tokens"`
+	OutputTokens         int       `json:"output_tokens"`
+	CacheReadTokens      int       `json:"cache_read_tokens"`
+	CacheWriteTokens     int       `json:"cache_write_tokens"`
+	CacheWriteLongTokens int       `json:"cache_write_long_tokens"`
+	LastUsedAt           time.Time `json:"last_used_at,omitzero"`
 }
 
 // ListModels rolls up invocation usage per (provider, model). Invocations with no
@@ -361,6 +364,9 @@ func (s *Store) ListModels(ctx context.Context, f Filter) ([]ModelListItem, erro
 		       COUNT(DISTINCT invocations.turn_id),
 		       COALESCE(SUM(invocations.input_tokens), 0),
 		       COALESCE(SUM(invocations.output_tokens), 0),
+		       COALESCE(SUM(invocations.cache_read_tokens), 0),
+		       COALESCE(SUM(invocations.cache_write_tokens), 0),
+		       COALESCE(SUM(invocations.cache_write_long_tokens), 0),
 		       COALESCE(MAX(`+invocationActivityTimeExpr+`), '')
 		FROM invocations
 		JOIN turns ON turns.id = invocations.turn_id
@@ -377,7 +383,8 @@ func (s *Store) ListModels(ctx context.Context, f Filter) ([]ModelListItem, erro
 	for rows.Next() {
 		var item ModelListItem
 		var lastUsed sql.NullString
-		if err := rows.Scan(&item.Provider, &item.Model, &item.CallCount, &item.TurnCount, &item.InputTokens, &item.OutputTokens, &lastUsed); err != nil {
+		if err := rows.Scan(&item.Provider, &item.Model, &item.CallCount, &item.TurnCount, &item.InputTokens, &item.OutputTokens,
+			&item.CacheReadTokens, &item.CacheWriteTokens, &item.CacheWriteLongTokens, &lastUsed); err != nil {
 			return nil, fmt.Errorf("scan model: %w", err)
 		}
 		item.LastUsedAt = parseTimeOpt(lastUsed)
