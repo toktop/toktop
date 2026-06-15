@@ -156,7 +156,7 @@ keep a daemon running so the DB stays current automatically (see
 | `toktop mcps` | MCP server usage rollup (`mcps unused` = declared but never called) |
 | `toktop skills` | Skill usage rollup (`skills unused` = installed but never used) |
 | `toktop tools` | Tool-call usage (call / turn / failed counts per tool) |
-| `toktop models` | Model invocation usage (call / turn / token counts per provider+model) |
+| `toktop models` | Model invocation usage (call / turn / token counts, incl. cache, per provider+model) |
 | `toktop projects` | Per-project session / turn / tool counts |
 | `toktop suggestions` | Rule-engine findings (`suggestions recompute` reruns the rules) |
 | `toktop handoff create` | Assemble an Evidence-based Handoff Package for one session — recovers completed sub-agent results so either agent can continue the other's interrupted work (Claude Code ⇄ Codex) |
