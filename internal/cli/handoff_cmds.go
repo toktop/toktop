@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -36,7 +37,7 @@ func runHandoff(ctx context.Context, args []string, stdout, stderr io.Writer) in
 func handoffCreateFlagSet(session, output *string, maxOutputBytes *int) *flag.FlagSet {
 	fs := flag.NewFlagSet("handoff create", flag.ContinueOnError)
 	fs.StringVar(session, "session", *session, "session id or external session id to package")
-	fs.StringVar(output, "output", *output, "output directory for the handoff package")
+	fs.StringVar(output, "output", *output, "output directory for the handoff package (default ~/.toktop/handoff/<session>)")
 	fs.IntVar(maxOutputBytes, "max-output-bytes", *maxOutputBytes, "clip tool outputs / agent results larger than N bytes to head+tail (0 = full; raw pointers always reach the full bytes)")
 	setFlagUsage(fs, "usage: toktop handoff create --session <id> [--output <dir>] [--max-output-bytes N]",
 		"Assemble an Evidence-based Handoff Package for one session so another agent can",
@@ -50,7 +51,7 @@ func runHandoffCreate(ctx context.Context, args []string, stdout, stderr io.Writ
 		return 1
 	}
 	session := ""
-	output := ".ai/handoff/toktop"
+	output := ""
 	maxOutputBytes := 0
 	fs := handoffCreateFlagSet(&session, &output, &maxOutputBytes)
 	fs.SetOutput(stderr)
@@ -79,6 +80,12 @@ func runHandoffCreate(ctx context.Context, args []string, stdout, stderr io.Writ
 	if sess.ID == "" {
 		cliErrf(stderr, "session not found: %s", session)
 		return 1
+	}
+	// Default the package dir under the toktop home, keyed by the resolved session id,
+	// so a bare `handoff create` never writes into the user's project tree (and needs
+	// no .gitignore). --output overrides.
+	if strings.TrimSpace(output) == "" {
+		output = filepath.Join(home, "handoff", sess.ID)
 	}
 	turns, err := svc.SessionTurns(ctx, sess.ID)
 	if err != nil {

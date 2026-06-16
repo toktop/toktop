@@ -159,7 +159,6 @@ keep a daemon running so the DB stays current automatically (see
 | `toktop models` | Model invocation usage (call / turn / token counts, incl. cache, per provider+model) |
 | `toktop projects` | Per-project session / turn / tool counts |
 | `toktop suggestions` | Rule-engine findings (`suggestions recompute` reruns the rules) |
-| `toktop handoff create` | Assemble an Evidence-based Handoff Package for one session — recovers completed sub-agent results so either agent can continue the other's interrupted work (Claude Code ⇄ Codex) |
 | `toktop sources` | Configured providers and their discovery roots |
 
 **Shared filter flags** (on `summary`, `sessions`, `turns`, `mcps`, `skills`, `tools`,
@@ -194,13 +193,51 @@ toktop search 'rate limit' kind:turn source:claude-code --limit 20   # kind:/sou
 toktop mcps unused --format json
 toktop sessions inspect 7fe8484969b12a21
 toktop turns timeline 2dcb402ffc459e93     # per-turn event timeline
-toktop handoff create --session 7fe8484969b12a21   # recovery package → .ai/handoff/toktop (--output dir, --max-output-bytes N)
 ```
 
 `suggestions` runs a small rule engine over your history — e.g. an MCP server enabled but
 unused for 30 days, a tool whose output dominates a turn's input tokens, a turn that took
 many invocations to succeed, or a session whose later turns balloon in token use. Estimated
 figures always carry a `confidence`; observed counts are exact.
+
+---
+
+## Handoff
+
+One side hits a quota limit or gets interrupted mid-workflow and you want to
+continue in the *other* agent — analyze in Claude Code, execute in Codex, or the
+reverse — without re-deriving or re-running everything. `toktop handoff` packages
+one session as an **Evidence-based Handoff Package** another agent can pick up. It
+is symmetric: a Claude Code session resumes in Codex and vice versa.
+
+```bash
+toktop handoff create --session 7fe8484969b12a21
+# → ~/.toktop/handoff/<session>/   (--output <dir> to override · --max-output-bytes N to clip)
+```
+
+The package leads with a lean **`digest.md`** — the session's user→assistant
+narrative with no tool-call bloat — so the receiver orients cheaply on *any*
+session. For a multi-agent workflow it also recovers each completed sub-agent's
+real result (so they are reused, not re-run), plus provenance pointers back to the
+raw transcript; every fact is tagged `evidence` / `inference` / `unknown`. The
+same package is served over HTTP at `GET /v1/sessions/{id}/handoff` (one JSON
+body, `digest` inline).
+
+To consume a package and continue the work, use the
+[`toktop-resume`](#agent-skills) skill below.
+
+---
+
+## Agent Skills
+
+Beyond the `toktop` binary, the repo ships **Agent Skills** under
+[`skills/`](skills/) — tool-neutral skills (Claude Code, Codex, …) that wrap a
+`toktop` workflow so the *receiving* agent can drive it with one slash command.
+Install any of them with [`npx skills`](https://github.com/vercel-labs/skills).
+
+| Skill | What it does |
+| --- | --- |
+| [`toktop-resume`](skills/toktop-resume/) | Resume an interrupted session from a handoff package. Install `npx skills add toktop/toktop/skills/toktop-resume`, then run `/toktop-resume [session-id]` in the *receiving* agent: it builds the package and continues from it under the receiver-prompt rules — orienting on the lean `digest.md` and reusing completed sub-agent results rather than redoing them. Explicit-invocation only; with no id it lists recent sessions to pick from. |
 
 ---
 

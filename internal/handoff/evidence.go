@@ -8,9 +8,14 @@ import (
 	"toktop.unceas.dev/internal/trace"
 )
 
+// typeLastAssistantMessage is the evidence Type for the session's trailing assistant
+// message. Shared by the producer (buildEvidence) and the consumer that gates the
+// receiver-prompt on whether the item was actually emitted (receiverPromptMD).
+const typeLastAssistantMessage = "last_assistant_message"
+
 // buildEvidence derives provenance-carrying facts a recovering agent can rely on.
 // Every item points back to the raw transcript. Confidence is "evidence" for
-// things the transcript states directly (an agent's recorded result, the final
+// things the transcript states directly (an agent's recorded result, the last
 // assistant message); heuristics would be "inference" (none emitted in v1, to
 // avoid presenting synthesized claims as authoritative).
 func buildEvidence(session trace.Session, turns []trace.Turn, agents []AgentRun) []EvidenceItem {
@@ -33,7 +38,7 @@ func buildEvidence(session trace.Session, turns []trace.Turn, agents []AgentRun)
 		case trace.StatusInterrupted:
 			// Deliberately stopped (TaskStop): no result was produced, but it was
 			// killed on purpose — flag distinctly so the recovering agent reconciles
-			// against the final answer rather than blindly resuming.
+			// against the digest rather than blindly resuming.
 			typ = "stopped_agent"
 			conf = ConfidenceUnknown
 		default:
@@ -55,8 +60,12 @@ func buildEvidence(session trace.Session, turns []trace.Turn, agents []AgentRun)
 		})
 	}
 
-	// The session's final assistant message, if present, is the authoritative
-	// "where the work ended" fact.
+	// The session's last non-empty assistant message. It is provably the last thing
+	// the assistant said (ConfidenceEvidence), but NOT necessarily the answer: a
+	// session that ended mid-thought (quota/interrupt, or a trailing "let me first
+	// check X") leaves a fragment here that is structurally indistinguishable from a
+	// real wrap-up (same turn Status). So frame it descriptively, not as an
+	// authoritative conclusion — the receiving agent judges it against digest.md.
 	for _, turn := range slices.Backward(turns) {
 		final := strings.TrimSpace(turn.AssistantFinal)
 		if final == "" {
@@ -64,8 +73,8 @@ func buildEvidence(session trace.Session, turns []trace.Turn, agents []AgentRun)
 		}
 		items = append(items, EvidenceItem{
 			ID:         "final:" + turn.ID,
-			Type:       "final_answer",
-			Claim:      oneLine(final, 280),
+			Type:       typeLastAssistantMessage,
+			Claim:      "last assistant message (may be the conclusion or a mid-thought cutoff — judge against digest.md): " + oneLine(final, 240),
 			Confidence: ConfidenceEvidence,
 			Source: SourcePointer{
 				Provider:  session.Provider,

@@ -72,7 +72,7 @@ type AgentRun struct {
 // EvidenceItem is one provenance-carrying fact for the handoff index.
 type EvidenceItem struct {
 	ID         string        `json:"id"`
-	Type       string        `json:"type"` // agent_result | final_answer | failed_agent | incomplete_agent
+	Type       string        `json:"type"` // agent_result | last_assistant_message | failed_agent | stopped_agent | incomplete_agent
 	Claim      string        `json:"claim"`
 	Confidence Confidence    `json:"confidence"`
 	Source     SourcePointer `json:"source"`
@@ -118,6 +118,11 @@ type Package struct {
 	Turns     []trace.Turn   `json:"turns"`
 	AgentRuns []AgentRun     `json:"agent_runs"`
 	Evidence  []EvidenceItem `json:"evidence"`
+	// Digest is a lean, pre-rendered markdown narrative (user→assistant per turn, no
+	// tool-call bodies) — the cheap default read path, so a consumer can orient
+	// without ingesting the fat Turns. Rendered once in Build; written as digest.md
+	// (CLI) and served inline as the "digest" string (HTTP).
+	Digest string `json:"digest"`
 }
 
 // Build reconstructs the handoff package for one session from its turns (which
@@ -142,13 +147,17 @@ func Build(now time.Time, session trace.Session, turns []trace.Turn, subagentRun
 			agents[i].Prompt, _ = textutil.ClipText(agents[i].Prompt, maxOutputBytes)
 		}
 	}
-	return Package{
+	pkg := Package{
 		Manifest:  manifest,
 		Session:   session,
 		Turns:     turns,
 		AgentRuns: agents,
 		Evidence:  evidence,
 	}
+	// Render the lean digest once from the final (post-clip) turns, so the CLI file
+	// (digest.md) and the HTTP inline string are byte-identical and cannot drift.
+	pkg.Digest = pkg.digestMD()
+	return pkg
 }
 
 func detectAgentRuns(session trace.Session, turns []trace.Turn) []AgentRun {
@@ -322,7 +331,7 @@ func buildManifest(now time.Time, session trace.Session, turns []trace.Turn, age
 	// earlier final does not count — the headline scenario is agents finishing but
 	// the closing synthesis turn never completing.
 	finalPresent := len(turns) > 0 && strings.TrimSpace(turns[len(turns)-1].AssistantFinal) != ""
-	entrypoints := []string{"README.md", "evidence-index.md"}
+	entrypoints := []string{"README.md", "digest.md", "evidence-index.md"}
 	if len(agents) > 0 {
 		entrypoints = append(entrypoints, "agent-results.ndjson")
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -24,6 +25,7 @@ func (p Package) Write(dir string) error {
 		{"turns.json", func(path string) error { return writeJSONFile(path, p.Turns) }},
 		{"agent-results.ndjson", func(path string) error { return writeNDJSON(path, p.AgentRuns) }},
 		{"raw-pointers.ndjson", func(path string) error { return writeNDJSON(path, p.rawPointers()) }},
+		{"digest.md", func(path string) error { return os.WriteFile(path, []byte(p.Digest), 0o644) }},
 		{"evidence-index.md", func(path string) error { return os.WriteFile(path, []byte(p.evidenceIndexMD()), 0o644) }},
 		{"receiver-prompt.md", func(path string) error { return os.WriteFile(path, []byte(p.receiverPromptMD()), 0o644) }},
 		{"README.md", func(path string) error { return os.WriteFile(path, []byte(p.readmeMD()), 0o644) }},
@@ -65,15 +67,62 @@ func (p Package) rawPointers() []SourcePointer {
 	return out
 }
 
+// digestPerMsgCap bounds each user/assistant message inlined into the digest, so a
+// single pathological message cannot bloat the lean read path. Independent of
+// maxOutputBytes (which only clips tool-call bodies in turns.json).
+const digestPerMsgCap = 2000
+
+// digestMD renders the lean narrative — user→assistant per turn, with NO tool-call /
+// invocation / component bodies. This is the cheap default read path: enough to
+// orient without ingesting the fat turns.json, which stays the deep-dive artifact.
+// Each message is flattened to one line (via oneLine) so an embedded newline or a
+// stray `### ` line in the message body cannot break the per-turn `### Turn N`
+// structure or split the bold label.
+func (p Package) digestMD() string {
+	var b strings.Builder
+	b.WriteString("# Session digest\n\n")
+	fmt.Fprintf(&b, "Session `%s` (%s)", p.Session.ID, p.Manifest.Provider)
+	if p.Manifest.Project != "" {
+		fmt.Fprintf(&b, " · project `%s`", p.Manifest.Project)
+	}
+	fmt.Fprintf(&b, "\n\nWorkflow status: **%s** · %d turns · %d agent runs\n\n",
+		p.Manifest.WorkflowStatus, p.Manifest.Turns, p.Manifest.AgentRuns)
+	b.WriteString("Lean narrative (user → assistant per turn, no tool calls). For a specific tool call's bytes, see `turns.json`.\n")
+	if len(p.Turns) == 0 {
+		b.WriteString("\n_No turns in this session._\n")
+		return b.String()
+	}
+	for i := range p.Turns {
+		t := &p.Turns[i]
+		fmt.Fprintf(&b, "\n### Turn %d (%s)\n", i+1, t.Status)
+		user := strings.TrimSpace(t.UserMessage)
+		asst := strings.TrimSpace(t.AssistantFinal)
+		if user != "" {
+			fmt.Fprintf(&b, "**User:** %s\n", oneLine(user, digestPerMsgCap))
+		}
+		if asst != "" {
+			fmt.Fprintf(&b, "**Assistant:** %s\n", oneLine(asst, digestPerMsgCap))
+		}
+		if user == "" && asst == "" {
+			if t.ToolCallCount > 0 {
+				fmt.Fprintf(&b, "_(no user/assistant text; %d tool call(s) — see turns.json)_\n", t.ToolCallCount)
+			} else {
+				b.WriteString("_(empty turn — no user/assistant text or tool calls)_\n")
+			}
+		}
+	}
+	return b.String()
+}
+
 func (p Package) evidenceIndexMD() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Evidence index\n\nSession `%s` (%s)", p.Session.ID, p.Manifest.Provider)
 	if p.Manifest.Project != "" {
 		fmt.Fprintf(&b, " · project `%s`", p.Manifest.Project)
 	}
-	fmt.Fprintf(&b, "\n\nWorkflow status: **%s** · %d turns · %d agent runs (%d ok, %d failed, %d stopped, %d in-flight) · final synthesis: %v\n\n",
+	fmt.Fprintf(&b, "\n\nWorkflow status: **%s** · %d turns · %d agent runs (%d ok, %d failed, %d stopped, %d in-flight)\n\n",
 		p.Manifest.WorkflowStatus, p.Manifest.Turns, p.Manifest.AgentRuns,
-		p.Manifest.CompletedAgentRuns, p.Manifest.FailedAgentRuns, p.Manifest.InterruptedAgentRuns, p.Manifest.IncompleteAgentRuns, p.Manifest.FinalSynthesisPresent)
+		p.Manifest.CompletedAgentRuns, p.Manifest.FailedAgentRuns, p.Manifest.InterruptedAgentRuns, p.Manifest.IncompleteAgentRuns)
 	fmt.Fprintf(&b, "Each item is tagged `evidence` (proven by the transcript), `inference` (derived), or `unknown`.\nProvenance points to the original transcript so you can re-read raw bytes; do not trust a claim you cannot trace.\n\n")
 	if len(p.Evidence) == 0 {
 		b.WriteString("_No evidence items extracted._\n")
@@ -108,12 +157,20 @@ func (p Package) receiverPromptMD() string {
 	fmt.Fprintf(&b, "You are picking up a %s session %s. Status: **%s**.\n\n",
 		p.Manifest.Provider, intro, p.Manifest.WorkflowStatus)
 	hasAgents := p.Manifest.AgentRuns > 0
+	if hasAgents {
+		fmt.Fprintf(&b, "This is a multi-agent recovery: %d run(s) — %d completed, %d with no captured result, %d stopped, %d failed. Reuse the captured results; do not redo that work.\n\n",
+			p.Manifest.AgentRuns, p.Manifest.CompletedAgentRuns, p.Manifest.IncompleteAgentRuns, p.Manifest.InterruptedAgentRuns, p.Manifest.FailedAgentRuns)
+	} else {
+		b.WriteString("This is a plain session digest — no sub-agents ran, so there is no parallel work to recover.\n\n")
+	}
 
 	b.WriteString("## Hard rules\n")
 	rule := 0
 	add := func(s string) { rule++; fmt.Fprintf(&b, "%d. %s\n", rule, s) }
 	if hasAgents {
 		add("Do NOT redo a sub-agent whose result is captured (in `agent-results.ndjson`, each with a `source` pointing at that sub-agent's own transcript you can re-read). For a run with no captured result, redo the work from its prompt/description or its captured transcript (the run's `source`) — do not trust a blank or partial output.")
+	} else {
+		add("This session ran no sub-agents — there is no parallel work to reuse. Read `digest.md` to see where it ended, then continue.")
 	}
 	add("Do NOT re-plan from scratch or guess from the current git diff.")
 	add("Work only from `evidence`-tagged facts. Treat `inference` as a hint and `unknown` as not established.")
@@ -124,19 +181,20 @@ func (p Package) receiverPromptMD() string {
 	for i, e := range p.Manifest.RecommendedEntrypoints {
 		fmt.Fprintf(&b, "%d. `%s`\n", i+1, e)
 	}
+	b.WriteString("Read `digest.md` for the narrative; open `turns.json` only for a specific tool call's bytes.\n")
 
 	b.WriteString("\n## What is left\n")
-	if p.Manifest.FinalSynthesisPresent {
-		b.WriteString("- A final answer exists (see `final_answer` in the evidence index). Verify it against the captured results before continuing.\n")
+	if slices.ContainsFunc(p.Evidence, func(e EvidenceItem) bool { return e.Type == typeLastAssistantMessage }) {
+		b.WriteString("- The session's last assistant message is captured (`last_assistant_message` in the evidence index). Judge it against `digest.md` IN CONTEXT — it may be the conclusion or where the session was cut off; do NOT anchor on it as the answer.\n")
 	} else {
-		b.WriteString("- The final answer is missing — the session was interrupted before wrap-up.\n")
+		b.WriteString("- The session produced no assistant message (interrupted before any wrap-up). Re-derive what's needed from `digest.md` and the captured results.\n")
 	}
 	if hasAgents {
 		if n := p.Manifest.CompletedAgentRuns; n > 0 {
 			fmt.Fprintf(&b, "- %d sub-agent run(s) completed; their results are captured in `agent-results.ndjson` (each `source` points at that sub-agent's transcript). **Reuse them — do not redo this work.**\n", n)
 		}
 		if n := p.Manifest.IncompleteAgentRuns; n > 0 {
-			fmt.Fprintf(&b, "- %d run(s) have no captured result (launched, never finished). Redo that work from the run's prompt/description or its captured transcript (`source`), or reconcile against the final answer.\n", n)
+			fmt.Fprintf(&b, "- %d run(s) have no captured result (launched, never finished). Redo that work from the run's prompt/description or its captured transcript (`source`), or reconcile against `digest.md`.\n", n)
 		}
 		if n := p.Manifest.InterruptedAgentRuns; n > 0 {
 			fmt.Fprintf(&b, "- %d run(s) were deliberately stopped; any output is partial and they were ended on purpose — reconcile rather than blindly redo.\n", n)
@@ -155,10 +213,11 @@ func (p Package) readmeMD() string {
 	b.WriteString("Read-only, auditable snapshot of one session's workflow for cross-agent recovery.\n\n")
 	b.WriteString("| file | contents |\n|---|---|\n")
 	b.WriteString("| `manifest.json` | entry point: status, counts, recommended reading order |\n")
+	b.WriteString("| `digest.md` | lean narrative (user→assistant per turn, no tool calls) — read this to orient |\n")
 	b.WriteString("| `receiver-prompt.md` | constraints for the agent picking up the work |\n")
 	b.WriteString("| `evidence-index.md` | human-readable facts with provenance + confidence |\n")
 	b.WriteString("| `agent-results.ndjson` | one reconstructed agent run per line |\n")
-	b.WriteString("| `turns.json` | the session's turns (with tool calls) |\n")
+	b.WriteString("| `turns.json` | deep-dive / provenance: full turns WITH tool calls — not needed to orient |\n")
 	b.WriteString("| `raw-pointers.ndjson` | transcript file + raw-event pointers for re-reading |\n")
 	return b.String()
 }
