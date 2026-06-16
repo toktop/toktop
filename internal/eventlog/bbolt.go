@@ -349,7 +349,10 @@ func (s *BoltStore) LoadLiveSnapshot(ctx context.Context) (uint64, map[string][]
 		watermark = eventID(wm)
 		bucket := tx.Bucket(liveSnapshotBucket)
 		if bucket == nil {
-			entries = map[string][]byte{}
+			// Meta watermark present but the entry bucket is gone (partial state /
+			// corruption): leave entries nil so the caller treats it as "no snapshot"
+			// and falls back to the recent-window scan, per the documented contract —
+			// never a non-nil empty map that would adopt this watermark as the floor.
 			return nil
 		}
 		entries = make(map[string][]byte, bucket.Stats().KeyN)

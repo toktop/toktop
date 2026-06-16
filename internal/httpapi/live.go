@@ -56,15 +56,19 @@ func (s *Server) loadLiveState(ctx context.Context) error {
 	}
 	// Seed from the clean-shutdown snapshot when present: O(sessions) instead of
 	// folding recentLiveEventScan events. Then replay only events after its
-	// watermark. A stale snapshot (crash since the last clean shutdown) is still
-	// correct — the tail replay re-folds newer events on top — but the tail is
-	// capped at recentLiveEventScan below so it never exceeds the legacy window.
+	// watermark. Bounded best-effort under a stale snapshot (a crash since the last
+	// clean shutdown): the tail replay below re-folds the most recent
+	// recentLiveEventScan events on top, so a session touched within that window is
+	// exact while one touched only in the older, skipped range keeps its snapshot
+	// state — the same bounded staleness the legacy recent-window scan already had,
+	// never exceeding that window.
 	watermark, entries, err := s.eventStore.LoadLiveSnapshot(ctx)
 	if err != nil {
 		return err
 	}
 	var after uint64
 	if entries != nil {
+		loaded := 0
 		s.liveMu.Lock()
 		for key, raw := range entries {
 			var live LiveEvent
@@ -73,8 +77,11 @@ func (s *Server) loadLiveState(ctx context.Context) error {
 				continue
 			}
 			s.liveSessions[key] = live
+			loaded++
 		}
-		s.liveSnapshotDirty = true
+		if loaded > 0 {
+			s.liveSnapshotDirty = true
+		}
 		s.liveMu.Unlock()
 		after = watermark
 	}

@@ -287,8 +287,9 @@ func (s *Service) enqueueAuto(job ingestJob) {
 // On success it clears the set; if ingestCh is full the paths stay in dirty for
 // the next flush, so an automatic file job is never silently dropped. dirty is
 // owned solely by the run loop and the send copies a sorted slice, so clearing
-// the map never races the queued job. Ingest is idempotent (content-hashed ids),
-// so a path re-queued after a queue-full episode reingests without duplicates.
+// the map never races the queued job. Ingest is idempotent — a session's id is
+// derived from its transcript path (trace.SessionID) and re-ingest upserts — so a
+// path re-queued after a queue-full episode never produces duplicate rows.
 func (s *Service) enqueueFileRetry(dirty map[string]struct{}, reason string) {
 	if len(dirty) == 0 {
 		return

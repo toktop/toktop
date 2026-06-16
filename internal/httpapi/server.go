@@ -518,19 +518,26 @@ func (s *Server) replayGapInRange(after, until uint64) (uint64, string, bool) {
 
 // backpressure snapshots the httpapi-owned portion of the broker's backpressure
 // surface (the runtime-owned ingest/emit drop totals ride runtime.Status.Counters).
-// Counters are lock-free atomics; the gauges are a point-in-time read (durable_lag
-// can momentarily reflect the window between an eventSeq and durableID update,
-// which is fine for operator visibility).
+// Counters are lock-free atomics; the gauges are a point-in-time read.
 func (s *Server) backpressure() Backpressure {
 	s.liveMu.Lock()
 	live := len(s.liveSessions)
 	s.liveMu.Unlock()
+	// durable_lag = unpersisted tail. durableID never exceeds eventSeq causally (a
+	// live event is assigned its seq before it can be persisted), but the two loads
+	// aren't atomic together — read durableID first so a concurrent emit+persist
+	// can only grow the later eventSeq read, and clamp so the uint64 can never wrap.
+	durable := s.durableID.Load()
+	var durableLag uint64
+	if seq := s.eventSeq.Load(); seq > durable {
+		durableLag = seq - durable
+	}
 	return Backpressure{
 		PersistQueueFull:         s.persistQueueFullTotal.Load(),
 		SSESlowSubscriberDropped: s.sseSlowSubscriberDropped.Load(),
 		SpoolDropped:             s.spoolDroppedTotal.Load(),
 		SpoolDroppedBytes:        s.spoolDroppedBytes.Load(),
-		DurableLag:               s.eventSeq.Load() - s.durableID.Load(),
+		DurableLag:               durableLag,
 		PersistQueueLen:          len(s.persistCh),
 		LiveSessions:             live,
 	}

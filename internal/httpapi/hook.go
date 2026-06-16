@@ -60,9 +60,10 @@ func (s *Server) enqueueSpool(body []byte) {
 	case s.spoolCh <- body:
 	default:
 		// Slot cap hit despite the byte budget (many tiny bodies): release the
-		// reservation and drop.
-		s.queuedSpoolBytes.Add(-bodyLen)
-		s.dropSpool(bodyLen, s.queuedSpoolBytes.Load())
+		// reservation and drop. Add returns the post-decrement total atomically, so
+		// the logged "queued" reflects this release without a second racy Load.
+		remaining := s.queuedSpoolBytes.Add(-bodyLen)
+		s.dropSpool(bodyLen, remaining)
 	}
 }
 
