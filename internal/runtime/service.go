@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"toktop.unceas.dev/internal/liveevent"
 	"toktop.unceas.dev/internal/redact"
@@ -27,6 +28,12 @@ type Service struct {
 	emitCh chan liveevent.Event
 
 	reconcileCh chan struct{}
+
+	// Backpressure counters: cumulative, monotonic, lock-free. emit is called
+	// from several goroutines, so a mutex-guarded counter would serialize the
+	// hot path — atomics keep it free. Surfaced via Status().Counters.
+	ingestAutoDropped atomic.Uint64
+	emitDropped       atomic.Uint64
 }
 
 const emitBufferSize = 256
@@ -105,8 +112,11 @@ func (s *Service) releaseIngest() { <-s.ingestSem }
 
 func (s *Service) Status() Status {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.prog.snapshot(s.cfg)
+	st := s.prog.snapshot(s.cfg)
+	s.mu.Unlock()
+	st.Counters.IngestAutoDropped = s.ingestAutoDropped.Load()
+	st.Counters.EmitDropped = s.emitDropped.Load()
+	return st
 }
 
 func (s *Service) getState() State {

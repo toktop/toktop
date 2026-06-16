@@ -83,6 +83,15 @@ type Server struct {
 
 	liveMu       sync.Mutex
 	liveSessions map[string]LiveEvent
+	// liveSnapshot is an immutable, read-optimized index over liveSessions. It is
+	// rebuilt lazily: a mutation under liveMu only flips liveSnapshotDirty (O(1),
+	// keeping the emit hot path cheap), and overlayLiveSessions rebuilds it at most
+	// once per request when dirty — coalescing a burst of emits into one rebuild and
+	// skipping it entirely for idle reads. Once built it is never mutated in place,
+	// so overlay can use it lock-free after releasing liveMu. Both fields are guarded
+	// by liveMu.
+	liveSnapshot      *liveSessionSnapshot
+	liveSnapshotDirty bool
 
 	runtime atomic.Pointer[runtime.Service]
 
@@ -90,6 +99,10 @@ type Server struct {
 
 	lifecycleMu sync.RWMutex
 	closed      atomic.Bool
+	// started flips true once NewServer has fully constructed the server (after
+	// loadLiveState). Close writes the live-session snapshot only when started, so
+	// a NewServer error path never persists half-built live state.
+	started atomic.Bool
 
 	// Hook spool writes are deferred to a single background goroutine
 	// (runSpoolWriter) off the request path, so handleHooksIntake never blocks on
@@ -102,6 +115,12 @@ type Server struct {
 	spoolOnce sync.Once
 	spoolFile *os.File
 	spoolDate string
+	// queuedSpoolBytes is the sum of hook bodies enqueued on spoolCh and not yet
+	// processed by runSpoolWriter. It enforces spoolBudgetBytes so worst-case spool
+	// memory is bounded regardless of body-size distribution (256 slots × 16 MiB
+	// would otherwise pin ~4 GiB). Incremented in enqueueSpool, decremented in
+	// runSpoolWriter. Lock-free.
+	queuedSpoolBytes atomic.Int64
 
 	eventLogMaxAge     time.Duration
 	eventLogMaxEvents  int
@@ -133,6 +152,14 @@ type Server struct {
 	persistCh      chan persistJob
 	persistDone  chan struct{}
 	persistOnce  sync.Once
+
+	// Backpressure counters: cumulative, monotonic, incremented lock-free at the
+	// existing drop sites. Surfaced (with point-in-time gauges) on GET /v1/daemon
+	// so a degrading broker is observable. They never change drop behavior.
+	persistQueueFullTotal    atomic.Uint64
+	sseSlowSubscriberDropped atomic.Uint64
+	spoolDroppedTotal        atomic.Uint64
+	spoolDroppedBytes        atomic.Uint64
 }
 
 // persistJob is one durable event-log write deferred off the emit hot path.
@@ -151,6 +178,13 @@ const eventPersistBuffer = 4096
 // fast and depth stays ~0; on overflow the spool line is dropped (warned),
 // never the live event.
 const spoolBuffer = 256
+
+// spoolBudgetBytes caps the total bytes of hook bodies queued on spoolCh. It is
+// the real memory ceiling for the spool backlog: a full 256-slot channel of
+// 16 MiB bodies would otherwise pin ~4 GiB. enqueueSpool refuses (and drops,
+// warned) once a body would push the queued total past this; the slot count is a
+// secondary cap for many-tiny-bodies bursts.
+const spoolBudgetBytes int64 = 128 << 20
 
 // replayGuardedStore wraps the event log so its Prune blocks while a reconnect
 // replay is in flight (Server.replayMu), matching PruneEventLog's own guard.
@@ -223,6 +257,7 @@ func NewServer(ctx context.Context, opts Options) (*Server, error) {
 		return nil, err
 	}
 	server.routes()
+	server.started.Store(true)
 	return server, nil
 }
 
@@ -246,6 +281,14 @@ func (s *Server) Close() error {
 		delete(s.events, sub)
 	}
 	s.eventsMu.Unlock()
+	// Persist the live-session snapshot before closing the event store. stopPersister
+	// above has drained the async writer, so durableID == LastID and liveSessions is
+	// stable; a restart can then seed live state from this snapshot instead of
+	// rescanning the recent event window. Only when fully started (never on a
+	// NewServer error path, which would persist half-built state).
+	if s.started.Load() && s.eventStore != nil {
+		s.saveLiveSnapshot()
+	}
 	var err error
 	if s.eventStore != nil {
 		err = s.eventStore.Close()
@@ -432,6 +475,7 @@ func (s *Server) enqueueEventPersistLocked(id uint64, eventType string, at time.
 	select {
 	case s.persistCh <- persistJob{id: id, eventType: eventType, at: at, payload: payload}:
 	default:
+		s.persistQueueFullTotal.Add(1)
 		s.markReplayGap(id, "persist_queue_full")
 		s.logger.Warn("event persist queue full; live event not written to replay log",
 			"event_id", id, "type", eventType)
@@ -470,4 +514,24 @@ func (s *Server) replayGapInRange(after, until uint64) (uint64, string, bool) {
 		return 0, "", false
 	}
 	return mark.id, mark.reason, true
+}
+
+// backpressure snapshots the httpapi-owned portion of the broker's backpressure
+// surface (the runtime-owned ingest/emit drop totals ride runtime.Status.Counters).
+// Counters are lock-free atomics; the gauges are a point-in-time read (durable_lag
+// can momentarily reflect the window between an eventSeq and durableID update,
+// which is fine for operator visibility).
+func (s *Server) backpressure() Backpressure {
+	s.liveMu.Lock()
+	live := len(s.liveSessions)
+	s.liveMu.Unlock()
+	return Backpressure{
+		PersistQueueFull:         s.persistQueueFullTotal.Load(),
+		SSESlowSubscriberDropped: s.sseSlowSubscriberDropped.Load(),
+		SpoolDropped:             s.spoolDroppedTotal.Load(),
+		SpoolDroppedBytes:        s.spoolDroppedBytes.Load(),
+		DurableLag:               s.eventSeq.Load() - s.durableID.Load(),
+		PersistQueueLen:          len(s.persistCh),
+		LiveSessions:             live,
+	}
 }

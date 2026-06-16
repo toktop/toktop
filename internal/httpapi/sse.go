@@ -190,6 +190,7 @@ func (s *Server) publishEvent(ev event) {
 			sub.overflowed.Store(true)
 			delete(s.events, sub)
 			close(sub.ch)
+			s.sseSlowSubscriberDropped.Add(1)
 			s.logger.Warn("dropped slow SSE subscriber: buffer full",
 				"event_type", ev.Type, "event_id", ev.ID)
 		}

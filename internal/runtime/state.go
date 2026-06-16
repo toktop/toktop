@@ -32,6 +32,10 @@ type Counters struct {
 	FileRuns      int64 `json:"file_runs"`
 	FileFailures  int64 `json:"file_failures"`
 	UnmappedFiles int64 `json:"unmapped_files"`
+	// Backpressure drop totals (cumulative). Filled from Service atomics in
+	// Status(), not from the mu-guarded progress, so they read 0 here.
+	IngestAutoDropped uint64 `json:"ingest_auto_dropped_total,omitzero"`
+	EmitDropped       uint64 `json:"emit_dropped_total,omitzero"`
 }
 
 type Status struct {

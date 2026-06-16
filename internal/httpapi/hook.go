@@ -27,25 +27,50 @@ func (s *Server) runSpoolWriter() {
 		if err := s.appendSpoolLine(body); err != nil {
 			s.logger.Warn("write hook spool failed", "err", err)
 		}
+		s.queuedSpoolBytes.Add(-int64(len(body)))
 	}
 }
 
 // enqueueSpool hands a raw hook body to runSpoolWriter without blocking the
-// request. On overflow the body is dropped from the audit spool (warned) — the
-// live-event projection over SSE is unaffected, since Emit redacts and publishes
-// it independently. Mirrors enqueueEventPersistLocked's lossy-by-design contract.
+// request, subject to spoolBudgetBytes. On overflow the body is dropped from the
+// audit spool (warned) — the live-event projection over SSE is unaffected, since
+// Emit redacts and publishes it independently. Mirrors enqueueEventPersistLocked's
+// lossy-by-design contract.
 func (s *Server) enqueueSpool(body []byte) {
 	s.lifecycleMu.RLock()
 	defer s.lifecycleMu.RUnlock()
 	if s.closed.Load() {
 		return
 	}
+	bodyLen := int64(len(body))
+	// Reserve the bytes against the budget before queueing (lock-free CAS, since
+	// enqueueSpool runs under a shared RLock). runSpoolWriter releases them after
+	// the body is written.
+	for {
+		queued := s.queuedSpoolBytes.Load()
+		if queued+bodyLen > spoolBudgetBytes {
+			s.dropSpool(bodyLen, queued)
+			return
+		}
+		if s.queuedSpoolBytes.CompareAndSwap(queued, queued+bodyLen) {
+			break
+		}
+	}
 	select {
 	case s.spoolCh <- body:
 	default:
-		s.logger.Warn("hook spool queue full; payload not written to audit spool",
-			"bytes", len(body))
+		// Slot cap hit despite the byte budget (many tiny bodies): release the
+		// reservation and drop.
+		s.queuedSpoolBytes.Add(-bodyLen)
+		s.dropSpool(bodyLen, s.queuedSpoolBytes.Load())
 	}
+}
+
+func (s *Server) dropSpool(bodyLen, queued int64) {
+	s.spoolDroppedTotal.Add(1)
+	s.spoolDroppedBytes.Add(uint64(bodyLen))
+	s.logger.Warn("hook spool queue full; payload not written to audit spool",
+		"bytes", bodyLen, "queued", queued, "budget", spoolBudgetBytes)
 }
 
 // stopSpooler closes spoolCh and waits for runSpoolWriter to drain. Idempotent

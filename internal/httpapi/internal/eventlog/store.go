@@ -32,6 +32,17 @@ type Store interface {
 	MinID(ctx context.Context) (uint64, error)
 	ReplayRange(ctx context.Context, after, until uint64, limit int) ([]Event, error)
 	Prune(ctx context.Context, before time.Time, keepN int) (int, error)
+	// SaveLiveSnapshot atomically replaces the live-session snapshot: a generic
+	// key→blob set plus a watermark (the event id up to which the snapshot is
+	// current). The store does not interpret the keys or blobs — the caller owns
+	// their meaning (session key → serialized live state). Written on clean
+	// shutdown so a restart can seed live state in O(entries) instead of rescanning
+	// the recent event window.
+	SaveLiveSnapshot(ctx context.Context, watermark uint64, entries map[string][]byte) error
+	// LoadLiveSnapshot returns the saved snapshot. entries is nil when no snapshot
+	// exists (first run, or only a crash since the last clean shutdown), signalling
+	// the caller to fall back to a full recent-window replay.
+	LoadLiveSnapshot(ctx context.Context) (watermark uint64, entries map[string][]byte, err error)
 	Close() error
 }
 

@@ -108,19 +108,22 @@ func (s *Service) Run(ctx context.Context) error {
 	defer debounceTimer.Stop()
 	debounceActive := false
 
-	// pendingFiles is a set so dedup within a debounce window is O(1) per add
-	// instead of an O(n) slices.Contains scan on the run-loop goroutine.
+	// pendingFiles coalesces fsnotify events within the current debounce window.
+	// dirtyFiles persists paths across queue-full episodes; both maps are owned
+	// solely by this run-loop goroutine (no lock — single-threaded). On flush,
+	// pendingFiles merges into dirtyFiles and we try to hand the coalesced set to
+	// the worker; if ingestCh is full the paths stay in dirtyFiles and are retried
+	// (the debounce case re-arms the timer), so an automatic file job is never
+	// silently dropped.
 	pendingFiles := map[string]struct{}{}
+	dirtyFiles := map[string]struct{}{}
 	flushPendingFiles := func(reason string) {
-		// slices.Sorted already returns the keys in sorted order, giving a stable
-		// ingest order despite unordered map iteration.
-		files := slices.Sorted(maps.Keys(pendingFiles))
-		clear(pendingFiles)
-		s.setPendingFiles(0)
-		if len(files) == 0 {
-			return
+		for f := range pendingFiles {
+			dirtyFiles[f] = struct{}{}
 		}
-		s.enqueueAuto(ingestJob{mode: "file", paths: files, reason: reason})
+		clear(pendingFiles)
+		s.enqueueFileRetry(dirtyFiles, reason)
+		s.setPendingFiles(len(dirtyFiles))
 	}
 	for {
 		select {
@@ -178,7 +181,7 @@ func (s *Service) Run(ctx context.Context) error {
 				if len(pendingFiles) > before {
 					s.emit(liveEventForActivity(s.providerForPath(event.Name), event.Name))
 				}
-				s.setPendingFiles(len(pendingFiles))
+				s.setPendingFiles(len(pendingFiles) + len(dirtyFiles))
 				if debounceActive {
 					if !debounceTimer.Stop() {
 
@@ -203,6 +206,12 @@ func (s *Service) Run(ctx context.Context) error {
 			}
 			debounceActive = false
 			flushPendingFiles("watch")
+			// If ingestCh was full, dirtyFiles still holds the paths; re-arm the
+			// debounce timer to retry rather than wait for the next fsnotify event.
+			if len(dirtyFiles) > 0 {
+				debounceTimer.Reset(s.cfg.debounce())
+				debounceActive = true
+			}
 		case <-ticker.C:
 			// Periodic full reconcile: a safety net for fsnotify events missed or
 			// coalesced (the watch case above handles the common path). Runs at
@@ -268,8 +277,29 @@ func (s *Service) enqueueAuto(job ingestJob) {
 	select {
 	case s.ingestCh <- job:
 	default:
+		s.ingestAutoDropped.Add(1)
 		s.cfg.logger().Warn("ingest queue full; dropping automatic job",
 			"mode", job.mode, "source", job.source, "paths", job.paths)
+	}
+}
+
+// enqueueFileRetry hands the coalesced dirty set to the worker as one file job.
+// On success it clears the set; if ingestCh is full the paths stay in dirty for
+// the next flush, so an automatic file job is never silently dropped. dirty is
+// owned solely by the run loop and the send copies a sorted slice, so clearing
+// the map never races the queued job. Ingest is idempotent (content-hashed ids),
+// so a path re-queued after a queue-full episode reingests without duplicates.
+func (s *Service) enqueueFileRetry(dirty map[string]struct{}, reason string) {
+	if len(dirty) == 0 {
+		return
+	}
+	files := slices.Sorted(maps.Keys(dirty))
+	select {
+	case s.ingestCh <- ingestJob{mode: "file", paths: files, reason: reason}:
+		clear(dirty)
+	default:
+		s.cfg.logger().Warn("ingest queue full; retaining file job in dirty set",
+			"reason", reason, "files", len(files))
 	}
 }
 
@@ -398,6 +428,7 @@ func (s *Service) emit(ev liveevent.Event) {
 	select {
 	case s.emitCh <- ev:
 	default:
+		s.emitDropped.Add(1)
 		s.cfg.logger().Warn("emit channel full; dropping live event", "type", ev.Type)
 	}
 }

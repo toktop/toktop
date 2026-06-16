@@ -23,6 +23,29 @@ const recentLiveEventScan = 10000
 
 type LiveEvent = liveevent.Event
 
+// saveLiveSnapshot serializes the in-memory liveSessions into the event log's
+// snapshot bucket, watermarked at the durable floor. Called on clean shutdown
+// (Close, when started) so the next start can seed live state in O(sessions)
+// instead of rescanning recentLiveEventScan events.
+func (s *Server) saveLiveSnapshot() {
+	s.liveMu.Lock()
+	entries := make(map[string][]byte, len(s.liveSessions))
+	for key, ev := range s.liveSessions {
+		raw, err := json.Marshal(ev)
+		if err != nil {
+			s.logger.Warn("marshal live snapshot entry failed", "key", key, "err", err)
+			continue
+		}
+		entries[key] = raw
+	}
+	s.liveMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.eventStore.SaveLiveSnapshot(ctx, s.durableID.Load(), entries); err != nil {
+		s.logger.Warn("save live snapshot failed", "err", err)
+	}
+}
+
 func (s *Server) loadLiveState(ctx context.Context) error {
 	lastID, err := s.eventStore.LastID(ctx)
 	if err != nil {
@@ -31,9 +54,32 @@ func (s *Server) loadLiveState(ctx context.Context) error {
 	if lastID == 0 {
 		return nil
 	}
+	// Seed from the clean-shutdown snapshot when present: O(sessions) instead of
+	// folding recentLiveEventScan events. Then replay only events after its
+	// watermark. A stale snapshot (crash since the last clean shutdown) is still
+	// correct — the tail replay re-folds newer events on top — but the tail is
+	// capped at recentLiveEventScan below so it never exceeds the legacy window.
+	watermark, entries, err := s.eventStore.LoadLiveSnapshot(ctx)
+	if err != nil {
+		return err
+	}
 	var after uint64
+	if entries != nil {
+		s.liveMu.Lock()
+		for key, raw := range entries {
+			var live LiveEvent
+			if err := json.Unmarshal(raw, &live); err != nil {
+				s.logger.Warn("unmarshal live snapshot entry failed", "key", key, "err", err)
+				continue
+			}
+			s.liveSessions[key] = live
+		}
+		s.liveSnapshotDirty = true
+		s.liveMu.Unlock()
+		after = watermark
+	}
 	if lastID > recentLiveEventScan {
-		after = lastID - recentLiveEventScan
+		after = max(after, lastID-recentLiveEventScan)
 	}
 	for {
 		batch, err := s.eventStore.ReplayRange(ctx, after, lastID, eventlog.DefaultReplayBatchSize)
@@ -59,6 +105,7 @@ func (s *Server) loadLiveState(ctx context.Context) error {
 				continue
 			}
 			s.liveSessions[key] = live
+			s.liveSnapshotDirty = true
 		}
 		s.liveMu.Unlock()
 		after = batch[len(batch)-1].ID
@@ -86,6 +133,9 @@ func (s *Server) pruneLiveSessions() int {
 			delete(s.liveSessions, key)
 			evicted++
 		}
+	}
+	if evicted > 0 {
+		s.liveSnapshotDirty = true
 	}
 	return evicted
 }
@@ -195,6 +245,7 @@ func (s *Server) Emit(ctx context.Context, ev LiveEvent) (LiveEvent, error) {
 		s.liveMu.Lock()
 		if prev, ok := s.liveSessions[key]; !ok || liveEventSupersedes(ev, id, prev) {
 			s.liveSessions[key] = ev
+			s.liveSnapshotDirty = true
 		}
 		s.liveMu.Unlock()
 	} else {
@@ -267,14 +318,24 @@ func liveEventKey(ev LiveEvent) string {
 	return source + "\x00" + id
 }
 
-func (s *Server) overlayLiveSessions(items []sqlite.LiveSessionItem, filter sqlite.Filter, allowLiveOverflow bool) []sqlite.LiveSessionItem {
-	s.liveMu.Lock()
+// liveSessionSnapshot is an immutable, read-optimized index over liveSessions:
+// the materialized state slice plus the by-id lookup maps overlayLiveSessions
+// needs. Rebuilt under liveMu (rebuildLiveSnapshotLocked) only when a mutation has
+// marked it dirty, then read lock-free.
+type liveSessionSnapshot struct {
+	states     []LiveEvent
+	bySession  map[string][]int
+	byExternal map[string][]int
+	byPath     map[string][]int
+}
+
+// rebuildLiveSnapshotLocked materializes a fresh snapshot from liveSessions and
+// clears the dirty flag. Callers hold liveMu.
+func (s *Server) rebuildLiveSnapshotLocked() {
 	states := make([]LiveEvent, 0, len(s.liveSessions))
 	for _, state := range s.liveSessions {
 		states = append(states, state)
 	}
-	s.liveMu.Unlock()
-
 	bySession := make(map[string][]int, len(states))
 	byExternal := make(map[string][]int, len(states))
 	byPath := make(map[string][]int, len(states))
@@ -292,6 +353,28 @@ func (s *Server) overlayLiveSessions(items []sqlite.LiveSessionItem, filter sqli
 			byPath[state.File] = append(byPath[state.File], i)
 		}
 	}
+	s.liveSnapshot = &liveSessionSnapshot{states: states, bySession: bySession, byExternal: byExternal, byPath: byPath}
+	s.liveSnapshotDirty = false
+}
+
+// liveSnapshotForRead returns the current snapshot, rebuilding it under liveMu
+// when a mutation has marked it dirty (or it has never been built). The result is
+// immutable, so the caller uses it without holding liveMu.
+func (s *Server) liveSnapshotForRead() *liveSessionSnapshot {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	if s.liveSnapshot == nil || s.liveSnapshotDirty {
+		s.rebuildLiveSnapshotLocked()
+	}
+	return s.liveSnapshot
+}
+
+func (s *Server) overlayLiveSessions(items []sqlite.LiveSessionItem, filter sqlite.Filter, allowLiveOverflow bool) []sqlite.LiveSessionItem {
+	snap := s.liveSnapshotForRead()
+	states := snap.states
+	bySession := snap.bySession
+	byExternal := snap.byExternal
+	byPath := snap.byPath
 
 	used := make([]bool, len(states))
 	sourceMatches := func(state LiveEvent, item sqlite.LiveSessionItem) bool {

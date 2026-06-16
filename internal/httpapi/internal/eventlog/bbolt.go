@@ -12,9 +12,18 @@ import (
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+	bolterr "go.etcd.io/bbolt/errors"
 )
 
 var eventsBucket = []byte("events")
+
+// liveSnapshotBucket holds the clean-shutdown live-session snapshot (key→blob);
+// liveSnapshotMetaBucket holds its watermark under watermarkKey.
+var (
+	liveSnapshotBucket     = []byte("live_snapshot")
+	liveSnapshotMetaBucket = []byte("live_snapshot_meta")
+	watermarkKey           = []byte("watermark")
+)
 
 type BoltStore struct {
 	db *bolt.DB
@@ -285,6 +294,74 @@ func (s *BoltStore) Prune(ctx context.Context, before time.Time, keepN int) (int
 		return 0, fmt.Errorf("prune events: %w", err)
 	}
 	return deleted, nil
+}
+
+func (s *BoltStore) SaveLiveSnapshot(ctx context.Context, watermark uint64, entries map[string][]byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Replace the entry bucket wholesale so a shrunk live set (sessions evicted
+		// by retention since the last snapshot) never leaves stale keys behind.
+		if err := tx.DeleteBucket(liveSnapshotBucket); err != nil && !errors.Is(err, bolterr.ErrBucketNotFound) {
+			return fmt.Errorf("reset live snapshot bucket: %w", err)
+		}
+		bucket, err := tx.CreateBucket(liveSnapshotBucket)
+		if err != nil {
+			return fmt.Errorf("create live snapshot bucket: %w", err)
+		}
+		for key, value := range entries {
+			if err := bucket.Put([]byte(key), value); err != nil {
+				return fmt.Errorf("write live snapshot entry: %w", err)
+			}
+		}
+		meta, err := tx.CreateBucketIfNotExists(liveSnapshotMetaBucket)
+		if err != nil {
+			return fmt.Errorf("create live snapshot meta bucket: %w", err)
+		}
+		return meta.Put(watermarkKey, eventKey(watermark))
+	})
+}
+
+func (s *BoltStore) LoadLiveSnapshot(ctx context.Context) (uint64, map[string][]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, nil, err
+	}
+	var (
+		watermark uint64
+		entries   map[string][]byte
+	)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		meta := tx.Bucket(liveSnapshotMetaBucket)
+		if meta == nil {
+			return nil // no snapshot ever saved
+		}
+		wm := meta.Get(watermarkKey)
+		if wm == nil {
+			return nil
+		}
+		watermark = eventID(wm)
+		bucket := tx.Bucket(liveSnapshotBucket)
+		if bucket == nil {
+			entries = map[string][]byte{}
+			return nil
+		}
+		entries = make(map[string][]byte, bucket.Stats().KeyN)
+		return bucket.ForEach(func(k, v []byte) error {
+			entries[string(k)] = bytes.Clone(v)
+			return nil
+		})
+	})
+	if err != nil {
+		return 0, nil, fmt.Errorf("load live snapshot: %w", err)
+	}
+	return watermark, entries, nil
 }
 
 func (s *BoltStore) Close() error {
