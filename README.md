@@ -280,7 +280,7 @@ transition.
 ```bash
 toktop daemon serve     # foreground: watch transcripts + serve HTTP/SSE + live broker
 toktop daemon run       # foreground: watch transcripts only (no HTTP/SSE live broker)
-toktop daemon status    # is it running? what is it watching?
+toktop daemon status    # is it running? what is it watching? is it keeping up (backpressure)?
 toktop daemon pause | resume | trigger | stop
 ```
 
