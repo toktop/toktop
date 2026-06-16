@@ -118,9 +118,7 @@ func (s *Service) Run(ctx context.Context) error {
 	pendingFiles := map[string]struct{}{}
 	dirtyFiles := map[string]struct{}{}
 	flushPendingFiles := func(reason string) {
-		for f := range pendingFiles {
-			dirtyFiles[f] = struct{}{}
-		}
+		maps.Copy(dirtyFiles, pendingFiles)
 		clear(pendingFiles)
 		s.enqueueFileRetry(dirtyFiles, reason)
 		s.setPendingFiles(len(dirtyFiles))

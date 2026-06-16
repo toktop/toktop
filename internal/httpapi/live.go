@@ -68,7 +68,6 @@ func (s *Server) loadLiveState(ctx context.Context) error {
 	}
 	var after uint64
 	if entries != nil {
-		loaded := 0
 		s.liveMu.Lock()
 		for key, raw := range entries {
 			var live LiveEvent
@@ -77,14 +76,12 @@ func (s *Server) loadLiveState(ctx context.Context) error {
 				continue
 			}
 			s.liveSessions[key] = live
-			loaded++
-		}
-		if loaded > 0 {
-			s.liveSnapshotDirty = true
 		}
 		s.liveMu.Unlock()
 		after = watermark
 	}
+	// liveSnapshot stays nil through startup, so the first overlay read rebuilds
+	// it — no explicit invalidation needed here.
 	if lastID > recentLiveEventScan {
 		after = max(after, lastID-recentLiveEventScan)
 	}
@@ -112,7 +109,6 @@ func (s *Server) loadLiveState(ctx context.Context) error {
 				continue
 			}
 			s.liveSessions[key] = live
-			s.liveSnapshotDirty = true
 		}
 		s.liveMu.Unlock()
 		after = batch[len(batch)-1].ID
@@ -142,7 +138,7 @@ func (s *Server) pruneLiveSessions() int {
 		}
 	}
 	if evicted > 0 {
-		s.liveSnapshotDirty = true
+		s.liveSnapshot = nil // invalidate; next overlay read rebuilds
 	}
 	return evicted
 }
@@ -252,7 +248,7 @@ func (s *Server) Emit(ctx context.Context, ev LiveEvent) (LiveEvent, error) {
 		s.liveMu.Lock()
 		if prev, ok := s.liveSessions[key]; !ok || liveEventSupersedes(ev, id, prev) {
 			s.liveSessions[key] = ev
-			s.liveSnapshotDirty = true
+			s.liveSnapshot = nil // invalidate; next overlay read rebuilds
 		}
 		s.liveMu.Unlock()
 	} else {
@@ -327,8 +323,8 @@ func liveEventKey(ev LiveEvent) string {
 
 // liveSessionSnapshot is an immutable, read-optimized index over liveSessions:
 // the materialized state slice plus the by-id lookup maps overlayLiveSessions
-// needs. Rebuilt under liveMu (rebuildLiveSnapshotLocked) only when a mutation has
-// marked it dirty, then read lock-free.
+// needs. Rebuilt under liveMu (rebuildLiveSnapshotLocked) when a mutation has
+// invalidated it (set the pointer back to nil), then read lock-free.
 type liveSessionSnapshot struct {
 	states     []LiveEvent
 	bySession  map[string][]int
@@ -336,8 +332,8 @@ type liveSessionSnapshot struct {
 	byPath     map[string][]int
 }
 
-// rebuildLiveSnapshotLocked materializes a fresh snapshot from liveSessions and
-// clears the dirty flag. Callers hold liveMu.
+// rebuildLiveSnapshotLocked materializes a fresh snapshot from liveSessions.
+// Callers hold liveMu.
 func (s *Server) rebuildLiveSnapshotLocked() {
 	states := make([]LiveEvent, 0, len(s.liveSessions))
 	for _, state := range s.liveSessions {
@@ -361,16 +357,15 @@ func (s *Server) rebuildLiveSnapshotLocked() {
 		}
 	}
 	s.liveSnapshot = &liveSessionSnapshot{states: states, bySession: bySession, byExternal: byExternal, byPath: byPath}
-	s.liveSnapshotDirty = false
 }
 
 // liveSnapshotForRead returns the current snapshot, rebuilding it under liveMu
-// when a mutation has marked it dirty (or it has never been built). The result is
-// immutable, so the caller uses it without holding liveMu.
+// when a mutation has invalidated it (nil) or it has never been built. The result
+// is immutable, so the caller uses it without holding liveMu.
 func (s *Server) liveSnapshotForRead() *liveSessionSnapshot {
 	s.liveMu.Lock()
 	defer s.liveMu.Unlock()
-	if s.liveSnapshot == nil || s.liveSnapshotDirty {
+	if s.liveSnapshot == nil {
 		s.rebuildLiveSnapshotLocked()
 	}
 	return s.liveSnapshot

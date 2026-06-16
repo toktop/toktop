@@ -84,14 +84,12 @@ type Server struct {
 	liveMu       sync.Mutex
 	liveSessions map[string]LiveEvent
 	// liveSnapshot is an immutable, read-optimized index over liveSessions. It is
-	// rebuilt lazily: a mutation under liveMu only flips liveSnapshotDirty (O(1),
-	// keeping the emit hot path cheap), and overlayLiveSessions rebuilds it at most
-	// once per request when dirty — coalescing a burst of emits into one rebuild and
-	// skipping it entirely for idle reads. Once built it is never mutated in place,
-	// so overlay can use it lock-free after releasing liveMu. Both fields are guarded
-	// by liveMu.
-	liveSnapshot      *liveSessionSnapshot
-	liveSnapshotDirty bool
+	// rebuilt lazily: a mutation under liveMu sets it back to nil (O(1), keeping the
+	// emit hot path cheap), and overlayLiveSessions rebuilds it on the next read —
+	// coalescing a burst of emits into one rebuild and skipping it for idle reads.
+	// Once built it is never mutated in place, so overlay can use it lock-free after
+	// releasing liveMu. Guarded by liveMu.
+	liveSnapshot *liveSessionSnapshot
 
 	runtime atomic.Pointer[runtime.Service]
 
