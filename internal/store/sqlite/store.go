@@ -78,7 +78,14 @@ const dbFileName = "toktop.db"
 // trigger/FK fingerprint diff), but folding deletes the goose history those
 // versions recorded, so an existing epoch-14 db is wiped and rebuilt from the
 // transcripts to converge its goose_db_version onto the new single baseline.
-const schemaUserVersion = 15
+// Epoch 16: sessions.title added to the baseline (claude-code custom/ai-title from
+// the transcript; codex thread_name from the out-of-band session_index.jsonl). Old
+// rows lack the column's data, so an existing db is wiped and rebuilt.
+// Epoch 17: codex projection semantics changed — a failed apply_patch (custom_tool_call)
+// now projects to failed instead of success (its failure text carries no shell exit
+// code), so a turn containing one re-derives accordingly. Old rows carry the stale
+// success status, so an existing db is wiped and rebuilt from the transcripts.
+const schemaUserVersion = 17
 
 var writerCacheKiB, readerCacheKiB, sqliteMmapBytes = memoryBudget(memory.TotalMemory())
 

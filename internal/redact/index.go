@@ -25,7 +25,29 @@ func (p Policy) ApplyToIndex(ctx context.Context, idx *trace.Index) error {
 	}); err != nil {
 		return fmt.Errorf("redact turns: %w", err)
 	}
+	// Session titles are persisted-as-served (sessions.title, /v1/sessions, CLI) just
+	// like turn text: a claude-code ai-title is model-generated FROM the conversation
+	// and a custom-title / codex thread_name is user-authored, so a secret can land in
+	// one. Redact both the parser-projected Title and the out-of-band SessionTitles
+	// overlay (codex).
+	for i := range idx.Sessions {
+		idx.Sessions[i].Title = applyKeepEmpty(idx.Sessions[i].Title)
+	}
+	p.ApplyToTitleMap(idx.SessionTitles)
 	return nil
+}
+
+// ApplyToTitleMap redacts the out-of-band session-title overlay in place. Exposed
+// separately so the codex live / trailing title rounds — which sink a title-only
+// Index without going through ApplyToIndex's turn pass — can redact titles without
+// re-redacting already-redacted turns.
+func (p Policy) ApplyToTitleMap(titles map[string]string) {
+	if !p.Enabled {
+		return
+	}
+	for id, title := range titles {
+		titles[id] = applyKeepEmpty(title)
+	}
 }
 
 // redactTurn rewrites the projected text fields in place so the values that are

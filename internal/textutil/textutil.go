@@ -45,6 +45,20 @@ func SplitTrim(value string) []string {
 	return out
 }
 
+// CollapseSpaces replaces every run of whitespace (spaces, tabs, newlines) with a
+// single space and trims the ends — the leading half of OneLine, exposed for callers
+// that need to post-process the collapsed text before truncating.
+func CollapseSpaces(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// OneLine collapses whitespace (CollapseSpaces) and truncates to n runes (Truncate):
+// the one-line normalization shared by CLI list/detail rendering, handoff evidence,
+// and the codex title cleaner.
+func OneLine(s string, n int) string {
+	return Truncate(CollapseSpaces(s), n)
+}
+
 func Truncate(s string, n int) string {
 	runes := []rune(s)
 	if n <= 0 || len(runes) <= n {

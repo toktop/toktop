@@ -227,63 +227,93 @@ func (b *turnBuilder) handleResponseItem(raw json.RawMessage, when time.Time, ra
 			b.turn.Invocations = append(b.turn.Invocations, invocation)
 		}
 	case "function_call":
-		rawEventID := trace.RawEventID(b.sourceRootID, rawEvent.SourceFile, rawEvent.LineNo, rawEvent.Hash())
-		callIndex := len(b.turn.ToolCalls) + 1
-		toolCall := trace.ToolCall{
-			ID:            trace.ToolCallID(b.turn.ID, payload.CallID, callIndex),
-			TurnID:        b.turn.ID,
-			CallIndex:     callIndex,
-			Kind:          shared.ClassifyToolKind(payload.Name),
-			Name:          payload.Name,
-			UseID:         payload.CallID,
-			Input:         argumentText(payload.Arguments),
-			Status:        trace.StatusPending,
-			StartedAt:     when,
-			RawUseEventID: rawEventID,
-		}
-		if toolCall.Kind == trace.ToolKindMCP {
-			toolCall.MCPServer, toolCall.MCPTool = shared.SplitMCPName(toolCall.Name)
-		}
-		if payload.CallID != "" {
-			b.toolByCallID[payload.CallID] = len(b.turn.ToolCalls)
-		}
-		b.turn.ToolCalls = append(b.turn.ToolCalls, toolCall)
-		if len(b.turn.Invocations) > 0 {
-			b.turn.ToolCalls[len(b.turn.ToolCalls)-1].InvocationID = b.turn.Invocations[len(b.turn.Invocations)-1].ID
-		}
-	case "function_call_output":
-		idx, ok := b.toolByCallID[payload.CallID]
-		if !ok || idx < 0 || idx >= len(b.turn.ToolCalls) {
-			return []trace.ParseError{b.unmatchedToolOutputError(rawEvent, payload.CallID)}
-		}
-		// A duplicate function_call_output for an already-resolved call must not
-		// clobber the recorded output/status; only a still-pending call accepts one.
-		if b.turn.ToolCalls[idx].Status != trace.StatusPending {
-			return []trace.ParseError{b.duplicateToolOutputError(rawEvent, payload.CallID)}
-		}
-		call := &b.turn.ToolCalls[idx]
-		output := outputText(payload.Output)
-		call.Output = output
-		call.OutputBytes = int64(len(output))
-		call.EndedAt = when
-		call.RawResultEventID = trace.RawEventID(b.sourceRootID, rawEvent.SourceFile, rawEvent.LineNo, rawEvent.Hash())
-		if !call.StartedAt.IsZero() && when.After(call.StartedAt) {
-			call.DurationMs = when.Sub(call.StartedAt).Milliseconds()
-		}
-		if failure := outputFailure(output); failure != "" {
-			call.Status = trace.StatusFailed
-			call.Error = failure
-		} else if call.Name == "spawn_agent" && spawnAgentID(output) == "" {
-			// A spawn_agent that returned no agent_id never launched an agent (e.g.
-			// "Full-history forked agents inherit…"). outputFailure only sees shell
-			// exit codes, so without this it would be mis-counted as a completed agent
-			// run in the handoff. (Mirrors collector/codex's AgentSpawnChildID — both
-			// are codex-local knowledge of the {agent_id} success shape.)
-			call.Status = trace.StatusFailed
-			call.Error = "spawn_agent returned no agent_id"
-		} else {
-			call.Status = trace.StatusSuccess
-		}
+		b.recordToolCall(payload.Name, payload.CallID, argumentText(payload.Arguments), payload.Namespace, when, rawEvent)
+	case "custom_tool_call":
+		// Codex's apply_patch (and other custom tools) arrive as custom_tool_call,
+		// not function_call — the call args live under "input", and it carries no
+		// namespace. Recording it mirrors the function_call path so file edits and
+		// the tool-call count are not silently dropped.
+		b.recordToolCall(payload.Name, payload.CallID, argumentText(payload.Input), "", when, rawEvent)
+	case "function_call_output", "custom_tool_call_output":
+		return b.recordToolOutput(payload.CallID, payload.Output, when, rawEvent)
+	}
+	return nil
+}
+
+// recordToolCall appends a pending ToolCall for a function_call / custom_tool_call.
+// namespace is codex's MCP routing prefix (e.g. "mcp__node_repl__") carried apart
+// from the bare name ("js"), unlike claude-code which puts mcp__server__tool in the
+// name itself; when present it is folded back into the canonical mcp__server__tool
+// form — used for classification/splitting AND stored as ToolCall.Name, so the same
+// logical MCP tool has an identical neutral name across providers (parity). It is ""
+// for custom tools, leaving their bare name unchanged.
+func (b *turnBuilder) recordToolCall(name, callID, input, namespace string, when time.Time, rawEvent source.RawEvent) {
+	rawEventID := trace.RawEventID(b.sourceRootID, rawEvent.SourceFile, rawEvent.LineNo, rawEvent.Hash())
+	callIndex := len(b.turn.ToolCalls) + 1
+	classifyName := name
+	if ns := strings.TrimSuffix(namespace, "__"); strings.HasPrefix(ns, "mcp__") {
+		classifyName = ns + "__" + name
+	}
+	kind := shared.ClassifyToolKind(classifyName)
+	toolCall := trace.ToolCall{
+		ID:            trace.ToolCallID(b.turn.ID, callID, callIndex),
+		TurnID:        b.turn.ID,
+		CallIndex:     callIndex,
+		Kind:          kind,
+		Name:          classifyName,
+		UseID:         callID,
+		Input:         input,
+		Status:        trace.StatusPending,
+		StartedAt:     when,
+		RawUseEventID: rawEventID,
+	}
+	if kind == trace.ToolKindMCP {
+		toolCall.MCPServer, toolCall.MCPTool = shared.SplitMCPName(classifyName)
+	}
+	if callID != "" {
+		b.toolByCallID[callID] = len(b.turn.ToolCalls)
+	}
+	b.turn.ToolCalls = append(b.turn.ToolCalls, toolCall)
+	if len(b.turn.Invocations) > 0 {
+		b.turn.ToolCalls[len(b.turn.ToolCalls)-1].InvocationID = b.turn.Invocations[len(b.turn.Invocations)-1].ID
+	}
+}
+
+// recordToolOutput resolves a pending tool call by call_id with a
+// function_call_output / custom_tool_call_output payload, setting output, timing
+// and success/failure. Returns a parse error for an unmatched or duplicate output.
+func (b *turnBuilder) recordToolOutput(callID string, rawOutput json.RawMessage, when time.Time, rawEvent source.RawEvent) []trace.ParseError {
+	idx, ok := b.toolByCallID[callID]
+	if !ok || idx < 0 || idx >= len(b.turn.ToolCalls) {
+		return []trace.ParseError{b.unmatchedToolOutputError(rawEvent, callID)}
+	}
+	// A duplicate output for an already-resolved call must not clobber the recorded
+	// output/status; only a still-pending call accepts one.
+	if b.turn.ToolCalls[idx].Status != trace.StatusPending {
+		return []trace.ParseError{b.duplicateToolOutputError(rawEvent, callID)}
+	}
+	call := &b.turn.ToolCalls[idx]
+	output := outputText(rawOutput)
+	call.Output = output
+	call.OutputBytes = int64(len(output))
+	call.EndedAt = when
+	call.RawResultEventID = trace.RawEventID(b.sourceRootID, rawEvent.SourceFile, rawEvent.LineNo, rawEvent.Hash())
+	if !call.StartedAt.IsZero() && when.After(call.StartedAt) {
+		call.DurationMs = when.Sub(call.StartedAt).Milliseconds()
+	}
+	if failure := outputFailure(call.Name, output); failure != "" {
+		call.Status = trace.StatusFailed
+		call.Error = failure
+	} else if call.Name == "spawn_agent" && spawnAgentID(output) == "" {
+		// A spawn_agent that returned no agent_id never launched an agent (e.g.
+		// "Full-history forked agents inherit…"). outputFailure only sees shell
+		// exit codes, so without this it would be mis-counted as a completed agent
+		// run in the handoff. (Mirrors collector/codex's AgentSpawnChildID — both
+		// are codex-local knowledge of the {agent_id} success shape.)
+		call.Status = trace.StatusFailed
+		call.Error = "spawn_agent returned no agent_id"
+	} else {
+		call.Status = trace.StatusSuccess
 	}
 	return nil
 }
@@ -312,16 +342,16 @@ func (b *turnBuilder) parseError(rawEvent source.RawEvent, message string) trace
 
 func (b *turnBuilder) unmatchedToolOutputError(rawEvent source.RawEvent, callID string) trace.ParseError {
 	if callID == "" {
-		return b.parseError(rawEvent, "unmatched function_call_output without call_id")
+		return b.parseError(rawEvent, "unmatched tool output without call_id")
 	}
-	return b.parseError(rawEvent, "unmatched function_call_output")
+	return b.parseError(rawEvent, "unmatched tool output")
 }
 
 func (b *turnBuilder) duplicateToolOutputError(rawEvent source.RawEvent, callID string) trace.ParseError {
 	if callID == "" {
-		return b.parseError(rawEvent, "duplicate function_call_output without call_id")
+		return b.parseError(rawEvent, "duplicate tool output without call_id")
 	}
-	return b.parseError(rawEvent, "duplicate function_call_output")
+	return b.parseError(rawEvent, "duplicate tool output")
 }
 
 func (b *turnBuilder) applyEventMessage(payload eventPayload) {
@@ -360,6 +390,16 @@ func (b *turnBuilder) applyEventMessage(payload eventPayload) {
 		if b.turn.Status == trace.StatusUnknown {
 			b.turn.Status = trace.StatusSuccess
 		}
+	case "turn_aborted":
+		// Mark the aborted TURN interrupted so it does not masquerade as success in
+		// the turns/digest views; shared.ResolveTurnStatus keeps this explicit status
+		// over the derivation in finish(). The codex SESSION status is still forced to
+		// completed (see ParseEvents below), so session-status consumers are unaffected
+		// — but a session ENDING on an aborted turn does surface as interrupted wherever
+		// the LAST-turn status leads (the live/status listing's current-status and the
+		// handoff workflow_status both read the final turn), which is the intended,
+		// more-accurate signal.
+		b.turn.Status = trace.StatusInterrupted
 	}
 }
 
@@ -384,9 +424,7 @@ func (b *turnBuilder) finish() trace.Turn {
 	// are not dropped from the turn and session totals.
 	turn.Tokens.Add(b.pendingTokens)
 
-	if derived := shared.StatusForTurn(turn); turn.Status == trace.StatusUnknown || derived == trace.StatusFailed {
-		turn.Status = derived
-	}
+	turn.Status = shared.ResolveTurnStatus(turn)
 	turn.Components = components.FromTools(turn.ID, turn.ToolCalls)
 	return turn
 }
@@ -444,8 +482,13 @@ type responsePayload struct {
 	Role      string          `json:"role"`
 	Content   json.RawMessage `json:"content"`
 	Name      string          `json:"name"`
+	// Namespace is codex's MCP routing prefix on a function_call (e.g.
+	// "mcp__node_repl__"); the call's Name is the bare tool ("js").
+	Namespace string          `json:"namespace"`
 	CallID    string          `json:"call_id"`
 	Arguments json.RawMessage `json:"arguments"`
+	// Input carries a custom_tool_call's arguments (function_call uses Arguments).
+	Input json.RawMessage `json:"input"`
 	// Output is decoded flexibly: real Codex rollouts emit it as a string, but
 	// multimodal results (e.g. view_image) emit a JSON array of content blocks.
 	// Keeping it raw avoids aborting the whole responsePayload unmarshal.
@@ -511,44 +554,76 @@ func outputText(raw json.RawMessage) string {
 	}
 }
 
-// outputFailure inspects tool output for an explicit failure signal. Codex
-// exec commands have no separate success flag; a non-zero exit is only visible
-// in the output text (e.g. "Process exited with code 1"). Returns an error
-// message when a failure is detected, otherwise "".
-func outputFailure(output string) string {
+// outputFailure inspects a tool's output for an explicit failure signal. Codex tools
+// carry no separate success flag, so a failure shows only in the output text, in one
+// of a few shapes: a shell exec reports "Process exited with code N", the custom-tool
+// runner reports "Exit code: N" (and, in an older rollout format, wraps the result as
+// a JSON object with metadata.exit_code), and apply_patch reports "apply_patch
+// verification failed: …" with no exit code at all. Returns a short failure message
+// when one is detected, otherwise "". A zero exit code is success, never flagged. name
+// scopes the exit-code-less apply_patch phrase to the apply_patch tool, so a different
+// tool whose output merely echoes that phrase (e.g. a grep/cat of a prior error) is
+// not mis-flagged.
+func outputFailure(name, output string) string {
+	if code, ok := metadataExitCode(output); ok && code != 0 {
+		return "exit code " + strconv.Itoa(code)
+	}
 	for line := range strings.SplitSeq(output, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if equalFoldPrefix(trimmed, "process exited with code ") ||
-			equalFoldPrefix(trimmed, "command exited with code ") {
-			if code, ok := exitCode(trimmed); ok && code != 0 {
-				return trimmed
-			}
+		if name == "apply_patch" && strings.HasPrefix(strings.ToLower(trimmed), "apply_patch verification failed") {
+			return trimmed
+		}
+		if code, ok := exitCodeLine(trimmed); ok && code != 0 {
+			return trimmed
 		}
 	}
 	return ""
 }
 
-func equalFoldPrefix(value, prefix string) bool {
-	return len(value) >= len(prefix) && strings.EqualFold(value[:len(prefix)], prefix)
-}
-
-// exitCode extracts the trailing integer exit code from a line like
-// "Process exited with code 1". Returns false when no integer code is present.
-func exitCode(line string) (int, bool) {
-	idx := strings.LastIndex(line, "code ")
-	if idx < 0 {
+// exitCodeLine extracts the exit code a single output line reports, matching codex's
+// two non-zero-is-failure shapes — the shell exec "process/command exited with code
+// N" and the custom-tool runner "Exit code: N" — and returns ok=false for any other
+// line, so unrelated text and a success "Exit code: 0" are left to the != 0 check.
+func exitCodeLine(line string) (int, bool) {
+	lower := strings.ToLower(line)
+	var rest string
+	switch {
+	case strings.HasPrefix(lower, "process exited with code "):
+		rest = line[len("process exited with code "):]
+	case strings.HasPrefix(lower, "command exited with code "):
+		rest = line[len("command exited with code "):]
+	case strings.HasPrefix(lower, "exit code:"):
+		rest = line[len("exit code:"):]
+	default:
 		return 0, false
 	}
-	rest := strings.TrimSpace(line[idx+len("code "):])
-	rest = strings.TrimRight(rest, ".")
-	if rest == "" {
-		return 0, false
-	}
+	rest = strings.TrimRight(strings.TrimSpace(rest), ".")
 	code, err := strconv.Atoi(rest)
 	if err != nil {
 		return 0, false
 	}
 	return code, true
+}
+
+// metadataExitCode reads the exit code from the older codex custom-tool output shape,
+// a JSON object {"output":…,"metadata":{"exit_code":N}}. ok is true only when output
+// parses as such an object carrying a numeric exit_code, so a plain-text output (the
+// current shape) or a missing field is left to the line scan. A pointer distinguishes
+// an absent exit_code from a real 0.
+func metadataExitCode(output string) (int, bool) {
+	s := strings.TrimSpace(output)
+	if !strings.HasPrefix(s, "{") {
+		return 0, false
+	}
+	var wrap struct {
+		Metadata struct {
+			ExitCode *int `json:"exit_code"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal([]byte(s), &wrap) != nil || wrap.Metadata.ExitCode == nil {
+		return 0, false
+	}
+	return *wrap.Metadata.ExitCode, true
 }
 
 // isInjectedContext reports whether a role==user message is injected turn

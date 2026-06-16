@@ -14,13 +14,10 @@ import (
 
 func printSessionDetail(stdout io.Writer, detail sessionDetail) {
 	session := detail.Session
-	externalID := session.ExternalID
-	if externalID == "" {
-		externalID = "-"
-	}
 	fmt.Fprintf(stdout, "Session %s\n", session.ID)
-	fmt.Fprintf(stdout, "External ID: %s\n", externalID)
+	fmt.Fprintf(stdout, "External ID: %s\n", emptyDash(session.ExternalID))
 	fmt.Fprintf(stdout, "Provider: %s\n", session.Provider)
+	fmt.Fprintf(stdout, "Title: %s\n", emptyDash(session.Title))
 	fmt.Fprintf(stdout, "Project: %s\n", session.ProjectName)
 	fmt.Fprintf(stdout, "Transcript: %s\n", session.TranscriptPath)
 	fmt.Fprintf(stdout, "Turns: %d\n", len(detail.Turns))

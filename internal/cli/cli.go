@@ -318,7 +318,7 @@ func boolDash(b bool) string {
 }
 
 func oneLine(value string, limit int) string {
-	return textutil.Truncate(strings.Join(strings.Fields(value), " "), limit)
+	return textutil.OneLine(value, limit)
 }
 
 func runInit(_ context.Context, args []string, stdout, stderr io.Writer) int {

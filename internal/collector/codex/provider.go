@@ -77,5 +77,10 @@ func (provider) IngestFile(ctx context.Context, roots []string, policy redact.Po
 	if err != nil {
 		return ingest.Result{}, true, err
 	}
+	// SaveSessionIngest delete+reinserts the session row with title=NULL (the codex
+	// parser never sets Title), but the store preserves an existing out-of-band title
+	// across that reinsert, so the live path need not re-read the whole
+	// session_index.jsonl on every rollout append (the hot path). A rename or a
+	// brand-new session's title is applied by the next full ingest's trailing round.
 	return res, true, nil
 }

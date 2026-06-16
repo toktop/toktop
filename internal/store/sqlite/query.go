@@ -279,6 +279,7 @@ func (s *Store) loadParseErrors(ctx context.Context, since time.Time) ([]trace.P
 
 const sessionsBaseQuery = `
 	SELECT sessions.id, sources.kind, COALESCE(sessions.external_session_id, ''),
+	       COALESCE(sessions.title, ''),
 	       COALESCE(sessions.project_id, ''),
 	       COALESCE(projects.name, ''), COALESCE(projects.path, ''),
 	       sessions.transcript_path,
@@ -328,6 +329,7 @@ func scanSessions(rows *sql.Rows) ([]trace.Session, error) {
 		var isSubagent int
 		if err := rows.Scan(
 			&session.ID, &session.Provider, &session.ExternalID,
+			&session.Title,
 			&session.ProjectID, &session.ProjectName, &session.ProjectPath,
 			&session.TranscriptPath,
 			&startedAt, &endedAt,

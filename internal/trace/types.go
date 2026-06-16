@@ -72,6 +72,13 @@ type Index struct {
 	MCPServers     []MCPServer     `json:"mcp_servers"`
 	ParseErrorList []ParseError    `json:"parse_errors"`
 
+	// SessionTitles maps a session's external id to a title carried OUT-OF-BAND from
+	// the transcript (codex stores the thread name in ~/.codex/session_index.jsonl,
+	// which a rename mutates without touching the rollout). Applied as an
+	// unconditional UPDATE on every ingest so renames surface without a transcript
+	// change; empty for providers whose title rides the transcript (claude-code).
+	SessionTitles map[string]string `json:"session_titles,omitzero"`
+
 	SessionCount    int `json:"session_count"`
 	TurnCount       int `json:"turn_count"`
 	InvocationCount int `json:"invocation_count"`
@@ -103,6 +110,10 @@ type Session struct {
 	ID             string    `json:"id"`
 	Provider       string    `json:"provider"`
 	ExternalID     string    `json:"external_id,omitzero"`
+	// Title is the session's display name: claude-code's custom-title (user-set)
+	// else ai-title (generated), read from the transcript; codex's thread_name from
+	// the out-of-band session_index.jsonl, applied via Index.SessionTitles.
+	Title          string    `json:"title,omitzero"`
 	ProjectID      string    `json:"project_id,omitzero"`
 	ProjectName    string    `json:"project_name,omitzero"`
 	ProjectPath    string    `json:"project_path,omitzero"`

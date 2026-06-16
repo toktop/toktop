@@ -10,6 +10,7 @@ import (
 	"toktop.unceas.dev/internal/parser/components"
 	"toktop.unceas.dev/internal/parser/shared"
 	"toktop.unceas.dev/internal/source"
+	"toktop.unceas.dev/internal/textutil"
 	"toktop.unceas.dev/internal/trace"
 )
 
@@ -64,6 +65,10 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events []source.Raw
 	// correlated by the launching tool_use id. Collected across the whole stream,
 	// then reconciled onto the launch in applyAsyncCompletions after flush().
 	completions := make(map[string]asyncCompletion)
+	// Session title accumulates across the stream: ai-title / custom-title events are
+	// re-appended on each change, so the last non-empty value wins (custom over ai).
+	// Applied to session.Title after the loop.
+	var aiTitle, customTitle string
 
 	flush := func() {
 		if current == nil {
@@ -104,6 +109,14 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events []source.Raw
 			completions[useID] = comp
 		}
 		switch event.Type {
+		case "ai-title":
+			if event.AITitle != "" {
+				aiTitle = event.AITitle
+			}
+		case "custom-title":
+			if event.CustomTitle != "" {
+				customTitle = event.CustomTitle
+			}
 		case "user":
 			// A canonical tool_result message carries only tool_result blocks and no
 			// human text. Attach any results to the current turn, then — should the
@@ -146,6 +159,14 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events []source.Raw
 	flush()
 
 	applyAsyncCompletions(turns, completions, sourceRootID)
+
+	// custom-title (user-set) wins over ai-title (generated); each holds the last
+	// non-empty value seen in the stream. Top-level only, mirroring codex's
+	// out-of-band titles — a subagent renders under its parent and never carries its
+	// own display title. TrimSpace guards against stray whitespace.
+	if !session.IsSubagent {
+		session.Title = strings.TrimSpace(textutil.FirstNonBlank(customTitle, aiTitle))
+	}
 
 	if session.Status == trace.StatusUnknown && len(turns) > 0 {
 		session.Status = trace.StatusCompleted
@@ -412,7 +433,7 @@ func (b *turnBuilder) finish() (trace.Turn, []trace.ParseError) {
 	}
 	turn.InvocationCount = len(turn.Invocations)
 	turn.ToolCallCount = len(turn.ToolCalls)
-	turn.Status = shared.StatusForTurn(turn)
+	turn.Status = shared.ResolveTurnStatus(turn)
 	turn.Components = components.FromTools(turn.ID, turn.ToolCalls)
 	return turn, parseErrors
 }
@@ -427,6 +448,11 @@ type envelope struct {
 	// enqueue), which has no nested message. User-injected events keep their text
 	// under Message instead.
 	Content json.RawMessage `json:"content"`
+	// AITitle / CustomTitle carry the session title: an ai-title event (generated)
+	// or a custom-title event (user-set via --name / rename). Both are re-appended
+	// to the transcript on change, so the last non-empty wins; custom > ai.
+	AITitle     string `json:"aiTitle"`
+	CustomTitle string `json:"customTitle"`
 }
 
 // topLevelText decodes a queue-operation event's top-level string content,
@@ -698,7 +724,7 @@ func applyAsyncCompletions(turns []trace.Turn, completions map[string]asyncCompl
 		}
 	}
 	for ti := range dirty {
-		turns[ti].Status = shared.StatusForTurn(turns[ti])
+		turns[ti].Status = shared.ResolveTurnStatus(turns[ti])
 	}
 }
 

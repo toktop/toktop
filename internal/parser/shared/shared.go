@@ -68,6 +68,25 @@ func StatusForTurn(turn trace.Turn) string {
 	return trace.StatusUnknown
 }
 
+// ResolveTurnStatus reconciles a turn's explicitly-set status with the status
+// derived from its tool calls and activity. A status StatusForTurn can never itself
+// produce — Interrupted or Active, set by a parser from an explicit abort or
+// async-launch signal — is authoritative and kept. Otherwise the derived status
+// applies, with a derived Failed always winning (a failed tool call fails the turn
+// even if it also produced an assistant message). This is the single "explicit
+// status wins over derived" rule shared by both provider parsers; do not reintroduce
+// a per-status guard at a call site.
+func ResolveTurnStatus(turn trace.Turn) string {
+	switch turn.Status {
+	case trace.StatusInterrupted, trace.StatusActive:
+		return turn.Status
+	}
+	if derived := StatusForTurn(turn); turn.Status == trace.StatusUnknown || derived == trace.StatusFailed {
+		return derived
+	}
+	return turn.Status
+}
+
 // FinalizeSession stamps the parent session id onto every turn and its
 // invocations and tool calls, stamps each turn's id onto its components, then
 // folds the turn's tool-call count and tokens into the session aggregates. Both

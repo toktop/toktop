@@ -35,7 +35,34 @@ func Ingest(ctx context.Context, roots []SourceRoot, redactPolicy redact.Policy,
 	metadata := func(fingerprints map[string]source.Fingerprint) (ingest.Result, bool, error) {
 		return codexMetadata(ctx, roots, fingerprints)
 	}
-	return driver.Stream(ctx, roots, redactPolicy, sessions, known, metadata, sink)
+	summary, err := driver.Stream(ctx, roots, redactPolicy, sessions, known, metadata, sink)
+	if err != nil {
+		return summary, err
+	}
+	// Out-of-band thread titles (session_index.jsonl) are applied as a trailing
+	// title-only round, AFTER driver.Stream has persisted the rollouts (Stream runs
+	// the metadata round BEFORE the session batches, so a title UPDATE there would
+	// miss the not-yet-inserted rows on a first ingest). readSessionTitles reads only
+	// the indexes that CHANGED since last ingest (new titles / renames grow the file),
+	// so an idle reconcile does nothing and a run that merely reingested rollouts does
+	// no title work — a reingested rollout keeps its title via the store's
+	// preserve-on-reinsert. The Result carries the read indexes' paths + fingerprints
+	// (persisted to ingest_offsets so the skip works next run; session_index.jsonl is
+	// never discovered as a transcript, so the offset row is inert) and no
+	// authoritative flags, so it only UPDATEs sessions.title and never reconciles
+	// skills/MCP.
+	titles, fingerprints, indexPaths := readSessionTitles(ctx, roots, known)
+	if len(indexPaths) > 0 {
+		redactPolicy.ApplyToTitleMap(titles)
+		if err := sink(ctx, ingest.Result{
+			Index:          trace.Index{Source: "codex", SourceRoots: ingest.RootPaths(roots), SessionTitles: titles},
+			ProcessedFiles: indexPaths,
+			Fingerprints:   fingerprints,
+		}); err != nil {
+			return summary, err
+		}
+	}
+	return summary, nil
 }
 
 func codexMetadata(ctx context.Context, roots []SourceRoot, fingerprints map[string]source.Fingerprint) (ingest.Result, bool, error) {

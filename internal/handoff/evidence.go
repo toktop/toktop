@@ -90,5 +90,5 @@ func buildEvidence(session trace.Session, turns []trace.Turn, agents []AgentRun)
 }
 
 func oneLine(s string, max int) string {
-	return textutil.Truncate(strings.Join(strings.Fields(s), " "), max)
+	return textutil.OneLine(s, max)
 }

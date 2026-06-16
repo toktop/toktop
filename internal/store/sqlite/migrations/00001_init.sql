@@ -1,10 +1,11 @@
 -- +goose Up
 -- +goose StatementBegin
 
--- Squashed baseline. This is the full projected schema as of schema epoch 15 —
--- the original 00001 baseline with the later migrations (projection cleanup,
--- dead-field drops, activity-time indexes, subagent marking + linkage) folded
--- in, so a fresh install builds the final shape in one pass instead of
+-- Squashed baseline. This is the full projected schema as of schema epoch 17 (the
+-- title column landed at epoch 16; epoch 17 is a projection-semantics bump with no
+-- DDL change) — the original 00001 baseline with the later migrations (projection
+-- cleanup, dead-field drops, activity-time indexes, subagent marking + linkage)
+-- folded in, so a fresh install builds the final shape in one pass instead of
 -- replaying create-then-drop churn. Pre-existing databases at an earlier epoch
 -- are wiped and rebuilt from the transcripts (see schemaUserVersion in
 -- store.go); the DB is a pure idempotent projection, so the squash is lossless.
@@ -99,6 +100,10 @@ CREATE TABLE sessions(
     source_root_id       TEXT REFERENCES source_roots(id) ON DELETE SET NULL,
     project_id           TEXT REFERENCES projects(id) ON DELETE SET NULL,
     external_session_id  TEXT,
+    -- title is the session display name (claude-code custom/ai-title from the
+    -- transcript; codex thread_name from the out-of-band session_index.jsonl,
+    -- refreshed every ingest). A read-time projection, never authored by a user.
+    title                TEXT,
     transcript_path      TEXT NOT NULL,
     started_at           TEXT,
     ended_at             TEXT,

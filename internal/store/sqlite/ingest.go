@@ -94,6 +94,15 @@ func (s *Store) saveIngestImpl(ctx context.Context, index trace.Index, rawEvents
 	if err != nil {
 		return err
 	}
+	// Preserve any out-of-band session title (codex's session_index.jsonl thread_name,
+	// which the parser leaves empty because it lives only in the DB) across the
+	// delete+reinsert below, so a single-file/live reingest of a rollout never wipes a
+	// title a prior ingest applied. Captured before the delete, restored after the
+	// insert; updateSessionTitles then overrides it with any newer value from the index.
+	preservedTitles, err := captureSessionTitles(ctx, tx, index.Sessions)
+	if err != nil {
+		return err
+	}
 	// deleteSourceFiles already clears parse_errors for every processed file, so
 	// no separate parse-error delete is needed (every parse-error file is also a
 	// processed file).
@@ -111,6 +120,12 @@ func (s *Store) saveIngestImpl(ctx context.Context, index trace.Index, rawEvents
 		return err
 	}
 	if err = resolveSubagentParents(ctx, tx); err != nil {
+		return err
+	}
+	if err = restoreSessionTitles(ctx, tx, preservedTitles); err != nil {
+		return err
+	}
+	if err = updateSessionTitles(ctx, tx, sourceID, index.SessionTitles); err != nil {
 		return err
 	}
 
@@ -425,13 +440,13 @@ func insertSessions(ctx context.Context, tx *sql.Tx, sourceID string, rootIDs ma
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO sessions(
 			id, source_id, source_root_id, project_id,
-			external_session_id, transcript_path, started_at, ended_at, status,
+			external_session_id, title, transcript_path, started_at, ended_at, status,
 			total_turns, total_tool_calls,
 			total_input_tokens, total_output_tokens,
 			cache_read_tokens, cache_write_tokens, cache_write_long_tokens,
 			is_subagent, parent_external_id, parent_session_id, parent_tool_use_id, workflow_run_id, subagent_kind, agent_type,
 			parser_version, created_at, updated_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("prepare sessions: %w", err)
@@ -447,7 +462,7 @@ func insertSessions(ctx context.Context, tx *sql.Tx, sourceID string, rootIDs ma
 		}
 		_, err := stmt.ExecContext(ctx,
 			session.ID, sourceID, sqlNullStr(rootID), sqlNullStr(projectID),
-			session.ExternalID, session.TranscriptPath,
+			session.ExternalID, sqlNullStr(session.Title), session.TranscriptPath,
 			timeText(session.StartedAt), timeText(session.EndedAt), session.Status,
 			session.TurnCount, session.ToolCallCount,
 			session.Tokens.Input, session.Tokens.Output,
@@ -487,6 +502,91 @@ func resolveSubagentParents(ctx context.Context, tx *sql.Tx) error {
 	`)
 	if err != nil {
 		return fmt.Errorf("resolve subagent parents: %w", err)
+	}
+	return nil
+}
+
+// captureSessionTitles reads the current title of every session about to be
+// reinserted whose incoming row carries no title of its own — codex leaves Title
+// empty because the title lives only in the DB, set out-of-band from
+// session_index.jsonl. Paired with restoreSessionTitles to carry that title across
+// the delete+reinsert, so a reingest of a rollout never wipes a title a prior ingest
+// applied. Generic: a provider whose title rides the transcript (claude-code) sets
+// Title on the incoming row and is skipped here.
+func captureSessionTitles(ctx context.Context, tx *sql.Tx, sessions []trace.Session) (map[string]string, error) {
+	if len(sessions) == 0 {
+		return nil, nil
+	}
+	stmt, err := tx.PrepareContext(ctx, `SELECT title FROM sessions WHERE id = ? AND title IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("prepare capture titles: %w", err)
+	}
+	defer stmt.Close()
+	preserved := make(map[string]string)
+	for _, session := range sessions {
+		if session.Title != "" {
+			continue // incoming row carries its own title; nothing to preserve
+		}
+		var title string
+		switch err := stmt.QueryRowContext(ctx, session.ID).Scan(&title); {
+		case errors.Is(err, sql.ErrNoRows):
+			continue
+		case err != nil:
+			return nil, fmt.Errorf("capture title %s: %w", session.ID, err)
+		}
+		preserved[session.ID] = title
+	}
+	return preserved, nil
+}
+
+// restoreSessionTitles writes the titles captured by captureSessionTitles back onto
+// the freshly reinserted rows that came in title-less, so the out-of-band title
+// survives the delete+reinsert. The `title IS NULL` guard leaves a row that already
+// has a title (e.g. claude-code's transcript-borne title) untouched; an
+// updateSessionTitles round runs after and overrides with any newer index value.
+func restoreSessionTitles(ctx context.Context, tx *sql.Tx, preserved map[string]string) error {
+	if len(preserved) == 0 {
+		return nil
+	}
+	stmt, err := tx.PrepareContext(ctx, `UPDATE sessions SET title = ? WHERE id = ? AND title IS NULL`)
+	if err != nil {
+		return fmt.Errorf("prepare restore titles: %w", err)
+	}
+	defer stmt.Close()
+	for id, title := range preserved {
+		if _, err := stmt.ExecContext(ctx, title, id); err != nil {
+			return fmt.Errorf("restore title %s: %w", id, err)
+		}
+	}
+	return nil
+}
+
+// updateSessionTitles applies out-of-band session titles (Index.SessionTitles:
+// external id -> title) keyed by external_session_id. It is how codex's
+// session_index.jsonl thread_name reaches sessions.title: that title is mutated by a
+// rename WITHOUT touching the rollout, so it cannot ride the transcript-fingerprint
+// incremental path and is instead refreshed by the codex trailing title round. The
+// `title != ?` guard skips rows already at the current title, so an unchanged index
+// does not spuriously bump updated_at. Top-level only — a subagent never has its own
+// out-of-band title and must not inherit the parent's. The map's only producer
+// (readSessionTitles) guarantees non-empty external id -> non-empty title.
+func updateSessionTitles(ctx context.Context, tx *sql.Tx, sourceID string, titles map[string]string) error {
+	if len(titles) == 0 {
+		return nil
+	}
+	now := nowUTC()
+	stmt, err := tx.PrepareContext(ctx, `
+		UPDATE sessions SET title = ?, updated_at = ?
+		WHERE source_id = ? AND external_session_id = ? AND is_subagent = 0
+		  AND (title IS NULL OR title != ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare session titles: %w", err)
+	}
+	defer stmt.Close()
+	for ext, title := range titles {
+		if _, err := stmt.ExecContext(ctx, title, now, sourceID, ext, title); err != nil {
+			return fmt.Errorf("update session title %s: %w", ext, err)
+		}
 	}
 	return nil
 }

@@ -96,8 +96,8 @@ func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		cliErr(stderr, err)
 		return 1
 	}
-	return emitList(*output, stdout, stderr, format, page.Items, []string{"id", "external", "provider", "status", "turns", "tools", "tokens", "project", "started", "kind", "subagents"}, func(session trace.Session) []string {
-		return []string{session.ID, emptyDash(session.ExternalID), session.Provider, session.Status,
+	return emitList(*output, stdout, stderr, format, page.Items, []string{"id", "external", "title", "provider", "status", "turns", "tools", "tokens", "project", "started", "kind", "subagents"}, func(session trace.Session) []string {
+		return []string{session.ID, emptyDash(session.ExternalID), emptyDash(oneLine(session.Title, 40)), session.Provider, session.Status,
 			strconv.Itoa(session.TurnCount), strconv.Itoa(session.ToolCallCount),
 			textutil.FormatCount(session.Tokens.Input + session.Tokens.Output), session.ProjectName, formatTime(session.StartedAt),
 			emptyDash(session.SubagentKind), emptyDashInt(session.SubagentCount)}
