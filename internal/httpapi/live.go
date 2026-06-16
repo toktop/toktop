@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"toktop.unceas.dev/internal/httpapi/internal/eventlog"
+	"toktop.unceas.dev/internal/eventlog"
 	"toktop.unceas.dev/internal/ingest"
 	"toktop.unceas.dev/internal/liveevent"
 	"toktop.unceas.dev/internal/redact"

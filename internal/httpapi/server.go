@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"toktop.unceas.dev/internal/config"
-	"toktop.unceas.dev/internal/httpapi/internal/eventlog"
+	"toktop.unceas.dev/internal/eventlog"
 	"toktop.unceas.dev/internal/query"
 	"toktop.unceas.dev/internal/redact"
 	"toktop.unceas.dev/internal/runtime"
