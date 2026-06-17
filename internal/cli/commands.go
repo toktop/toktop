@@ -90,9 +90,9 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	snap := loader.Current()
 	addr := clientAddr(snap)
 
-	cols := []string{"source", "session", "external", "status", "turns", "tools", "project", "last_activity"}
+	cols := []string{"source", "session", "external", "title", "status", "turns", "tools", "project", "last_activity"}
 	row := func(item sqlite.LiveSessionItem) []string {
-		return []string{item.Provider, item.SessionID, emptyDash(item.ExternalSessionID), item.CurrentStatus,
+		return []string{item.Provider, item.SessionID, emptyDash(item.ExternalSessionID), emptyDash(oneLine(item.Title, 40)), item.CurrentStatus,
 			strconv.Itoa(item.TurnCount), strconv.Itoa(item.ToolCallCount), item.ProjectName, formatTime(item.LastActivityAt)}
 	}
 

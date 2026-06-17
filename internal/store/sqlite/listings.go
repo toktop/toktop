@@ -132,6 +132,7 @@ type LiveSessionItem struct {
 	Provider          string    `json:"provider"`
 	SessionID         string    `json:"session_id"`
 	ExternalSessionID string    `json:"external_session_id,omitzero"`
+	Title             string    `json:"title,omitzero"`
 	ProjectID         string    `json:"project_id,omitzero"`
 	ProjectName       string    `json:"project_name,omitzero"`
 	ProjectPath       string    `json:"project_path,omitzero"`
@@ -238,6 +239,7 @@ func (s *Store) ListLiveSessions(ctx context.Context, f Filter) ([]LiveSessionIt
 	rows, err := s.reader().QueryContext(ctx, `
 		SELECT sessions.source_id, sources.kind, sessions.id,
 		       COALESCE(sessions.external_session_id, ''),
+		       COALESCE(sessions.title, ''),
 		       COALESCE(sessions.project_id, ''),
 		       COALESCE(projects.name, ''),
 		       COALESCE(projects.path, ''),
@@ -271,7 +273,7 @@ func (s *Store) ListLiveSessions(ctx context.Context, f Filter) ([]LiveSessionIt
 		var startedAt, lastActivity sql.NullString
 		if err := rows.Scan(
 			&item.SourceID, &item.Provider, &item.SessionID,
-			&item.ExternalSessionID, &item.ProjectID, &item.ProjectName,
+			&item.ExternalSessionID, &item.Title, &item.ProjectID, &item.ProjectName,
 			&item.ProjectPath, &item.TranscriptPath, &item.SessionStatus,
 			&item.LastTurnID, &item.LastTurnStatus,
 			&startedAt, &lastActivity,

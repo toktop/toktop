@@ -84,6 +84,7 @@ type Manifest struct {
 	GeneratedAt            time.Time `json:"generated_at"`
 	SessionID              string    `json:"session_id"`
 	ExternalSessionID      string    `json:"external_session_id,omitempty"`
+	Title                  string    `json:"title,omitempty"`
 	// AmbiguousSessionIDs lists every internal session id the requested id matched
 	// when an external id resolved to more than one session; SessionID is the one
 	// packaged (the same first match the CLI picks). Empty when the id was
@@ -341,6 +342,7 @@ func buildManifest(now time.Time, session trace.Session, turns []trace.Turn, age
 		GeneratedAt:            now,
 		SessionID:              session.ID,
 		ExternalSessionID:      session.ExternalID,
+		Title:                  session.Title,
 		Provider:               session.Provider,
 		Project:                textutil.FirstNonBlank(session.ProjectName, session.ProjectPath),
 		TranscriptPath:         session.TranscriptPath,

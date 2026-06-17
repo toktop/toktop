@@ -219,9 +219,9 @@ toktop handoff create --session 7fe8484969b12a21
 # → ~/.toktop/handoff/<session>/   (--output <dir> to override · --max-output-bytes N to clip)
 ```
 
-The package leads with a lean **`digest.md`** — the session's user→assistant
-narrative with no tool-call bloat — so the receiver orients cheaply on *any*
-session. For a multi-agent workflow it also recovers each completed sub-agent's
+The package leads with a lean **`digest.md`** — headed by the session's title
+and workflow status, then the user→assistant narrative with no tool-call bloat —
+so the receiver orients cheaply on *any* session. For a multi-agent workflow it also recovers each completed sub-agent's
 real result (so they are reused, not re-run), plus provenance pointers back to the
 raw transcript; every fact is tagged `evidence` / `inference` / `unknown`. The
 same package is served over HTTP at `GET /v1/sessions/{id}/handoff` (one JSON
@@ -262,7 +262,7 @@ toktop status --sources claude-code --since 24h
 ```
 
 `status` returns each session's **current status** (active / awaiting confirmation / success
-/ failed), turn/tool counts, project, and last activity time. It prefers the running daemon
+/ failed), title, turn/tool counts, project, and last activity time. It prefers the running daemon
 (which overlays the in-memory broker — the freshest, same view SSE consumers get) and falls
 back to reading the local store when no daemon is up.
 

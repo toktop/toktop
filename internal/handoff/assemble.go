@@ -82,6 +82,9 @@ func (p Package) digestMD() string {
 	var b strings.Builder
 	b.WriteString("# Session digest\n\n")
 	fmt.Fprintf(&b, "Session `%s` (%s)", p.Session.ID, p.Manifest.Provider)
+	if p.Manifest.Title != "" {
+		fmt.Fprintf(&b, " · %s", oneLine(p.Manifest.Title, 120))
+	}
 	if p.Manifest.Project != "" {
 		fmt.Fprintf(&b, " · project `%s`", p.Manifest.Project)
 	}
