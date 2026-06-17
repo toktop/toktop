@@ -183,12 +183,16 @@ and has no such flag; `suggestions` rules are always top-level.
 
 **Output formats** — `--format table` (default) `| json | ndjson | csv | markdown | html`
 (`summary` and `search` are `table|json`, stdout only — redirect with shell `>`). Every
-full-format list command also takes `--output <path>` (default `-` = stdout, else a file).
+full-format list command also takes `--output <path>` (default `-` = stdout, else a file)
+and `--columns col1,col2,…` to pick and reorder displayed columns by header name
+(table/csv/markdown/html only — rejected with `--format json|ndjson`; project JSON fields
+with a tool like `jq`).
 `sessions`, `turns`, and `status` page with `--limit` / `--offset` (default 20); `sessions`
 and `turns` also take `--sort`.
 
 ```bash
 toktop turns --sources claude-code --since 24h --sort tokens_desc --limit 10
+toktop sessions --columns id,title,tokens,started     # show only the columns you want (trims the wide default)
 toktop search 'rate limit' kind:turn source:claude-code --limit 20   # kind:/source: tokens are separate args
 toktop mcps unused --format json
 toktop sessions inspect 7fe8484969b12a21

@@ -51,6 +51,7 @@ func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	addLimitOffsetFlags(fs, &limit, &offset)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
 	output := addOutputFlag(fs)
+	columns := addColumnsFlag(fs)
 	addFilterFlags(fs, &sources, &projects, &sessionsFilter, &statuses)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
@@ -96,7 +97,7 @@ func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		cliErr(stderr, err)
 		return 1
 	}
-	return emitList(*output, stdout, stderr, format, page.Items, []string{"id", "external", "title", "provider", "status", "turns", "tools", "tokens", "project", "started", "kind", "subagents"}, func(session trace.Session) []string {
+	return emitList(*output, stdout, stderr, format, *columns, page.Items, []string{"id", "external", "title", "provider", "status", "turns", "tools", "tokens", "project", "started", "kind", "subagents"}, func(session trace.Session) []string {
 		return []string{session.ID, emptyDash(session.ExternalID), emptyDash(oneLine(session.Title, 40)), session.Provider, session.Status,
 			strconv.Itoa(session.TurnCount), strconv.Itoa(session.ToolCallCount),
 			textutil.FormatCount(session.Tokens.Input + session.Tokens.Output), session.ProjectName, formatTime(session.StartedAt),
@@ -197,6 +198,7 @@ func runTurns(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	addLimitOffsetFlags(fs, &limit, &offset)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
 	output := addOutputFlag(fs)
+	columns := addColumnsFlag(fs)
 	addFilterFlags(fs, &sources, &projects, &sessionsFilter, &statuses)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
@@ -251,7 +253,7 @@ func runTurns(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		cliErr(stderr, err)
 		return 1
 	}
-	return emitList(*output, stdout, stderr, format, page.Items, []string{"id", "provider", "session_id", "session_external", "sub", "status", "tools", "tokens", "project", "started", "user"}, func(turn trace.Turn) []string {
+	return emitList(*output, stdout, stderr, format, *columns, page.Items, []string{"id", "provider", "session_id", "session_external", "sub", "status", "tools", "tokens", "project", "started", "user"}, func(turn trace.Turn) []string {
 		return []string{turn.ID, turn.Provider, turn.SessionID, emptyDash(turn.SessionExternalID), boolDash(turn.IsSubagent), turn.Status,
 			strconv.Itoa(turn.ToolCallCount), textutil.FormatCount(turn.Tokens.Input + turn.Tokens.Output),
 			turn.ProjectName, formatTime(turn.StartedAt), oneLine(turn.UserMessage, 80)}
@@ -329,6 +331,7 @@ func runTurnComponents(ctx context.Context, args []string, stdout, stderr io.Wri
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
 	output := addOutputFlag(fs)
+	columns := addColumnsFlag(fs)
 	fs.StringVar(&kind, "kind", kind, "filter by kind: builtin_tool|mcp_server|mcp_tool|skill")
 	setFlagUsage(fs, "usage: toktop turns components [flags] <turn_id>", "List the components (tools, skills) attributed to one turn.")
 	if code := parseFlags(fs, args, stdout); code >= 0 {
@@ -373,7 +376,7 @@ func runTurnComponents(ctx context.Context, args []string, stdout, stderr io.Wri
 		}
 		components = filtered
 	}
-	return emitList(*output, stdout, stderr, format, components, []string{"kind", "name", "relation", "confidence"}, func(c trace.TurnComponent) []string {
+	return emitList(*output, stdout, stderr, format, *columns, components, []string{"kind", "name", "relation", "confidence"}, func(c trace.TurnComponent) []string {
 		return []string{c.ComponentKind, c.ComponentName, c.Relation, string(c.Confidence)}
 	})
 }
@@ -388,6 +391,7 @@ func runTurnTimeline(ctx context.Context, args []string, stdout, stderr io.Write
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
 	output := addOutputFlag(fs)
+	columns := addColumnsFlag(fs)
 	setFlagUsage(fs, "usage: toktop turns timeline [flags] <turn_id>", "Show the chronological event timeline (prompt, invocations, tool calls) for one turn.")
 	if code := parseFlags(fs, args, stdout); code >= 0 {
 		return code
@@ -410,10 +414,16 @@ func runTurnTimeline(ctx context.Context, args []string, stdout, stderr io.Write
 		return reportLookupErr(stderr, "turn", fs.Arg(0), err)
 	}
 	timeline := httpapi.BuildTimeline(turn)
+	// timeline's JSON path renders the full nested object (richer than the flat
+	// entries), so it short-circuits before emitList — gate --columns here too so
+	// the json/ndjson rejection is identical to every other list command.
+	if columnsRejectedForJSON(*columns, format, stderr) {
+		return 2
+	}
 	if format == "json" {
 		return writeJSON(stdout, stderr, timeline)
 	}
-	return emitList(*output, stdout, stderr, format, timeline.Entries, []string{"at", "kind", "label", "status", "duration_ms", "tokens", "detail"}, func(e httpapi.TimelineEntry) []string {
+	return emitList(*output, stdout, stderr, format, *columns, timeline.Entries, []string{"at", "kind", "label", "status", "duration_ms", "tokens", "detail"}, func(e httpapi.TimelineEntry) []string {
 		return []string{formatTime(e.At), e.Kind, e.Label, emptyDash(e.Status), strconv.FormatInt(e.DurationMs, 10), textutil.FormatCount(e.Tokens), oneLine(e.Detail, 80)}
 	})
 }

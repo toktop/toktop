@@ -43,6 +43,7 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
 	output := addOutputFlag(fs)
+	columns := addColumnsFlag(fs)
 	addLimitOffsetFlags(fs, &limit, &offset)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
@@ -95,6 +96,14 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			strconv.Itoa(item.TurnCount), strconv.Itoa(item.ToolCallCount), item.ProjectName, formatTime(item.LastActivityAt)}
 	}
 
+	// Resolve --columns here, before ensureDaemon (below) can autostart a daemon:
+	// a usage error (unknown column, or --columns with json/ndjson) must not spawn
+	// one. Project once and hand the result to whichever emitList path runs.
+	cols, row, code := applyColumns(*columns, format, cols, row, stderr)
+	if code >= 0 {
+		return code
+	}
+
 	// Prefer the daemon's /v1/status: it overlays the in-memory broker state, so
 	// it is the same fresh, consistent snapshot /v1/stream and downstream SSE
 	// consumers see. The direct store read below omits that overlay (it can lag
@@ -130,7 +139,7 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	q.Set("sort", "started_desc")
 	switch items, err := liveStatusFromServer(ctx, addr, clientToken(token, noAuth), q); {
 	case err == nil:
-		return emitList(*output, stdout, stderr, format, items, cols, row)
+		return emitList(*output, stdout, stderr, format, "", items, cols, row)
 	case !errors.Is(err, errStreamServerUnreachable):
 		cliErr(stderr, err)
 		return 1
@@ -162,7 +171,7 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		cliErr(stderr, err)
 		return 1
 	}
-	return emitList(*output, stdout, stderr, format, page.Items, cols, row)
+	return emitList(*output, stdout, stderr, format, "", page.Items, cols, row)
 }
 
 func runStream(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -299,6 +308,7 @@ func runProjects(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
 	output := addOutputFlag(fs)
+	columns := addColumnsFlag(fs)
 	addFilterFlags(fs, &sources, &projects, &sessions, &statuses)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
@@ -331,7 +341,7 @@ func runProjects(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		cliErr(stderr, err)
 		return 1
 	}
-	return emitList(*output, stdout, stderr, format, rows, []string{"id", "source_id", "name", "path", "sessions", "turns", "tool_calls", "last_activity"}, func(item sqlite.ProjectListItem) []string {
+	return emitList(*output, stdout, stderr, format, *columns, rows, []string{"id", "source_id", "name", "path", "sessions", "turns", "tool_calls", "last_activity"}, func(item sqlite.ProjectListItem) []string {
 		return []string{item.ID, item.SourceID, item.Name, item.Path,
 			strconv.Itoa(item.SessionCount), strconv.Itoa(item.TurnCount),
 			strconv.Itoa(item.ToolCallCount), formatTime(item.LastActivity)}
@@ -351,6 +361,7 @@ func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
 	output := addOutputFlag(fs)
+	columns := addColumnsFlag(fs)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	addFilterFlags(fs, &sources, &projects, &sessions, &statuses)
@@ -383,7 +394,7 @@ func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		cliErr(stderr, err)
 		return 1
 	}
-	return emitList(*output, stdout, stderr, format, tools, []string{"kind", "name", "mcp_server", "calls", "turns", "failed", "last_used"}, func(item sqlite.ToolListItem) []string {
+	return emitList(*output, stdout, stderr, format, *columns, tools, []string{"kind", "name", "mcp_server", "calls", "turns", "failed", "last_used"}, func(item sqlite.ToolListItem) []string {
 		return []string{item.Kind, item.Name, item.MCPServer,
 			strconv.Itoa(item.CallCount), strconv.Itoa(item.TurnCount),
 			strconv.Itoa(item.FailedCount), formatTime(item.LastUsedAt)}
@@ -403,6 +414,7 @@ func runModels(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
 	output := addOutputFlag(fs)
+	columns := addColumnsFlag(fs)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	addFilterFlags(fs, &sources, &projects, &sessions, &statuses)
@@ -435,7 +447,7 @@ func runModels(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		cliErr(stderr, err)
 		return 1
 	}
-	return emitList(*output, stdout, stderr, format, models, []string{"provider", "model", "calls", "turns", "input_tokens", "output_tokens", "cache_read", "cache_write", "last_used"}, func(item sqlite.ModelListItem) []string {
+	return emitList(*output, stdout, stderr, format, *columns, models, []string{"provider", "model", "calls", "turns", "input_tokens", "output_tokens", "cache_read", "cache_write", "last_used"}, func(item sqlite.ModelListItem) []string {
 		return []string{item.Provider, emptyDash(item.Model),
 			strconv.Itoa(item.CallCount), strconv.Itoa(item.TurnCount),
 			strconv.Itoa(item.InputTokens), strconv.Itoa(item.OutputTokens),
@@ -464,6 +476,7 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
 	output := addOutputFlag(fs)
+	columns := addColumnsFlag(fs)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	addFilterFlags(fs, &sources, &projects, &sessions, &statuses)
@@ -486,6 +499,7 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		uf := flag.NewFlagSet("mcps unused", flag.ContinueOnError)
 		uf.SetOutput(stderr)
 		uf.StringVar(&format, "format", format, formatFlagUsage)
+		columnsU := addColumnsFlag(uf)
 		setFlagUsage(uf, "usage: toktop mcps unused [--format ...]", "List declared MCP servers with zero observed calls. Accepts no filters.")
 		if code := parseFlagsNoPositionals(uf, rest, stdout, stderr); code >= 0 {
 			return code
@@ -505,7 +519,7 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			cliErr(stderr, err)
 			return 1
 		}
-		return emitList(*output, stdout, stderr, format, mcps, mcpCols, mcpRow)
+		return emitList(*output, stdout, stderr, format, *columnsU, mcps, mcpCols, mcpRow)
 	}
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
@@ -534,7 +548,7 @@ func runMCPs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		cliErr(stderr, err)
 		return 1
 	}
-	return emitList(*output, stdout, stderr, format, mcps, mcpCols, mcpRow)
+	return emitList(*output, stdout, stderr, format, *columns, mcps, mcpCols, mcpRow)
 }
 
 func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -550,6 +564,7 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
 	output := addOutputFlag(fs)
+	columns := addColumnsFlag(fs)
 	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	addFilterFlags(fs, &sources, &projects, &sessions, &statuses)
@@ -571,6 +586,7 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		uf := flag.NewFlagSet("skills unused", flag.ContinueOnError)
 		uf.SetOutput(stderr)
 		uf.StringVar(&format, "format", format, formatFlagUsage)
+		columnsU := addColumnsFlag(uf)
 		setFlagUsage(uf, "usage: toktop skills unused [--format ...]", "List installed skills with zero inferred uses. Accepts no filters.")
 		if code := parseFlagsNoPositionals(uf, rest, stdout, stderr); code >= 0 {
 			return code
@@ -590,7 +606,7 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			cliErr(stderr, err)
 			return 1
 		}
-		return emitList(*output, stdout, stderr, format, skills, []string{"source", "name", "scope", "description", "source_path"}, func(item sqlite.SkillListItem) []string {
+		return emitList(*output, stdout, stderr, format, *columnsU, skills, []string{"source", "name", "scope", "description", "source_path"}, func(item sqlite.SkillListItem) []string {
 			return []string{item.SourceID, item.Name, item.Scope, textutil.Truncate(item.Description, 80), item.SourcePath}
 		})
 	}
@@ -621,7 +637,7 @@ func runSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		cliErr(stderr, err)
 		return 1
 	}
-	return emitList(*output, stdout, stderr, format, skills, []string{"source", "name", "scope", "installed", "inferred_used", "last_used", "source_path"}, func(item sqlite.SkillListItem) []string {
+	return emitList(*output, stdout, stderr, format, *columns, skills, []string{"source", "name", "scope", "installed", "inferred_used", "last_used", "source_path"}, func(item sqlite.SkillListItem) []string {
 		installed := "no"
 		if item.Installed {
 			installed = "yes"
@@ -642,6 +658,7 @@ func runSuggestions(ctx context.Context, args []string, stdout, stderr io.Writer
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
 	output := addOutputFlag(fs)
+	columns := addColumnsFlag(fs)
 	fs.StringVar(&rule, "rule", rule, "filter by rule id")
 	setFlagUsageSub(fs, "usage: toktop suggestions [flags]",
 		[]subcmdDoc{{"recompute", "rerun the rule engine, then list"}},
@@ -681,7 +698,7 @@ func runSuggestions(ctx context.Context, args []string, stdout, stderr io.Writer
 	// confidence surfaces provenance (observed vs estimated/inferred) in the default
 	// table/csv views, not just json — a synthesized finding must never read as
 	// authoritative.
-	return emitList(*output, stdout, stderr, format, sugs, []string{"id", "rule_id", "severity", "confidence", "scope_kind", "scope_id", "recommendation"}, func(item trace.Suggestion) []string {
+	return emitList(*output, stdout, stderr, format, *columns, sugs, []string{"id", "rule_id", "severity", "confidence", "scope_kind", "scope_id", "recommendation"}, func(item trace.Suggestion) []string {
 		return []string{strconv.FormatInt(item.ID, 10), item.RuleID, item.Severity, string(item.Confidence), item.ScopeKind, item.ScopeID, item.Recommendation}
 	})
 }

@@ -27,6 +27,7 @@ func runSources(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	fs.SetOutput(stderr)
 	fs.StringVar(&format, "format", format, formatFlagUsage)
 	output := addOutputFlag(fs)
+	columns := addColumnsFlag(fs)
 	setFlagUsage(fs, "usage: toktop sources [flags]", "List configured providers and their discovery roots (and whether each exists).")
 	// `list` is an optional alias for the default listing; accept it regardless
 	// of where flags sit, like every other keyworded command.
@@ -38,6 +39,10 @@ func runSources(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	}
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
+	}
+	if err := validateListFormat(format); err != nil {
+		cliErr(stderr, err)
+		return 2
 	}
 	type sourceRoot struct {
 		Source string `json:"source"`
@@ -67,7 +72,7 @@ func runSources(ctx context.Context, args []string, stdout, stderr io.Writer) in
 			rows = append(rows, sourceRoot{Source: name, Root: root, Exists: fsx.DirExists(root)})
 		}
 	}
-	return emitList(*output, stdout, stderr, format, rows, []string{"source", "root", "exists"}, func(r sourceRoot) []string {
+	return emitList(*output, stdout, stderr, format, *columns, rows, []string{"source", "root", "exists"}, func(r sourceRoot) []string {
 		return []string{r.Source, emptyDash(r.Root), boolYesNo(r.Exists)}
 	})
 }

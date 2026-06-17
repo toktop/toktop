@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -97,6 +98,79 @@ func writeFormatted[T any](stdout, stderr io.Writer, format string, items []T, h
 	}
 }
 
+const columnsFlagUsage = "comma-separated columns to display, in order (table/csv/markdown/html only; omit for all)"
+
+// addColumnsFlag registers the shared --columns flag (empty = all columns) and
+// returns the bound value. Mirrors addOutputFlag; the comma-separated value is
+// resolved + projected against the rendered headers by applyColumns inside
+// emitList.
+func addColumnsFlag(fs *flag.FlagSet) *string {
+	return fs.String("columns", "", columnsFlagUsage)
+}
+
+// columnsRejectedForJSON reports whether --columns was given together with a JSON
+// format (json/ndjson), printing the usage error if so. --columns shapes the
+// rendered table; JSON output is the full typed struct (it never goes through
+// headers/row, and the json tags differ from the header names), so the two don't
+// compose — project JSON fields with a tool like jq instead. Both emitList and
+// the commands that emit JSON before reaching emitList (turns timeline) gate on
+// this, so the rule is identical everywhere.
+func columnsRejectedForJSON(columns, format string, stderr io.Writer) bool {
+	if columns != "" && (format == "json" || format == "ndjson") {
+		cliErrf(stderr, "--columns cannot be combined with --format %s; it selects table columns — project JSON fields with a tool like jq", format)
+		return true
+	}
+	return false
+}
+
+// applyColumns projects headers and the row func down to the --columns selection
+// (comma-separated header names, in the given order — so it doubles as a column
+// reorder). It runs before any --output file is opened, so an invalid selection
+// fails without truncating the target. Returns code -1 to proceed; a non-negative
+// code is the exit code to return (2 for a usage error). columns=="" is a no-op.
+func applyColumns[T any](columns, format string, headers []string, row func(T) []string, stderr io.Writer) ([]string, func(T) []string, int) {
+	if columns == "" {
+		return headers, row, -1
+	}
+	if columnsRejectedForJSON(columns, format, stderr) {
+		return nil, nil, 2
+	}
+	idx, err := selectColumns(columns, headers)
+	if err != nil {
+		cliErr(stderr, err)
+		return nil, nil, 2
+	}
+	return projectCells(headers, idx), func(item T) []string { return projectCells(row(item), idx) }, -1
+}
+
+// selectColumns resolves a comma-separated list of header names to their column
+// indexes in the requested order (so it doubles as a reorder). An unknown name
+// (or an all-blank list) is a usage error that lists the available columns — the
+// headers are the only place a caller learns the names.
+func selectColumns(columns string, headers []string) ([]int, error) {
+	var idx []int
+	for _, name := range textutil.SplitTrim(columns) {
+		j := slices.Index(headers, name)
+		if j < 0 {
+			return nil, fmt.Errorf("unknown column %q (available: %s)", name, strings.Join(headers, ", "))
+		}
+		idx = append(idx, j)
+	}
+	if len(idx) == 0 {
+		return nil, errors.New("--columns lists no columns")
+	}
+	return idx, nil
+}
+
+// projectCells selects/reorders cells by the index slice from selectColumns.
+func projectCells(cells []string, idx []int) []string {
+	out := make([]string, len(idx))
+	for i, j := range idx {
+		out[i] = cells[j]
+	}
+	return out
+}
+
 const outputFlagUsage = "output path, or - for stdout"
 
 // addOutputFlag registers the shared --output flag (default "-" = stdout) and
@@ -122,14 +196,20 @@ func (nopWriteCloser) Close() error { return nil }
 
 // emitList renders items through writeFormatted to the --output destination,
 // closing a file sink and surfacing its close error. The one line every list
-// command uses, so --format + --output behave identically across them.
-func emitList[T any](output string, stdout, stderr io.Writer, format string, items []T, headers []string, row func(T) []string) int {
+// command uses, so --format + --columns + --output behave identically across them.
+// applyColumns runs first (before openOutput) so a bad --columns fails without
+// truncating the target file.
+func emitList[T any](output string, stdout, stderr io.Writer, format, columns string, items []T, headers []string, row func(T) []string) int {
+	headers, row, code := applyColumns(columns, format, headers, row, stderr)
+	if code >= 0 {
+		return code
+	}
 	w, err := openOutput(output, stdout)
 	if err != nil {
 		cliErrf(stderr, "write output: %v", err)
 		return 1
 	}
-	code := writeFormatted(w, stderr, format, items, headers, row)
+	code = writeFormatted(w, stderr, format, items, headers, row)
 	if cerr := w.Close(); cerr != nil && code == 0 {
 		cliErrf(stderr, "write output: %v", cerr)
 		return 1
