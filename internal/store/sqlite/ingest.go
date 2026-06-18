@@ -511,7 +511,21 @@ func resolveSubagentParents(ctx context.Context, tx *sql.Tx) error {
 		)
 		WHERE is_subagent = 1
 		  AND parent_external_id IS NOT NULL AND parent_external_id != ''
-		  AND parent_session_id IS NULL`
+		  AND parent_session_id IS NULL
+		  AND EXISTS (
+			SELECT 1 FROM sessions p
+			WHERE p.external_session_id = sessions.parent_external_id
+			  AND p.source_id = sessions.source_id
+			  AND p.id != sessions.id
+			  AND (p.is_subagent = 0 OR p.parent_session_id IS NOT NULL)
+		)`
+	// The EXISTS guard makes a pass match only rows that WILL resolve to a non-null
+	// parent, so each pass strictly shrinks the unresolved set (or matches nothing).
+	// Without it an ORPHAN subagent (parent_external_id set, no parent row) would
+	// re-match forever: the assignment subquery returns NULL, parent_session_id stays
+	// NULL, yet RowsAffected (sqlite3_changes) still counts the matched row, so n never
+	// reached 0 and the loop spun inside the open write transaction. The loop is for
+	// NESTING — a grandchild matches only once its parent is resolved (a later pass).
 	for {
 		res, err := tx.ExecContext(ctx, stmt)
 		if err != nil {
