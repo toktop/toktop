@@ -481,29 +481,49 @@ func insertSessions(ctx context.Context, tx *sql.Tx, sourceID string, rootIDs ma
 }
 
 // resolveSubagentParents fills parent_session_id for subagent sessions from their
-// parent_external_id, by matching a top-level session's external id within the same
-// provider. One mechanism for both providers (claude-code's subagent shares the
-// parent's external id; codex carries parent_thread_id). It is run after every
+// parent_external_id, by matching another session's external id within the same
+// provider. One mechanism for all providers (claude-code's subagent shares the
+// parent's external id; codex carries parent_thread_id; opencode carries parent_id).
+//
+// The candidate predicate accepts a top-level session (is_subagent = 0) OR an
+// already-resolved subagent (parent_session_id IS NOT NULL), and ORDER BY prefers
+// the top-level one. This serves all three:
+//   - claude-code subagents SHARE the parent uuid as their external id, so the
+//     top-level preference is load-bearing — it picks the real parent over a
+//     sibling subagent that carries the same external id.
+//   - opencode allows nesting (a subagent spawns a grandchild), so a grandchild's
+//     parent IS a subagent; accepting an already-resolved subagent lets it link.
+//
+// Because a grandchild can only match once its parent is resolved, the UPDATE
+// iterates to a fixpoint (each pass resolves one more level). It runs after every
 // session insert and only touches still-unresolved rows, so a subagent ingested
-// before its parent (a later batch/run) is linked once the parent lands. Idempotent.
-// The ORDER BY makes the match deterministic in the rare case several top-level
-// sessions share one external id (a resumed/forked session): the earliest wins.
+// before its parent (a later batch/run) links once the parent lands. Idempotent.
 func resolveSubagentParents(ctx context.Context, tx *sql.Tx) error {
-	_, err := tx.ExecContext(ctx, `
+	const stmt = `
 		UPDATE sessions SET parent_session_id = (
 			SELECT p.id FROM sessions p
 			WHERE p.external_session_id = sessions.parent_external_id
-			  AND p.is_subagent = 0
 			  AND p.source_id = sessions.source_id
-			ORDER BY p.created_at, p.id
+			  AND p.id != sessions.id
+			  AND (p.is_subagent = 0 OR p.parent_session_id IS NOT NULL)
+			ORDER BY p.is_subagent, p.created_at, p.id
 			LIMIT 1
 		)
 		WHERE is_subagent = 1
 		  AND parent_external_id IS NOT NULL AND parent_external_id != ''
-		  AND parent_session_id IS NULL
-	`)
-	if err != nil {
-		return fmt.Errorf("resolve subagent parents: %w", err)
+		  AND parent_session_id IS NULL`
+	for {
+		res, err := tx.ExecContext(ctx, stmt)
+		if err != nil {
+			return fmt.Errorf("resolve subagent parents: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("resolve subagent parents rows affected: %w", err)
+		}
+		if n == 0 {
+			break
+		}
 	}
 	return nil
 }

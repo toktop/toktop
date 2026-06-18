@@ -16,6 +16,14 @@ func DirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
+// FileExists reports whether path exists and is a regular file (not a directory).
+// Used by the opencode collector to probe for its single opencode.db before
+// opening it.
+func FileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
 // PathWithin reports whether path is inside dir (or equal to it): the relative
 // path from dir to path does not escape via "..". Callers pass already-cleaned
 // paths. One definition for the per-provider transcript-root containment checks.

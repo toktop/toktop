@@ -13,6 +13,7 @@ import (
 	// built-in providers lives here directly.
 	_ "toktop.unceas.dev/internal/collector/claudecode"
 	_ "toktop.unceas.dev/internal/collector/codex"
+	_ "toktop.unceas.dev/internal/collector/opencode"
 )
 
 var (
