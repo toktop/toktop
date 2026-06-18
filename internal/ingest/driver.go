@@ -28,6 +28,38 @@ type Spec[F any] struct {
 	// Parse turns a RawSession into the neutral trace pieces. It wraps the
 	// provider's parser, whose ParseResult is field-identical across providers.
 	Parse func(ctx context.Context, raw source.RawSession) (trace.Session, []trace.Turn, []trace.ParseError, error)
+
+	// FingerprintOf returns a file's change-detection fingerprint and whether it
+	// is currently present. Nil ⇒ the default StatFingerprint(PathOf(f)) — the
+	// file-backed behavior every existing provider relies on. A DB-backed provider
+	// (opencode) supplies a seq-based fingerprint instead of a file stat.
+	FingerprintOf func(F) (source.Fingerprint, bool)
+	// ByteSizeOf returns a file's approximate parse cost in bytes, used only for
+	// batch sizing. Nil ⇒ the fingerprint's Size field (correct for file
+	// providers, where Size is the byte size). A provider whose fingerprint Size
+	// is not a byte count (opencode packs a revision into Token, leaving Size 0)
+	// must supply this so batches stay memory-bounded.
+	ByteSizeOf func(F) int64
+}
+
+// fingerprintOf resolves the spec's fingerprint function, defaulting to a file
+// stat so providers that leave FingerprintOf nil keep the exact prior behavior.
+func (s Spec[F]) fingerprintOf(f F) (source.Fingerprint, bool) {
+	if s.FingerprintOf != nil {
+		return s.FingerprintOf(f)
+	}
+	size, mtimeNS, ino, ok := collector.StatFingerprint(s.PathOf(f))
+	return source.Fingerprint{Size: size, MtimeNS: mtimeNS, Ino: ino}, ok
+}
+
+// byteSizeOf resolves the spec's batch-sizing weight, defaulting to the
+// fingerprint Size (the byte size for file providers).
+func (s Spec[F]) byteSizeOf(f F) int64 {
+	if s.ByteSizeOf != nil {
+		return s.ByteSizeOf(f)
+	}
+	fp, _ := s.fingerprintOf(f)
+	return fp.Size
 }
 
 // Driver runs the shared, provider-neutral ingest pipeline (parse → accumulate →
@@ -53,7 +85,7 @@ func (d Driver[F]) Stream(ctx context.Context, roots []SourceRoot, policy redact
 	parseBatch := func(ctx context.Context, batch []F) (Result, error) {
 		return d.IngestBatch(ctx, roots, policy, batch)
 	}
-	return StreamSessions(ctx, sessions, d.Spec.PathOf, known, metadata, parseBatch, BatchBytesThreshold, sink)
+	return StreamSessions(ctx, sessions, d.Spec.PathOf, d.Spec.fingerprintOf, d.Spec.byteSizeOf, known, metadata, parseBatch, BatchBytesThreshold, sink)
 }
 
 func (d Driver[F]) newIndex(roots []SourceRoot, capHint int) trace.Index {
@@ -139,8 +171,8 @@ func (d Driver[F]) IngestSessionFile(ctx context.Context, roots []SourceRoot, fi
 	index := d.newIndex(roots, 1)
 	path := d.Spec.PathOf(file)
 	fingerprints := make(map[string]source.Fingerprint, 1)
-	if size, mtimeNS, ino, ok := collector.StatFingerprint(path); ok {
-		fingerprints[path] = source.Fingerprint{Size: size, MtimeNS: mtimeNS, Ino: ino}
+	if fp, ok := d.Spec.fingerprintOf(file); ok {
+		fingerprints[path] = fp
 	}
 	raw, collectErrors, err := d.Spec.Collect(ctx, file)
 	if err != nil {

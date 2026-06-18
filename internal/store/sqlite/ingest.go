@@ -15,7 +15,7 @@ import (
 
 func (s *Store) LoadIngestFingerprints(ctx context.Context, sourceID string) (map[string]source.Fingerprint, error) {
 	rows, err := s.reader().QueryContext(ctx, `
-		SELECT ingest_offsets.source_file, ingest_offsets.size_bytes, ingest_offsets.mtime_ns, ingest_offsets.inode_no
+		SELECT ingest_offsets.source_file, ingest_offsets.size_bytes, ingest_offsets.mtime_ns, ingest_offsets.inode_no, ingest_offsets.fingerprint_token
 		FROM ingest_offsets
 		JOIN source_roots ON source_roots.id = ingest_offsets.source_root_id
 		WHERE source_roots.source_id = ?
@@ -31,11 +31,12 @@ func (s *Store) LoadIngestFingerprints(ctx context.Context, sourceID string) (ma
 			size    int64
 			mtimeNS int64
 			ino     int64
+			token   string
 		)
-		if err := rows.Scan(&file, &size, &mtimeNS, &ino); err != nil {
+		if err := rows.Scan(&file, &size, &mtimeNS, &ino, &token); err != nil {
 			return nil, fmt.Errorf("scan ingest fingerprint: %w", err)
 		}
-		out[file] = source.Fingerprint{Size: size, MtimeNS: mtimeNS, Ino: ino}
+		out[file] = source.Fingerprint{Size: size, MtimeNS: mtimeNS, Ino: ino, Token: token}
 	}
 	return out, rows.Err()
 }
@@ -357,15 +358,16 @@ func updateIngestOffsets(ctx context.Context, tx *sql.Tx, rootIDs map[string]str
 	}
 	now := nowUTC()
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO ingest_offsets(id, source_root_id, source_file, size_bytes, mtime_ns, inode_no, line_no, last_hash, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO ingest_offsets(id, source_root_id, source_file, size_bytes, mtime_ns, inode_no, fingerprint_token, line_no, last_hash, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(source_root_id, source_file) DO UPDATE SET
-			size_bytes = excluded.size_bytes,
-			mtime_ns   = excluded.mtime_ns,
-			inode_no   = excluded.inode_no,
-			line_no    = excluded.line_no,
-			last_hash  = excluded.last_hash,
-			updated_at = excluded.updated_at
+			size_bytes        = excluded.size_bytes,
+			mtime_ns          = excluded.mtime_ns,
+			inode_no          = excluded.inode_no,
+			fingerprint_token = excluded.fingerprint_token,
+			line_no           = excluded.line_no,
+			last_hash         = excluded.last_hash,
+			updated_at        = excluded.updated_at
 	`)
 	if err != nil {
 		return fmt.Errorf("prepare ingest_offsets: %w", err)
@@ -377,7 +379,7 @@ func updateIngestOffsets(ctx context.Context, tx *sql.Tx, rootIDs map[string]str
 			continue
 		}
 		id := trace.SourceRootID(pos.rootID, pos.file)
-		_, err := stmt.ExecContext(ctx, id, pos.rootID, pos.file, fp.Size, fp.MtimeNS, fp.Ino, pos.line, pos.hash, now)
+		_, err := stmt.ExecContext(ctx, id, pos.rootID, pos.file, fp.Size, fp.MtimeNS, fp.Ino, fp.Token, pos.line, pos.hash, now)
 		if err != nil {
 			return fmt.Errorf("upsert ingest offset: %w", err)
 		}

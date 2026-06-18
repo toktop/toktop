@@ -42,12 +42,20 @@ func RunFull(ctx context.Context, store *sqlite.Store, opts Options) (Summary, e
 }
 
 func purgeVanished(ctx context.Context, store *sqlite.Store, sourceName string, known, present map[string]source.Fingerprint) error {
+	lc, hasLC := livenessFor(sourceName)
 	var gone []string
 	for file := range known {
 		if _, ok := present[file]; ok {
 			continue
 		}
-		if _, err := os.Stat(file); errors.Is(err, fs.ErrNotExist) {
+		exists := false
+		if hasLC {
+			exists = lc.SourceFileExists(file)
+		} else {
+			_, err := os.Stat(file)
+			exists = !errors.Is(err, fs.ErrNotExist)
+		}
+		if !exists {
 			gone = append(gone, file)
 		}
 	}

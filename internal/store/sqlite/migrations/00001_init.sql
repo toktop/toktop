@@ -62,23 +62,28 @@ CREATE TABLE raw_events(
 -- line can be re-read on demand from disk instead of copying every event's
 -- bytes (and a redacted duplicate) into the DB.
 
--- ingest_offsets: per-file change-detection fingerprint. (size_bytes, mtime_ns,
--- inode_no) is the skip signal — `toktop ingest` re-reads a transcript only when
--- one of them changes, and inode_no additionally catches rotation (a recreated
--- file reusing the path with a new inode). Byte-level tail reading is NOT
--- implemented: a changed file is re-read in full and de-duplicated by the
--- raw_events UNIQUE constraint, so there is no byte_offset cursor. line_no /
--- last_hash record the last ingested line for diagnostics only.
+-- ingest_offsets: per-source-file change-detection fingerprint. For file-backed
+-- providers (claude-code, codex) the skip signal is (size_bytes, mtime_ns,
+-- inode_no) — `toktop ingest` re-reads a transcript only when one of them
+-- changes, and inode_no additionally catches rotation (a recreated file reusing
+-- the path with a new inode). For a DB-backed provider (opencode) whose
+-- source_file is a synthetic key, those three are 0 and fingerprint_token carries
+-- the provider's native per-session revision (opencode's event_sequence.seq)
+-- instead. Byte-level tail reading is NOT implemented: a changed file is re-read
+-- in full and de-duplicated by the raw_events UNIQUE constraint, so there is no
+-- byte_offset cursor. line_no / last_hash record the last ingested line for
+-- diagnostics only.
 CREATE TABLE ingest_offsets(
-    id             TEXT PRIMARY KEY,
-    source_root_id TEXT NOT NULL REFERENCES source_roots(id) ON DELETE CASCADE,
-    source_file    TEXT NOT NULL,
-    size_bytes     INTEGER NOT NULL DEFAULT 0,
-    mtime_ns       INTEGER NOT NULL DEFAULT 0,
-    inode_no       INTEGER NOT NULL DEFAULT 0,
-    line_no        INTEGER NOT NULL DEFAULT 0,
-    last_hash      TEXT,
-    updated_at     TEXT NOT NULL,
+    id                TEXT PRIMARY KEY,
+    source_root_id    TEXT NOT NULL REFERENCES source_roots(id) ON DELETE CASCADE,
+    source_file       TEXT NOT NULL,
+    size_bytes        INTEGER NOT NULL DEFAULT 0,
+    mtime_ns          INTEGER NOT NULL DEFAULT 0,
+    inode_no          INTEGER NOT NULL DEFAULT 0,
+    fingerprint_token TEXT NOT NULL DEFAULT '',
+    line_no           INTEGER NOT NULL DEFAULT 0,
+    last_hash         TEXT,
+    updated_at        TEXT NOT NULL,
     UNIQUE(source_root_id, source_file)
 );
 

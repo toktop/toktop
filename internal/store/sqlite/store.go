@@ -85,7 +85,11 @@ const dbFileName = "toktop.db"
 // now projects to failed instead of success (its failure text carries no shell exit
 // code), so a turn containing one re-derives accordingly. Old rows carry the stale
 // success status, so an existing db is wiped and rebuilt from the transcripts.
-const schemaUserVersion = 17
+//
+// Epoch 18: ingest_offsets gained fingerprint_token (provider-defined change marker
+// for non-file sources). The new NOT NULL column means an old ingest_offsets row
+// lacks it, so an existing db is wiped and rebuilt from the transcripts.
+const schemaUserVersion = 18
 
 var writerCacheKiB, readerCacheKiB, sqliteMmapBytes = memoryBudget(memory.TotalMemory())
 

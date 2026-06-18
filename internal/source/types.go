@@ -58,4 +58,11 @@ type Fingerprint struct {
 	Size    int64 `json:"size"`
 	MtimeNS int64 `json:"mtime_ns"`
 	Ino     int64 `json:"inode_no"`
+
+	// Token is a provider-defined change marker for sources that are not files on
+	// disk (a DB-backed provider sets it to its native per-session revision, e.g.
+	// opencode's event_sequence.seq). File providers leave it "" and change-detect
+	// via Size/MtimeNS/Ino. The struct stays comparable, so the prior==fp skip in
+	// PartitionByFingerprint works unchanged whichever family a provider uses.
+	Token string `json:"token,omitempty"`
 }

@@ -15,13 +15,15 @@ func StreamSessions[F any](
 	ctx context.Context,
 	sessions []F,
 	pathOf func(F) string,
+	fingerprintOf func(F) (source.Fingerprint, bool),
+	sizeOf func(F) int64,
 	known map[string]source.Fingerprint,
 	metadata MetadataFn,
 	parseBatch BatchParser[F],
 	maxBatchBytes int64,
 	sink BatchSink,
 ) (Summary, error) {
-	changed, _, fingerprints := collector.PartitionByFingerprint(sessions, pathOf, known)
+	changed, _, fingerprints := collector.PartitionByFingerprint(sessions, pathOf, fingerprintOf, known)
 	summary := Summary{Files: len(sessions), Fingerprints: fingerprints}
 
 	if metadata != nil {
@@ -36,7 +38,6 @@ func StreamSessions[F any](
 		}
 	}
 
-	sizeOf := func(f F) int64 { return fingerprints[pathOf(f)].Size }
 	batches := collector.ChunkBySize(changed, sizeOf, maxBatchBytes)
 	if len(batches) == 0 {
 		return summary, nil

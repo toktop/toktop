@@ -99,6 +99,27 @@ func HookInstallerFor(name string) (HookInstaller, bool) {
 	return hi, ok
 }
 
+// LivenessChecker is the optional seam letting a Provider decide whether a
+// previously-ingested source_file still exists, used by purgeVanished to drop
+// rows for a vanished source. Not implemented ⇒ the default os.Stat(file) check,
+// which every file-backed provider relies on. A DB-backed provider whose
+// source_file is a SYNTHETIC key (opencode's "opencode://<session-id>", never a
+// real path) MUST implement it — else os.Stat always returns ErrNotExist and
+// every row is purged on each reconcile.
+type LivenessChecker interface {
+	SourceFileExists(file string) bool
+}
+
+// livenessFor returns the LivenessChecker for name when the provider supplies one.
+func livenessFor(name string) (LivenessChecker, bool) {
+	p, ok := registry[name]
+	if !ok {
+		return nil, false
+	}
+	lc, ok := p.(LivenessChecker)
+	return lc, ok
+}
+
 // AgentToolDeclarer is the optional seam by which a Provider declares the
 // built-in tool names that spawn a subagent / multi-agent workflow whose run the
 // handoff reconstructs and the workflow_interrupted rule counts (claude-code:

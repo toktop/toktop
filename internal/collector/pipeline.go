@@ -52,18 +52,26 @@ func ReleaseRawJSON(events []source.RawEvent) {
 	}
 }
 
-func PartitionByFingerprint[F any](candidates []F, path func(F) string, known map[string]source.Fingerprint) (changed []F, skipped []string, fingerprints map[string]source.Fingerprint) {
+// PartitionByFingerprint splits candidates into changed (re-ingest) and skipped
+// (unchanged) by comparing each one's current fingerprint to known. The
+// fingerprint source is provider-supplied via fingerprintOf so a DB-backed
+// provider can change-detect on a native revision instead of a file stat; file
+// providers pass a StatFingerprint-backed closure. A candidate whose fingerprint
+// is not currently obtainable (!ok) is treated as changed AND omitted from the
+// returned map — the omission is load-bearing: purgeVanished derives "vanished"
+// from absence in this map, so a missing fingerprint must not masquerade as a
+// known-present one.
+func PartitionByFingerprint[F any](candidates []F, path func(F) string, fingerprintOf func(F) (source.Fingerprint, bool), known map[string]source.Fingerprint) (changed []F, skipped []string, fingerprints map[string]source.Fingerprint) {
 	changed = make([]F, 0, len(candidates))
 	skipped = make([]string, 0)
 	fingerprints = make(map[string]source.Fingerprint, len(candidates))
 	for _, f := range candidates {
 		p := path(f)
-		size, mtimeNS, ino, ok := StatFingerprint(p)
+		fp, ok := fingerprintOf(f)
 		if !ok {
 			changed = append(changed, f)
 			continue
 		}
-		fp := source.Fingerprint{Size: size, MtimeNS: mtimeNS, Ino: ino}
 		fingerprints[p] = fp
 		if prior, hadPrior := known[p]; hadPrior && prior == fp {
 			skipped = append(skipped, p)
