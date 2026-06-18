@@ -1017,6 +1017,16 @@ func rootIDForFile(rootIDs map[string]string, file string) (string, bool) {
 }
 
 func lookupRootID(rootIDs map[string]string, session trace.Session) string {
+	// Prefer the exact discovery root the parser recorded (raw_events resolve the
+	// same way via rootIDs[event.SourceRoot]); fall back to path-matching the
+	// transcript path for any provider that doesn't set SourceRoot. A DB-backed
+	// provider's synthetic transcript path can't be path-matched, so the direct
+	// lookup is what keeps its sessions' source_root_id non-NULL.
+	if session.SourceRoot != "" {
+		if id, ok := rootIDs[session.SourceRoot]; ok {
+			return id
+		}
+	}
 	id, _ := rootIDForFile(rootIDs, session.TranscriptPath)
 	return id
 }

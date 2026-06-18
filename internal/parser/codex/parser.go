@@ -35,6 +35,7 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events []source.Raw
 		Provider:       trace.InternString(raw.Provider),
 		ProjectName:    trace.InternString("unknown"),
 		TranscriptPath: raw.SourceFile,
+		SourceRoot:     raw.SourceRoot,
 		Status:         trace.StatusUnknown,
 	}
 	session.ID = trace.SessionID(sourceRootID, raw.SourceFile)

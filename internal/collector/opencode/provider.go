@@ -53,15 +53,16 @@ func (provider) IngestFile(ctx context.Context, roots []string, policy redact.Po
 
 // SourceFileExists satisfies ingest.LivenessChecker: opencode's source_file is the
 // synthetic "opencode://<id>" key, which os.Stat cannot validate. A session is
-// gone iff its id no longer resolves in any discovered opencode.db. An
+// gone iff its id no longer resolves in any opencode.db under the roots ingest
+// used (resolved the same way, so a custom-configured root isn't lost). An
 // unrecognized key shape is treated as still-present (conservative: never purge a
 // row we cannot interpret).
-func (provider) SourceFileExists(file string) bool {
+func (provider) SourceFileExists(roots []string, file string) bool {
 	id, ok := strings.CutPrefix(file, sourceFileScheme)
 	if !ok || id == "" {
 		return true
 	}
-	for _, root := range DiscoverRoots(nil) {
+	for _, root := range DiscoverRoots(roots) {
 		dbPath := filepath.Join(root.Path, dbFileName)
 		if !fsx.FileExists(dbPath) {
 			continue

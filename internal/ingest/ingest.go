@@ -34,14 +34,18 @@ func RunFull(ctx context.Context, store *sqlite.Store, opts Options) (Summary, e
 		return Summary{}, fmt.Errorf("ingest %s: %w", opts.Source, err)
 	}
 
-	if err := purgeVanished(ctx, store, opts.Source, known, summary.Fingerprints); err != nil {
+	if err := purgeVanished(ctx, store, opts.Source, opts.Roots, known, summary.Fingerprints); err != nil {
 		return Summary{}, fmt.Errorf("purge vanished transcripts for %s: %w", opts.Source, err)
 	}
 	summary.Source = opts.Source
 	return summary, nil
 }
 
-func purgeVanished(ctx context.Context, store *sqlite.Store, sourceName string, known, present map[string]source.Fingerprint) error {
+// purgeVanished deletes rows for known source_files no longer present. A provider
+// with a synthetic (non-file) source_file implements LivenessChecker and is asked
+// whether the file still exists, given the SAME roots ingest used — otherwise a
+// DB-backed provider re-resolving roots from scratch could check the wrong store.
+func purgeVanished(ctx context.Context, store *sqlite.Store, sourceName string, roots []string, known, present map[string]source.Fingerprint) error {
 	lc, hasLC := livenessFor(sourceName)
 	var gone []string
 	for file := range known {
@@ -50,7 +54,7 @@ func purgeVanished(ctx context.Context, store *sqlite.Store, sourceName string, 
 		}
 		exists := false
 		if hasLC {
-			exists = lc.SourceFileExists(file)
+			exists = lc.SourceFileExists(roots, file)
 		} else {
 			_, err := os.Stat(file)
 			exists = !errors.Is(err, fs.ErrNotExist)

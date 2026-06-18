@@ -118,6 +118,12 @@ type Session struct {
 	ProjectName    string    `json:"project_name,omitzero"`
 	ProjectPath    string    `json:"project_path,omitzero"`
 	TranscriptPath string    `json:"transcript_path"`
+	// SourceRoot is the discovery-root path this session was found under, set by
+	// the parser from the RawSession. The store resolves it directly to
+	// source_root_id (rootIDs[SourceRoot]) rather than path-matching
+	// TranscriptPath — which a DB-backed provider's synthetic transcript path
+	// (opencode's "opencode://<id>") can't satisfy. Transient: not persisted/exported.
+	SourceRoot string `json:"-"`
 	StartedAt      time.Time `json:"started_at,omitzero"`
 	EndedAt        time.Time `json:"ended_at,omitzero"`
 	Status         string    `json:"status"`

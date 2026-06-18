@@ -158,9 +158,11 @@ func EventStatusFor(provider, eventName string) (status string, ok bool) {
 // which every file-backed provider relies on. A DB-backed provider whose
 // source_file is a SYNTHETIC key (opencode's "opencode://<session-id>", never a
 // real path) MUST implement it — else os.Stat always returns ErrNotExist and
-// every row is purged on each reconcile.
+// every row is purged on each reconcile. roots are the discovery roots ingest
+// used, so the check resolves against the same store(s) (a custom-configured
+// opencode root must not be re-resolved to the default).
 type LivenessChecker interface {
-	SourceFileExists(file string) bool
+	SourceFileExists(roots []string, file string) bool
 }
 
 // livenessFor returns the LivenessChecker for name when the provider supplies one.
