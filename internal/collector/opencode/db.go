@@ -3,7 +3,6 @@ package opencode
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -64,30 +63,28 @@ func sessionExists(ctx context.Context, db *sql.DB, sessionID string) (bool, err
 	}
 }
 
-// parentToolUseID returns the callID of the parent session's `task` tool part that
-// spawned childID (its state.metadata.sessionId == childID), or "" when none. This
-// is the cross-session link the parser cannot resolve alone (it sees one session at
-// a time); the collector has the whole DB.
-func parentToolUseID(ctx context.Context, db *sql.DB, childID string) string {
+// taskCallByChild maps each spawned subagent's session id to the callID of the
+// `task` tool part (in its parent session) that spawned it — the cross-session link
+// the parser cannot resolve alone. Built in ONE scan of the part table (resolved
+// once during discovery rather than a full scan per subagent at collect time). A
+// top-level session is simply absent from the map.
+func taskCallByChild(ctx context.Context, db *sql.DB) (map[string]string, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT data FROM part
-		WHERE json_extract(data,'$.tool') = 'task'
-		  AND json_extract(data,'$.state.metadata.sessionId') = ?
-		LIMIT 1`, childID)
+		SELECT json_extract(data,'$.state.metadata.sessionId'), json_extract(data,'$.callID')
+		FROM part WHERE json_extract(data,'$.tool') = 'task'`)
 	if err != nil {
-		return ""
+		return nil, fmt.Errorf("read opencode task parts: %w", err)
 	}
 	defer rows.Close()
-	if !rows.Next() {
-		return ""
+	out := make(map[string]string)
+	for rows.Next() {
+		var child, callID sql.NullString
+		if err := rows.Scan(&child, &callID); err != nil {
+			return nil, fmt.Errorf("scan opencode task part: %w", err)
+		}
+		if child.Valid && child.String != "" && callID.Valid {
+			out[child.String] = callID.String
+		}
 	}
-	var data []byte
-	if err := rows.Scan(&data); err != nil {
-		return ""
-	}
-	var p struct {
-		CallID string `json:"callID"`
-	}
-	_ = json.Unmarshal(data, &p)
-	return p.CallID
+	return out, rows.Err()
 }

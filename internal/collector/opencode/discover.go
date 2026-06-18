@@ -24,20 +24,18 @@ type SourceRoot = ingest.SourceRoot
 const sourceFileScheme = "opencode://"
 
 // SessionFile is one opencode session, addressed inside its single DB rather than
-// as a file on disk. EventSeq is the per-session change fingerprint
-// (event_sequence.seq); MsgParts is the message+part count used only for batch
-// sizing.
+// as a file on disk. It carries only what discovery/ingest needs: identity, the
+// per-session change fingerprint (EventSeq = event_sequence.seq), the message+part
+// count for batch sizing (MsgParts), and the spawning task tool_use id for a
+// subagent (ParentToolUseID, resolved once in discovery). All other session
+// metadata is read by the parser from the leading KindSession envelope, not here.
 type SessionFile struct {
-	Root      SourceRoot
-	DBPath    string
-	SessionID string
-	EventSeq  int64
-	ParentID  string
-	Agent     string
-	Title     string
-	Directory string
-	ProjectID string
-	MsgParts  int
+	Root            SourceRoot
+	DBPath          string
+	SessionID       string
+	EventSeq        int64
+	MsgParts        int
+	ParentToolUseID string
 }
 
 // PathOf is the synthetic source_file key for a session ("opencode://<id>").
@@ -109,38 +107,62 @@ func DiscoverSessions(ctx context.Context, roots []SourceRoot) ([]SessionFile, e
 	return sessions, nil
 }
 
+// sessionSelect is the shared SessionFile projection — identity, the seq
+// fingerprint, and the message+part count for batch sizing — so discoverInDB
+// (ORDER BY) and sessionFileByID (WHERE id=?) can't drift. Callers append the tail.
+const sessionSelect = `
+	SELECT s.id, COALESCE(es.seq,0),
+	       (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) +
+	       (SELECT COUNT(*) FROM part p WHERE p.session_id = s.id)
+	FROM session s
+	LEFT JOIN event_sequence es ON es.aggregate_id = s.id`
+
+func scanSessionFile(root SourceRoot, dbPath string, scan func(...any) error) (SessionFile, error) {
+	f := SessionFile{Root: root, DBPath: dbPath}
+	if err := scan(&f.SessionID, &f.EventSeq, &f.MsgParts); err != nil {
+		return SessionFile{}, err
+	}
+	return f, nil
+}
+
 func discoverInDB(ctx context.Context, root SourceRoot, dbPath string) ([]SessionFile, error) {
 	db, err := openReadOnly(dbPath)
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
-	rows, err := db.QueryContext(ctx, `
-		SELECT s.id, COALESCE(s.parent_id,''), COALESCE(s.agent,''), s.title, s.directory, s.project_id,
-		       COALESCE(es.seq,0),
-		       (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) +
-		       (SELECT COUNT(*) FROM part p WHERE p.session_id = s.id)
-		FROM session s
-		LEFT JOIN event_sequence es ON es.aggregate_id = s.id
-		ORDER BY s.id`)
+	rows, err := db.QueryContext(ctx, sessionSelect+` ORDER BY s.id`)
 	if err != nil {
 		return nil, fmt.Errorf("list opencode sessions: %w", err)
 	}
 	defer rows.Close()
 	var out []SessionFile
 	for rows.Next() {
-		f := SessionFile{Root: root, DBPath: dbPath}
-		if err := rows.Scan(&f.SessionID, &f.ParentID, &f.Agent, &f.Title, &f.Directory, &f.ProjectID, &f.EventSeq, &f.MsgParts); err != nil {
+		f, err := scanSessionFile(root, dbPath, rows.Scan)
+		if err != nil {
 			return nil, fmt.Errorf("scan opencode session: %w", err)
 		}
 		out = append(out, f)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Resolve each subagent's spawning task callID in ONE scan of the part table
+	// (a top-level session is absent from the map ⇒ ""), instead of a full scan per
+	// subagent inside CollectSessionFile.
+	taskByChild, err := taskCallByChild(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].ParentToolUseID = taskByChild[out[i].SessionID]
+	}
+	return out, nil
 }
 
 // SessionFileFromPath resolves a synthetic "opencode://<id>" key back to a
 // SessionFile for the live single-session ingest path, re-querying the row fresh.
-func SessionFileFromPath(path string, roots []SourceRoot) (SessionFile, bool) {
+func SessionFileFromPath(ctx context.Context, path string, roots []SourceRoot) (SessionFile, bool) {
 	id, ok := strings.CutPrefix(path, sourceFileScheme)
 	if !ok || id == "" {
 		return SessionFile{}, false
@@ -150,7 +172,7 @@ func SessionFileFromPath(path string, roots []SourceRoot) (SessionFile, bool) {
 		if !fsx.FileExists(dbPath) {
 			continue
 		}
-		f, ok := sessionFileByID(root, dbPath, id)
+		f, ok := sessionFileByID(ctx, root, dbPath, id)
 		if ok {
 			return f, true
 		}
@@ -158,24 +180,20 @@ func SessionFileFromPath(path string, roots []SourceRoot) (SessionFile, bool) {
 	return SessionFile{}, false
 }
 
-func sessionFileByID(root SourceRoot, dbPath, id string) (SessionFile, bool) {
+func sessionFileByID(ctx context.Context, root SourceRoot, dbPath, id string) (SessionFile, bool) {
 	db, err := openReadOnly(dbPath)
 	if err != nil {
 		return SessionFile{}, false
 	}
 	defer db.Close()
-	f := SessionFile{Root: root, DBPath: dbPath}
-	err = db.QueryRow(`
-		SELECT s.id, COALESCE(s.parent_id,''), COALESCE(s.agent,''), s.title, s.directory, s.project_id,
-		       COALESCE(es.seq,0),
-		       (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) +
-		       (SELECT COUNT(*) FROM part p WHERE p.session_id = s.id)
-		FROM session s
-		LEFT JOIN event_sequence es ON es.aggregate_id = s.id
-		WHERE s.id = ?`, id).Scan(
-		&f.SessionID, &f.ParentID, &f.Agent, &f.Title, &f.Directory, &f.ProjectID, &f.EventSeq, &f.MsgParts)
+	f, err := scanSessionFile(root, dbPath, func(dst ...any) error {
+		return db.QueryRowContext(ctx, sessionSelect+` WHERE s.id = ?`, id).Scan(dst...)
+	})
 	if err != nil {
 		return SessionFile{}, false
+	}
+	if taskByChild, err := taskCallByChild(ctx, db); err == nil {
+		f.ParentToolUseID = taskByChild[id]
 	}
 	return f, true
 }

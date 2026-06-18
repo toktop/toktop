@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -89,7 +88,7 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events []source.Raw
 				addErr(rawEvent, err.Error())
 				continue
 			}
-			applySession(&session, env, sourceRootID, turns, current)
+			applySession(&session, env)
 		case KindUser:
 			flush()
 			current = newTurnBuilder(&session, sourceRootID, len(turns)+1, when)
@@ -123,7 +122,11 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events []source.Raw
 	return ParseResult{Session: session, Turns: turns, ParseErrors: parseErrors}, nil
 }
 
-func applySession(session *trace.Session, env SessionEnvelope, sourceRootID string, turns []trace.Turn, current *turnBuilder) {
+// applySession fills session identity/title/project/subagent fields from the
+// leading KindSession envelope. The collector always emits KindSession first
+// (envelope.go), so no turn exists yet — no project-name backfill is needed; turns
+// built afterward derive their project from the session at newTurnBuilder time.
+func applySession(session *trace.Session, env SessionEnvelope) {
 	if env.ID != "" {
 		session.ExternalID = trace.InternString(env.ID)
 	}
@@ -132,19 +135,7 @@ func applySession(session *trace.Session, env SessionEnvelope, sourceRootID stri
 	}
 	if env.Directory != "" {
 		session.ProjectPath = env.Directory
-		session.ProjectName = trace.InternString(lastPathSegment(env.Directory))
-		for i := range turns {
-			if turns[i].ProjectName == "" || turns[i].ProjectName == "unknown" {
-				turns[i].ProjectName = session.ProjectName
-			}
-			if turns[i].ProjectPath == "" {
-				turns[i].ProjectPath = session.ProjectPath
-			}
-		}
-		if current != nil {
-			current.turn.ProjectName = session.ProjectName
-			current.turn.ProjectPath = session.ProjectPath
-		}
+		session.ProjectName = trace.InternString(shared.LastPathSegment(env.Directory))
 	}
 	if env.ParentID != "" {
 		session.IsSubagent = true
@@ -197,8 +188,8 @@ func (b *turnBuilder) startAssistant(rawEvent source.RawEvent, when time.Time) e
 		TurnID:     b.turn.ID,
 		Index:      len(b.turn.Invocations) + 1,
 		Model:      trace.InternString(data.ModelID),
-		StartedAt:  msTime(data.Time.Created),
-		EndedAt:    msTime(data.Time.Completed),
+		StartedAt:  MsTime(data.Time.Created),
+		EndedAt:    MsTime(data.Time.Completed),
 		StopReason: trace.InternString(data.Finish),
 		Status:     invocationStatusFor(data.Finish),
 		Tokens: trace.Tokens{
@@ -270,11 +261,11 @@ func (b *turnBuilder) recordToolCall(data json.RawMessage, when time.Time, rawEv
 	// name passes through, keeping parity when it already matches the canonical form.
 	name := tp.Tool
 	kind := shared.ClassifyToolKind(name)
-	started := msTime(tp.State.Time.Start)
+	started := MsTime(tp.State.Time.Start)
 	if started.IsZero() {
 		started = when
 	}
-	ended := msTime(tp.State.Time.End)
+	ended := MsTime(tp.State.Time.End)
 	output := b.resolveOutput(tp)
 	call := trace.ToolCall{
 		ID:               trace.ToolCallID(b.turn.ID, tp.CallID, callIndex),
@@ -283,7 +274,7 @@ func (b *turnBuilder) recordToolCall(data json.RawMessage, when time.Time, rawEv
 		Kind:             kind,
 		Name:             name,
 		UseID:            tp.CallID,
-		Input:            inputText(tp.State.Input),
+		Input:            shared.ToolInputJSON(tp.State.Input),
 		Output:           output,
 		OutputBytes:      int64(len(output)),
 		Status:           toolStatus(tp),
@@ -318,7 +309,7 @@ const spillReadCap = 8 << 20 // 8 MiB
 // inline state.output, else — for a failed tool, whose detail lives in state.error
 // with output absent — the error text. A spill read error falls back to inline.
 func (b *turnBuilder) resolveOutput(tp toolPart) string {
-	inline := outputText(tp.State.Output)
+	inline := shared.OutputText(tp.State.Output)
 	if tp.State.Metadata.Truncated && tp.State.Metadata.OutputPath != "" {
 		if full, ok := readCappedFile(tp.State.Metadata.OutputPath, spillReadCap); ok {
 			return full
@@ -481,33 +472,6 @@ func decodePartText(data json.RawMessage) (text string, synthetic bool) {
 	return strings.TrimSpace(p.Text), p.Synthetic
 }
 
-// inputText renders a tool call's input object as a compact JSON string,
-// defaulting to "{}" for an absent/empty input.
-func inputText(raw json.RawMessage) string {
-	if len(raw) == 0 || string(raw) == "null" {
-		return "{}"
-	}
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" {
-		return "{}"
-	}
-	return trimmed
-}
-
-// outputText decodes a tool output value, which opencode emits as a JSON string
-// (the inline output) or, rarely, another JSON value.
-func outputText(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	switch raw[0] {
-	case '"', '[':
-		return shared.DecodeContentText(raw, false)
-	default:
-		return strings.TrimSpace(string(raw))
-	}
-}
-
 // subagentTitleSuffix matches opencode's cosmetic " (@<agent> subagent)" suffix on
 // a subagent session's title, which the parser strips to keep titles clean.
 var subagentTitleSuffix = regexp.MustCompile(`\s*\(@[\w.-]+\s+subagent\)\s*$`)
@@ -516,17 +480,12 @@ func cleanTitle(title string) string {
 	return textutil.OneLine(subagentTitleSuffix.ReplaceAllString(title, ""), 200)
 }
 
-func msTime(ms int64) time.Time {
+// MsTime converts opencode's epoch-millisecond timestamps to a UTC time.Time
+// (zero stays zero so shared.UpdateSessionTimes treats it as absent). Exported so
+// the opencode collector synthesizing RawEvent times shares one definition.
+func MsTime(ms int64) time.Time {
 	if ms == 0 {
 		return time.Time{}
 	}
 	return time.UnixMilli(ms).UTC()
-}
-
-func lastPathSegment(dir string) string {
-	base := path.Base(dir)
-	if base == "." || base == "/" {
-		return "unknown"
-	}
-	return base
 }

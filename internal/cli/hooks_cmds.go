@@ -22,13 +22,14 @@ import (
 // event list, and entry schema.
 
 func runHook(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if printUsageForHelp(args, stdout, `usage: toktop hooks <status|install|uninstall> [flags]
+	caps := strings.Join(hookCapableProviders(), ", ")
+	if printUsageForHelp(args, stdout, fmt.Sprintf(`usage: toktop hooks <status|install|uninstall> [flags]
 
 Install observer hooks that push live session status into toktop; each hook
 POSTs to /v1/hooks:intake. Run install once per provider and scope you watch.
 
 flags:
-  --sources   one or more of claude-code, codex (repeat or comma-separated);
+  --sources   one or more of %s (repeat or comma-separated);
               required for install/uninstall (a write op must name its target);
               status without it shows every hook-capable provider
   --scope     user (default) or project
@@ -39,7 +40,7 @@ examples:
   toktop hooks install --sources=claude-code   # observe Claude Code, user scope
   toktop hooks install --sources=claude-code,codex  # observe both at once
   toktop hooks status                          # show what is installed (all providers)
-  toktop hooks uninstall --sources=claude-code`) {
+  toktop hooks uninstall --sources=claude-code`, caps)) {
 		return 0
 	}
 	if len(args) == 0 {
@@ -55,7 +56,7 @@ examples:
 	endpoint := ""
 	fs := flag.NewFlagSet("hook", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Var(&sourcesFlag, "sources", "hook source providers: claude-code|codex; may be repeated or comma-separated")
+	fs.Var(&sourcesFlag, "sources", "hook source providers: "+strings.Join(hookCapableProviders(), "|")+"; may be repeated or comma-separated")
 	fs.StringVar(&scope, "scope", scope, "user|project")
 	fs.BoolVar(&dryRun, "dry-run", dryRun, "show planned diff without writing")
 	fs.StringVar(&endpoint, "endpoint", endpoint, "toktop hook intake endpoint (default: configured daemon addr)")

@@ -6,11 +6,62 @@ package shared
 
 import (
 	"encoding/json"
+	"path"
 	"strings"
 	"time"
 
 	"toktop.unceas.dev/internal/trace"
 )
+
+// LastPathSegment returns the final element of a working-directory path, or
+// "unknown" for "."/"/". Shared by provider parsers deriving a session/turn
+// ProjectName from a cwd.
+func LastPathSegment(dir string) string {
+	base := path.Base(dir)
+	if base == "." || base == "/" {
+		return "unknown"
+	}
+	return base
+}
+
+// OutputText decodes a tool-output value that may be a JSON string, an array of
+// content blocks (joined via DecodeContentText), or another JSON value (trimmed).
+func OutputText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	switch raw[0] {
+	case '"', '[':
+		return DecodeContentText(raw, false)
+	default:
+		return strings.TrimSpace(string(raw))
+	}
+}
+
+// ToolInputJSON renders a tool call's input as a compact JSON string, defaulting
+// to "{}" for absent/empty/null input. A JSON-string input is unwrapped (codex
+// emits some args as a quoted string); object inputs (claude-code/opencode) pass
+// through unchanged. One definition of the neutral tool-input projection rule.
+func ToolInputJSON(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "{}"
+	}
+	if raw[0] == '"' {
+		var text string
+		if err := json.Unmarshal(raw, &text); err == nil {
+			text = strings.TrimSpace(text)
+			if text == "" {
+				return "{}"
+			}
+			return text
+		}
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return "{}"
+	}
+	return trimmed
+}
 
 // ClassifyToolKind reports whether a tool name is an MCP tool (mcp__server__tool)
 // or a built-in tool.

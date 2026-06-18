@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -100,7 +99,7 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events []source.Raw
 			}
 			if meta.CWD != "" {
 				session.ProjectPath = meta.CWD
-				session.ProjectName = trace.InternString(lastPathSegment(meta.CWD))
+				session.ProjectName = trace.InternString(shared.LastPathSegment(meta.CWD))
 				backfillProject(turns, session.ProjectName, session.ProjectPath)
 				if current != nil {
 					current.turn.ProjectName = session.ProjectName
@@ -114,7 +113,7 @@ func ParseEvents(ctx context.Context, raw source.RawSession, events []source.Raw
 			projectPath := textutil.FirstNonBlank(payload.CWD, session.ProjectPath)
 			projectName := session.ProjectName
 			if projectPath != "" {
-				projectName = lastPathSegment(projectPath)
+				projectName = shared.LastPathSegment(projectPath)
 			}
 			current = newTurnBuilder(&session, sourceRootID, len(turns)+1, projectName, projectPath, payload.Model, contextWindow, when)
 		case "response_item":
@@ -228,13 +227,13 @@ func (b *turnBuilder) handleResponseItem(raw json.RawMessage, when time.Time, ra
 			b.turn.Invocations = append(b.turn.Invocations, invocation)
 		}
 	case "function_call":
-		b.recordToolCall(payload.Name, payload.CallID, argumentText(payload.Arguments), payload.Namespace, when, rawEvent)
+		b.recordToolCall(payload.Name, payload.CallID, shared.ToolInputJSON(payload.Arguments), payload.Namespace, when, rawEvent)
 	case "custom_tool_call":
 		// Codex's apply_patch (and other custom tools) arrive as custom_tool_call,
 		// not function_call — the call args live under "input", and it carries no
 		// namespace. Recording it mirrors the function_call path so file edits and
 		// the tool-call count are not silently dropped.
-		b.recordToolCall(payload.Name, payload.CallID, argumentText(payload.Input), "", when, rawEvent)
+		b.recordToolCall(payload.Name, payload.CallID, shared.ToolInputJSON(payload.Input), "", when, rawEvent)
 	case "function_call_output", "custom_tool_call_output":
 		return b.recordToolOutput(payload.CallID, payload.Output, when, rawEvent)
 	}
@@ -294,7 +293,7 @@ func (b *turnBuilder) recordToolOutput(callID string, rawOutput json.RawMessage,
 		return []trace.ParseError{b.duplicateToolOutputError(rawEvent, callID)}
 	}
 	call := &b.turn.ToolCalls[idx]
-	output := outputText(rawOutput)
+	output := shared.OutputText(rawOutput)
 	call.Output = output
 	call.OutputBytes = int64(len(output))
 	call.EndedAt = when
@@ -523,38 +522,6 @@ func decodeTurnContext(raw json.RawMessage) turnContext {
 	return payload
 }
 
-func argumentText(raw json.RawMessage) string {
-	if len(raw) == 0 || string(raw) == "null" {
-		return "{}"
-	}
-	if raw[0] == '"' {
-		var text string
-		if err := json.Unmarshal(raw, &text); err == nil {
-			text = strings.TrimSpace(text)
-			if text == "" {
-				return "{}"
-			}
-			return text
-		}
-	}
-	return strings.TrimSpace(string(raw))
-}
-
-// outputText decodes a function_call_output.output value, which may be a JSON
-// string, an array of multimodal content blocks, or some other JSON value.
-// Non-string outputs never abort the surrounding responsePayload unmarshal.
-func outputText(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	switch raw[0] {
-	case '"', '[':
-		return shared.DecodeContentText(raw, false)
-	default:
-		return strings.TrimSpace(string(raw))
-	}
-}
-
 // outputFailure inspects a tool's output for an explicit failure signal. Codex tools
 // carry no separate success flag, so a failure shows only in the output text, in one
 // of a few shapes: a shell exec reports "Process exited with code N", the custom-tool
@@ -690,12 +657,4 @@ func openingTagName(text string) (string, bool) {
 		}
 	}
 	return name, true
-}
-
-func lastPathSegment(cwd string) string {
-	base := path.Base(cwd)
-	if base == "." || base == "/" {
-		return "unknown"
-	}
-	return base
 }

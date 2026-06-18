@@ -112,16 +112,18 @@ func (provider) UninstallPlugin(scope string, dryRun bool) (string, error) {
 }
 
 // PluginEventStatus maps opencode bus event types to neutral live-status values.
-// Kept in lockstep with the plugin's WATCH set (plugin/toktop-observer.js).
+// The cases are exactly the JS plugin's WATCH set (plugin/toktop-observer.js) — the
+// plugin is the only producer of opencode-named events, so an event it never emits
+// would be a dead case here; keep the two lists identical.
 func (provider) PluginEventStatus(eventName string) (string, bool) {
 	switch eventName {
-	case "permission.updated", "permission.replied":
+	case "permission.updated":
 		return trace.StatusAwaitingConfirmation, true
 	case "session.error":
 		return trace.StatusFailed, true
 	case "session.idle":
 		return trace.StatusSuccess, true
-	case "session.created", "session.updated", "message.updated", "message.part.updated":
+	case "session.created", "session.updated", "message.updated":
 		return trace.StatusActive, true
 	}
 	return "", false

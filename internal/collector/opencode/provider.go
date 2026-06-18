@@ -23,12 +23,13 @@ func (provider) Aliases() []string { return []string{"oc"} }
 
 func (provider) WatchSubdir() string { return "" } // single DB lives at the data-dir root
 
-// TranscriptExt is opencode's WAL sidecar. opencode commits land in
-// opencode.db-wal (WAL mode), so a Write there is the cheapest low-latency signal
-// that something changed; it is only a coarse hint that triggers a full reconcile
-// (which seq-skips unchanged sessions). The authoritative refresh is the periodic
-// reconcile, and live STATUS comes from the opencode plugin, not this file watch.
-func (provider) TranscriptExt() string { return ".db-wal" }
+// TranscriptExt is "" so opencode contributes no fsnotify watch extension. Its
+// commits land in opencode.db-wal, which no per-file ingest can claim (there is no
+// per-session transcript file), so watching it only routed every commit through the
+// daemon's unmapped-file path and inflated that diagnostic counter. opencode trace
+// ingest is driven by the periodic full reconcile (which seq-skips unchanged
+// sessions); live STATUS is the plugin push — neither needs a file-watch.
+func (provider) TranscriptExt() string { return "" }
 
 func (provider) ResolveRoots(explicit, file []string) []ingest.SourceRoot {
 	return resolveRoots(explicit, file)
@@ -40,7 +41,7 @@ func (provider) Ingest(ctx context.Context, roots []string, policy redact.Policy
 
 func (provider) IngestFile(ctx context.Context, roots []string, policy redact.Policy, path string) (ingest.Result, bool, error) {
 	sourceRoots := DiscoverRoots(roots)
-	file, ok := SessionFileFromPath(path, sourceRoots)
+	file, ok := SessionFileFromPath(ctx, path, sourceRoots)
 	if !ok {
 		return ingest.Result{}, false, nil
 	}

@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"time"
 
 	opencodeparser "toktop.unceas.dev/internal/parser/opencode"
@@ -27,19 +26,15 @@ func CollectSessionFile(ctx context.Context, file SessionFile) (source.RawSessio
 	}
 	defer db.Close()
 
+	// Project path/name and the subagent markers (IsSubagent/ParentExternalID/
+	// AgentType/SubagentKind) are derived by the parser from the leading KindSession
+	// envelope, not from RawSession — only ParentToolUseID needs the collector's
+	// cross-session DB visibility (resolved once in DiscoverSessions), so it rides here.
 	raw := source.RawSession{
-		Provider:    "opencode",
-		SourceRoot:  file.Root.Path,
-		SourceFile:  PathOf(file),
-		ProjectPath: file.Directory,
-		ProjectName: filepath.Base(file.Directory),
-	}
-	if file.ParentID != "" {
-		raw.IsSubagent = true
-		raw.SubagentKind = "agent"
-		raw.ParentExternalID = file.ParentID
-		raw.AgentType = file.Agent
-		raw.ParentToolUseID = parentToolUseID(ctx, db, file.SessionID)
+		Provider:        "opencode",
+		SourceRoot:      file.Root.Path,
+		SourceFile:      PathOf(file),
+		ParentToolUseID: file.ParentToolUseID,
 	}
 
 	sourceID := trace.SourceID(raw.Provider)
@@ -84,7 +79,7 @@ func CollectSessionFile(ctx context.Context, file SessionFile) (source.RawSessio
 	if payload, mErr := json.Marshal(sessionEnv); mErr != nil {
 		addErr("marshal session envelope: " + mErr.Error())
 	} else {
-		add(opencodeparser.KindSession, msTime(sessionEnv.TimeCreated), payload)
+		add(opencodeparser.KindSession, opencodeparser.MsTime(sessionEnv.TimeCreated), payload)
 	}
 
 	// 2. Parts grouped under their message, in message order.
@@ -120,7 +115,7 @@ func CollectSessionFile(ctx context.Context, file SessionFile) (source.RawSessio
 		if payload, mErr := json.Marshal(env); mErr != nil {
 			addErr("marshal message envelope " + id + ": " + mErr.Error())
 		} else {
-			add(kind, msTime(tc), payload)
+			add(kind, opencodeparser.MsTime(tc), payload)
 		}
 		for _, p := range partsByMsg[id] {
 			penv := opencodeparser.PartEnvelope{ID: p.id, MessageID: id, Data: json.RawMessage(p.data)}
@@ -129,7 +124,7 @@ func CollectSessionFile(ctx context.Context, file SessionFile) (source.RawSessio
 				addErr("marshal part envelope " + p.id + ": " + mErr.Error())
 				continue
 			}
-			add(p.typ, msTime(p.timeCreated), payload)
+			add(p.typ, opencodeparser.MsTime(p.timeCreated), payload)
 		}
 	}
 	if err := msgRows.Err(); err != nil {
@@ -167,13 +162,4 @@ func loadParts(ctx context.Context, db *sql.DB, sessionID string) (map[string][]
 		out[msgID] = append(out[msgID], p)
 	}
 	return out, rows.Err()
-}
-
-// msTime converts opencode's epoch-millisecond timestamps to a UTC time.Time
-// (zero stays zero so shared.UpdateSessionTimes treats it as absent).
-func msTime(ms int64) time.Time {
-	if ms == 0 {
-		return time.Time{}
-	}
-	return time.UnixMilli(ms).UTC()
 }
