@@ -99,6 +99,59 @@ func HookInstallerFor(name string) (HookInstaller, bool) {
 	return hi, ok
 }
 
+// PluginInstaller is the optional realtime-install seam for a provider whose live
+// status is delivered by a host PLUGIN rather than config-level shell hooks
+// (opencode). It has no per-event settings entries and no embedded curl command —
+// the producer is the plugin itself, which POSTs to /v1/hooks:intake — so it
+// cannot reuse HookInstaller. The provider owns the plugin asset (endpoint/token
+// baked in at install time) and where it is written; a provider that uses shell
+// hooks implements HookInstaller instead. Both are accepted by `toktop hooks
+// install/uninstall/status`.
+type PluginInstaller interface {
+	// PluginConfigPath returns the plugin asset file path toktop manages and a
+	// human label, for scope ("user" | "project").
+	PluginConfigPath(scope string) (path string, label string, err error)
+	// InstallPlugin writes the plugin asset, baking in the resolved intake
+	// endpoint and (for a TCP endpoint) bearer token. dryRun returns the planned
+	// write without touching disk. Returns a human-facing summary.
+	InstallPlugin(scope, endpoint, token string, dryRun bool) (summary string, err error)
+	// UninstallPlugin removes the plugin asset. Returns a human-facing summary.
+	UninstallPlugin(scope string, dryRun bool) (summary string, err error)
+	// PluginEventStatus maps a provider realtime event name to a trace.Status*
+	// value. ok=false means "no provider opinion; use the generic heuristic".
+	PluginEventStatus(eventName string) (status string, ok bool)
+}
+
+// PluginInstallerFor returns the PluginInstaller for name when the provider
+// delivers realtime status via a plugin.
+func PluginInstallerFor(name string) (PluginInstaller, bool) {
+	p, ok := registry[name]
+	if !ok {
+		return nil, false
+	}
+	pi, ok := p.(PluginInstaller)
+	return pi, ok
+}
+
+// EventStatusFor resolves a realtime event name to a trace.Status* value via
+// whichever install seam the provider implements — HookInstaller for shell-hook
+// providers, PluginInstaller for plugin providers. It is the single status-mapping
+// lookup the live broker calls, so a new realtime seam needs no special-case at
+// the use site. ok=false means no provider opinion (use the generic heuristic).
+func EventStatusFor(provider, eventName string) (status string, ok bool) {
+	if hi, ok := HookInstallerFor(provider); ok {
+		if st, mapped := hi.HookEventStatus(eventName); mapped {
+			return st, true
+		}
+	}
+	if pi, ok := PluginInstallerFor(provider); ok {
+		if st, mapped := pi.PluginEventStatus(eventName); mapped {
+			return st, true
+		}
+	}
+	return "", false
+}
+
 // LivenessChecker is the optional seam letting a Provider decide whether a
 // previously-ingested source_file still exists, used by purgeVanished to drop
 // rows for a vanished source. Not implemented ⇒ the default os.Stat(file) check,

@@ -5,13 +5,14 @@
 <h1 align="center">Toktop</h1>
 
 <p align="center">
-  Local-first usage and live status for Claude Code &amp; Codex sessions — skills, MCP servers, and tools.
+  Local-first usage and live status for Claude Code, Codex &amp; opencode sessions — skills, MCP servers, and tools.
 </p>
 
-`toktop` reads the JSONL transcripts that **Claude Code** and **Codex** write on your
-machine, normalizes them into one provider-neutral model, stores them in a local SQLite
-database with full-text search, and exposes everything through a CLI and an HTTP API v1 —
-including a low-latency **live event stream** over Server-Sent Events.
+`toktop` reads the local session data that **Claude Code**, **Codex**, and **opencode**
+record on your machine (JSONL transcripts for the first two, a SQLite store for opencode),
+normalizes them into one provider-neutral model, stores them in a local SQLite database with
+full-text search, and exposes everything through a CLI and an HTTP API v1 — including a
+low-latency **live event stream** over Server-Sent Events.
 
 It answers questions like: *which MCP servers and skills are installed but never actually
 used? where did a tool retry-loop burn tokens? how many turns and tokens did a session
@@ -109,7 +110,7 @@ The bare `go build` above stamps no version metadata, so `toktop --version` repo
 
 ```bash
 toktop init        # create ~/.toktop/{config,data}
-toktop ingest      # import Claude Code / Codex transcripts (idempotent)
+toktop ingest      # import Claude Code / Codex / opencode sessions (idempotent)
 toktop summary     # imported counts and token totals
 toktop status      # what's happening in your sessions right now
 ```
@@ -122,7 +123,7 @@ roots/hooks).
 ## How it works
 
 ```
-Claude Code / Codex transcripts (JSONL)
+Claude Code / Codex transcripts (JSONL) · opencode session store (SQLite)
         │  collect + parse (per provider)
         ▼
    provider-neutral trace index
@@ -132,9 +133,11 @@ Claude Code / Codex transcripts (JSONL)
    local SQLite (+ FTS5 full-text index)  ──►  CLI · HTTP API v1 · live SSE stream
 ```
 
-Transcripts are the **source of truth**: Toktop stores normalized rows plus a
-`(file, offset)` pointer and re-reads the raw line on demand. Deleting a transcript drops its
-raw bytes; the normalized rows survive until the next reconcile.
+The agent's own session data is the **source of truth**: Toktop stores normalized rows plus a
+pointer back to it (a `(file, offset)` into the JSONL transcript, or the opencode session id)
+and re-reads on demand. Deleting a session's source drops its raw bytes; the normalized rows
+survive until the next reconcile. Change-detection is per-provider — file stat for the JSONL
+providers, opencode's `event_sequence.seq` for its SQLite store.
 
 ---
 
@@ -300,15 +303,23 @@ little; installing observer hooks makes status near-instant. Each hook POSTs to
 `/v1/hooks:intake`.
 
 ```bash
-toktop hooks install --sources=claude-code        # observe Claude Code (user scope)
-toktop hooks install --sources=claude-code,codex  # both at once
-toktop hooks status                               # what's installed
+toktop hooks install --sources=claude-code             # observe Claude Code (user scope)
+toktop hooks install --sources=claude-code,codex       # both at once
+toktop hooks install --sources=opencode                # opencode (installs a plugin, see below)
+toktop hooks status                                    # what's installed
 toktop hooks uninstall --sources=claude-code
 ```
 
 Hook commands default to the configured daemon address. The default unix socket
 needs no token; a TCP hook endpoint references `~/.toktop/config/api-token`
 instead of embedding the secret in the agent config.
+
+**opencode has no config-level shell hooks**, so `hooks install --sources=opencode`
+writes a small observer **plugin** into opencode's auto-loaded `plugins/` dir
+(`~/.config/opencode/plugins/toktop-observer.js`) instead of a `curl` entry; the plugin
+POSTs the same `/v1/hooks:intake` payload on each session event. It takes effect on
+opencode's next launch. A TCP endpoint bakes the bearer token into the plugin file (a
+secret on disk under the opencode config dir), so the default unix socket is preferred.
 
 **Claude Code hooks fire immediately; Codex hooks must be trusted first.** Codex treats a
 third-party (unmanaged) hook as *untrusted* the first time it sees it and **only runs hooks
@@ -450,9 +461,11 @@ rm -rf ~/.toktop                                      # all config, data, DB, an
 ```
 
 Order matters: uninstall the hooks **before** removing the binary — they live in
-Claude Code `settings.json` (for example `~/.claude/settings.json`, or `CLAUDE_CONFIG_DIR`)
-and Codex `~/.codex/hooks.json`. The installed hook command is a `curl` POST to the toktop
-daemon intake endpoint, so stale entries keep trying to reach a daemon you removed.
+Claude Code `settings.json` (for example `~/.claude/settings.json`, or `CLAUDE_CONFIG_DIR`),
+Codex `~/.codex/hooks.json`, and (for opencode) the observer plugin at
+`~/.config/opencode/plugins/toktop-observer.js`. The installed Claude Code / Codex hook is a
+`curl` POST to the toktop daemon intake endpoint, and the opencode plugin POSTs to the same
+endpoint, so stale entries keep trying to reach a daemon you removed.
 
 </details>
 

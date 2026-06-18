@@ -126,11 +126,23 @@ examples:
 	return 2
 }
 
+// realtimeInstallable reports whether a provider can be targeted by
+// `toktop hooks install` — either via shell hooks (HookInstaller) or a host
+// plugin (PluginInstaller). One predicate so every gate accepts both seams.
+func realtimeInstallable(name string) bool {
+	if _, ok := ingest.HookInstallerFor(name); ok {
+		return true
+	}
+	_, ok := ingest.PluginInstallerFor(name)
+	return ok
+}
+
 // normalizeHookSource folds a provider alias (via the shared ingest.NormalizeName)
-// then gates on the HookInstaller seam, so only hook-capable providers are valid.
+// then gates on a realtime-install seam, so only hook/plugin-capable providers are
+// valid.
 func normalizeHookSource(sourceName string) (string, error) {
 	n := ingest.NormalizeName(sourceName)
-	if _, ok := ingest.HookInstallerFor(n); !ok {
+	if !realtimeInstallable(n) {
 		return "", fmt.Errorf("unsupported hook source %q", sourceName)
 	}
 	return n, nil
@@ -144,12 +156,13 @@ func resolveHookSources(values rootList) ([]string, error) {
 	return resolveTokens(values, normalizeHookSource)
 }
 
-// hookCapableProviders lists registered providers that implement HookInstaller,
-// sorted — the default target set for read-only `toktop hooks status`.
+// hookCapableProviders lists registered providers with a realtime-install seam
+// (shell hooks OR a plugin), sorted — the default target set for read-only
+// `toktop hooks status`.
 func hookCapableProviders() []string {
 	var out []string
 	for _, name := range ingest.SortedProviders() {
-		if _, ok := ingest.HookInstallerFor(name); ok {
+		if realtimeInstallable(name) {
 			out = append(out, name)
 		}
 	}
@@ -169,11 +182,7 @@ func hookInstaller(sourceName string) (ingest.HookInstaller, error) {
 // user-scope settings for the given source, so `toktop doctor` reflects the real
 // installation state instead of always reporting "not installed".
 func hooksInstalled(sourceName string) bool {
-	hi, ok := ingest.HookInstallerFor(sourceName)
-	if !ok {
-		return false
-	}
-	path, _, err := hi.HookConfigPath("user")
+	path, _, err := realtimeConfigPath(sourceName, "user")
 	if err != nil {
 		return false
 	}
@@ -184,13 +193,21 @@ func hooksInstalled(sourceName string) bool {
 	return strings.Contains(string(data), ingest.HookSentinel)
 }
 
-func runHookStatus(sourceName, scope string, stdout, stderr io.Writer) int {
-	hi, err := hookInstaller(sourceName)
-	if err != nil {
-		cliErr(stderr, err)
-		return 1
+// realtimeConfigPath returns the file path + label a provider's realtime install
+// targets — the shell-hook settings file (HookInstaller) or the plugin asset
+// (PluginInstaller). HookInstaller is preferred when a provider implements both.
+func realtimeConfigPath(sourceName, scope string) (string, string, error) {
+	if hi, ok := ingest.HookInstallerFor(sourceName); ok {
+		return hi.HookConfigPath(scope)
 	}
-	path, pathLabel, err := hi.HookConfigPath(scope)
+	if pi, ok := ingest.PluginInstallerFor(sourceName); ok {
+		return pi.PluginConfigPath(scope)
+	}
+	return "", "", fmt.Errorf("provider %q does not support realtime install", sourceName)
+}
+
+func runHookStatus(sourceName, scope string, stdout, stderr io.Writer) int {
+	path, pathLabel, err := realtimeConfigPath(sourceName, scope)
 	if err != nil {
 		cliErr(stderr, err)
 		return 1
@@ -216,6 +233,14 @@ func runHookStatus(sourceName, scope string, stdout, stderr io.Writer) int {
 }
 
 func runHookInstall(_ context.Context, sourceName, scope, endpoint, home string, dryRun bool, stdout, stderr io.Writer) int {
+	// A plugin provider (opencode) has no shell-hook settings file; its realtime
+	// producer is a host plugin the provider writes. HookInstaller is preferred
+	// when a provider implements both.
+	if _, isHook := ingest.HookInstallerFor(sourceName); !isHook {
+		if pi, ok := ingest.PluginInstallerFor(sourceName); ok {
+			return runPluginInstall(pi, sourceName, scope, endpoint, home, dryRun, stdout, stderr)
+		}
+	}
 	hi, err := hookInstaller(sourceName)
 	if err != nil {
 		cliErr(stderr, err)
@@ -288,7 +313,59 @@ func runHookInstall(_ context.Context, sourceName, scope, endpoint, home string,
 	return 0
 }
 
+// runPluginInstall installs a plugin-provider's realtime asset. The CLI keeps the
+// shared concerns (endpoint resolution already done by the caller, TCP token
+// gating, spool-dir creation, the post-install note); the provider owns writing
+// the asset and where.
+func runPluginInstall(pi ingest.PluginInstaller, sourceName, scope, endpoint, home string, dryRun bool, stdout, stderr io.Writer) int {
+	token := ""
+	if !strings.HasPrefix(endpoint, "unix:") {
+		// A TCP endpoint needs a bearer token. Unlike a shell hook (which can
+		// $(cat) the token file at run time), a plugin asset must bake the value, so
+		// it lands on disk under the opencode config dir — only on explicit TCP
+		// opt-in. In --dry-run with no token yet, refuse rather than generate one.
+		if _, ok := apiTokenPath(); !ok && dryRun {
+			cliErrf(stderr, "TCP hook endpoint requires an API token file; rerun without --dry-run to generate it or start the TCP daemon first")
+			return 2
+		}
+		tok, err := ensureAPIToken(stderr)
+		if err != nil {
+			cliErr(stderr, err)
+			return 1
+		}
+		token = tok
+	}
+	summary, err := pi.InstallPlugin(scope, endpoint, token, dryRun)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	fmt.Fprintln(stdout, summary)
+	if !dryRun {
+		spool := filepath.Join(paths.DataDirUnder(home), "hooks", "spool")
+		_ = os.MkdirAll(spool, 0o700)
+		fmt.Fprintf(stdout, "spool dir: %s\n", spool)
+	}
+	if noter, ok := pi.(ingest.HookInstallNoter); ok {
+		if note := noter.HookInstallNote(); note != "" {
+			fmt.Fprintf(stdout, "→ %s\n", note)
+		}
+	}
+	return 0
+}
+
 func runHookUninstall(sourceName, scope string, dryRun bool, stdout, stderr io.Writer) int {
+	if _, isHook := ingest.HookInstallerFor(sourceName); !isHook {
+		if pi, ok := ingest.PluginInstallerFor(sourceName); ok {
+			summary, err := pi.UninstallPlugin(scope, dryRun)
+			if err != nil {
+				cliErr(stderr, err)
+				return 1
+			}
+			fmt.Fprintln(stdout, summary)
+			return 0
+		}
+	}
 	hi, err := hookInstaller(sourceName)
 	if err != nil {
 		cliErr(stderr, err)

@@ -299,10 +299,8 @@ func normalizeLiveEvent(ev LiveEvent) LiveEvent {
 	// before RawEventName existed.
 	if ev.Status == "" {
 		if ev.Provider != "" && ev.RawEventName != "" {
-			if hi, ok := ingest.HookInstallerFor(ev.Provider); ok {
-				if st, mapped := hi.HookEventStatus(ev.RawEventName); mapped {
-					ev.Status = st
-				}
+			if st, mapped := ingest.EventStatusFor(ev.Provider, ev.RawEventName); mapped {
+				ev.Status = st
 			}
 		}
 		if ev.Status == "" {
