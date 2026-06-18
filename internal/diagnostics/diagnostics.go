@@ -68,7 +68,20 @@ func RunProvider(ctx context.Context, source string, sourceDirs []string, hooksI
 	results := make([]CheckResult, 0, 3)
 	results = append(results, checkHooks(hooksInstalled))
 	results = append(results, checkSourceDirs(ctx, source, sourceDirs)...)
-	results = append(results, checkFSNotify(ctx, sourceDirs))
+	if ingest.TranscriptExt(source) == "" {
+		// A provider with no transcript extension isn't file-watched — the daemon's
+		// watcher skips registering it (an empty ext can never pass ShouldIngest), so
+		// probing fsnotify here would falsely imply a live watch. Its trace ingest
+		// runs via the periodic reconcile instead.
+		results = append(results, CheckResult{
+			Status:  StatusInfo,
+			Name:    "fsnotify",
+			Detail:  source,
+			Message: "not file-watched (DB-based provider; ingested via periodic reconcile)",
+		})
+	} else {
+		results = append(results, checkFSNotify(ctx, sourceDirs))
+	}
 	return results
 }
 

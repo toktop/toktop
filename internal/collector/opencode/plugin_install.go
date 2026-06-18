@@ -111,19 +111,27 @@ func (provider) UninstallPlugin(scope string, dryRun bool) (string, error) {
 	return "removed toktop observer plugin source=opencode from " + path, nil
 }
 
-// PluginEventStatus maps opencode bus event types to neutral live-status values.
-// The cases are exactly the JS plugin's WATCH set (plugin/toktop-observer.js) — the
-// plugin is the only producer of opencode-named events, so an event it never emits
-// would be a dead case here; keep the two lists identical.
+// PluginEventStatus maps the opencode event names the JS plugin emits to neutral
+// live-status values. The cases are exactly the names the plugin's FORWARD set sends
+// (plugin/toktop-observer.js) — including the synthesized session.status.<type>
+// names it derives from properties.status.type — and the plugin is the only producer
+// of opencode-named events, so keep the two lists identical. session.status.busy is
+// the authoritative "working" signal and session.idle / session.status.idle the
+// "done" one; content-update events (session.created/updated, message.updated) are
+// NOT forwarded (the plugin only TRACKs created/updated to learn subagent ids, which
+// it then drops), so a finished session is never reopened by trailing end-of-turn
+// bookkeeping and a subagent never injects a phantom top-level row.
 func (provider) PluginEventStatus(eventName string) (string, bool) {
 	switch eventName {
-	case "permission.updated":
+	case "permission.asked":
 		return trace.StatusAwaitingConfirmation, true
+	case "permission.replied":
+		return trace.StatusActive, true
 	case "session.error":
 		return trace.StatusFailed, true
-	case "session.idle":
+	case "session.idle", "session.status.idle":
 		return trace.StatusSuccess, true
-	case "session.created", "session.updated", "message.updated":
+	case "session.status.busy", "session.status.retry":
 		return trace.StatusActive, true
 	}
 	return "", false

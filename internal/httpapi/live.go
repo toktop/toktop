@@ -267,6 +267,15 @@ func liveEventSupersedes(incoming LiveEvent, incomingID uint64, prev LiveEvent) 
 	if incoming.At.Before(prev.At) {
 		return false
 	}
+	// Equal timestamps — common with coarse second/ms hook clocks, where a finished
+	// round and the next round's first event can share an instant. The later-arriving
+	// event wins by monotonic EventID; we do NOT bias toward a terminal status. At a
+	// tie nothing can distinguish a trailing straggler of the finished round from a
+	// genuine next round, and a terminal bias would strand a session at success when
+	// the next round's active/busy lands on the same timestamp. opencode's old
+	// idle-then-trailing-update reopen (which once motivated a terminal bias here) is
+	// prevented at the producer instead — the observer plugin no longer forwards
+	// content-update events — so the broker stays provider-neutral.
 	prevID, _ := parseEventID(prev.EventID)
 	return incomingID > prevID
 }

@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"toktop.unceas.dev/internal/fsx"
 	"toktop.unceas.dev/internal/parser/components"
 	"toktop.unceas.dev/internal/parser/shared"
 	"toktop.unceas.dev/internal/source"
@@ -181,7 +183,19 @@ func (b *turnBuilder) startAssistant(rawEvent source.RawEvent, when time.Time) e
 		return err
 	}
 	var data assistantData
-	_ = json.Unmarshal(env.Data, &data)
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		// Don't silently materialize a zero-token success step from unparseable data:
+		// record the gap (caller addErrs the returned error) and skip the invocation,
+		// matching the KindSession / message-envelope decode paths.
+		return fmt.Errorf("assistant message data: %w", err)
+	}
+	// On an aborted step finish is empty; surface the abort reason (error.name) as
+	// the stop reason so the interrupted step isn't left with a blank one.
+	stopReason := data.Finish
+	if stopReason == "" {
+		stopReason = data.Error.Name
+	}
+	status := invocationStatusFor(data.Finish, data.Error.Name)
 	invocation := trace.Invocation{
 		ID:         trace.InvocationID(b.turn.ID, len(b.turn.Invocations)+1),
 		Provider:   b.turn.Provider,
@@ -190,8 +204,8 @@ func (b *turnBuilder) startAssistant(rawEvent source.RawEvent, when time.Time) e
 		Model:      trace.InternString(data.ModelID),
 		StartedAt:  MsTime(data.Time.Created),
 		EndedAt:    MsTime(data.Time.Completed),
-		StopReason: trace.InternString(data.Finish),
-		Status:     invocationStatusFor(data.Finish),
+		StopReason: trace.InternString(stopReason),
+		Status:     status,
 		Tokens: trace.Tokens{
 			Input: data.Tokens.Input,
 			// opencode reports reasoning tokens separately from output (output is
@@ -211,6 +225,13 @@ func (b *turnBuilder) startAssistant(rawEvent source.RawEvent, when time.Time) e
 		invocation.EndedAt = when
 	}
 	b.turn.Invocations = append(b.turn.Invocations, invocation)
+	// An aborted/cancelled step interrupted the whole turn — surface it at the turn
+	// (and thus session) level too, not just the invocation, matching codex/claude-code
+	// which mark the turn interrupted directly. ResolveTurnStatus keeps a turn already
+	// marked interrupted, so this wins over the success/failed tool-call rollup.
+	if status == trace.StatusInterrupted {
+		b.turn.Status = trace.StatusInterrupted
+	}
 	return nil
 }
 
@@ -223,7 +244,13 @@ func (b *turnBuilder) handlePart(rawEvent source.RawEvent, when time.Time, addEr
 	}
 	switch rawEvent.EventType {
 	case KindText:
-		text, synthetic := decodePartText(env.Data)
+		text, synthetic, err := decodePartText(env.Data)
+		if err != nil {
+			// Inner text payload is malformed though the envelope parsed: record the
+			// gap rather than silently dropping the message text (like startAssistant).
+			addErr(rawEvent, "text part data: "+err.Error())
+			return
+		}
 		// opencode marks injected text — an @file mention expands into a synthetic
 		// "Called the <tool> tool…" echo plus a <path>…<content>… file dump on the
 		// SAME user message — with synthetic=true. Those are tool/file context, not
@@ -242,15 +269,18 @@ func (b *turnBuilder) handlePart(rawEvent source.RawEvent, when time.Time, addEr
 			b.turn.AssistantFinal = text
 		}
 	case KindTool:
-		b.recordToolCall(env.Data, when, rawEvent)
+		b.recordToolCall(env.Data, when, rawEvent, addErr)
 	}
 	// reasoning / step-start / step-finish / file carry no neutral structural
 	// mapping; they remain in raw_events for provenance.
 }
 
-func (b *turnBuilder) recordToolCall(data json.RawMessage, when time.Time, rawEvent source.RawEvent) {
+func (b *turnBuilder) recordToolCall(data json.RawMessage, when time.Time, rawEvent source.RawEvent, addErr func(source.RawEvent, string)) {
 	var tp toolPart
 	if err := json.Unmarshal(data, &tp); err != nil {
+		// Don't let an unparseable tool part vanish from the trace without a trace:
+		// record the gap (matching startAssistant / the text-part path).
+		addErr(rawEvent, "tool part data: "+err.Error())
 		return
 	}
 	rawEventID := trace.RawEventID(b.sourceRootID, rawEvent.SourceFile, rawEvent.LineNo, rawEvent.Hash())
@@ -311,8 +341,15 @@ const spillReadCap = 8 << 20 // 8 MiB
 func (b *turnBuilder) resolveOutput(tp toolPart) string {
 	inline := shared.OutputText(tp.State.Output)
 	if tp.State.Metadata.Truncated && tp.State.Metadata.OutputPath != "" {
-		if full, ok := readCappedFile(tp.State.Metadata.OutputPath, spillReadCap); ok {
-			return full
+		// The spill path is opencode-DB content; contain it to the session's data root
+		// so a crafted/corrupt outputPath (an absolute escape like /etc/passwd, or a
+		// ../ traversal) can't make the parser read an arbitrary file into the
+		// persisted-and-indexed tool output. A rejected path falls back to inline.
+		path := filepath.Clean(tp.State.Metadata.OutputPath)
+		if filepath.IsAbs(path) && fsx.PathWithin(filepath.Clean(b.session.SourceRoot), path) {
+			if full, ok := readCappedFile(path, spillReadCap); ok {
+				return full
+			}
 		}
 	}
 	if inline == "" {
@@ -370,7 +407,14 @@ func (b *turnBuilder) empty() bool {
 type assistantData struct {
 	ModelID string `json:"modelID"`
 	Finish  string `json:"finish"`
-	Time    struct {
+	// Error reports a non-clean termination of the assistant step. opencode leaves
+	// finish EMPTY on an aborted step and instead sets error.name (e.g.
+	// "MessageAbortedError" when the user interrupts) — so status MUST consult this,
+	// not finish alone, or an interrupted step is misread as a successful one.
+	Error struct {
+		Name string `json:"name"`
+	} `json:"error"`
+	Time struct {
 		Created   int64 `json:"created"`
 		Completed int64 `json:"completed"`
 	} `json:"time"`
@@ -406,14 +450,14 @@ type toolPart struct {
 	} `json:"state"`
 }
 
-// toolStatus maps opencode's tool state.status to a neutral status. Only
-// "completed" appears in observed data; the failure mappings (an explicit "error"
-// status, a non-zero bash exit) are defensive and UNVERIFIED against a real failing
-// tool — treat a non-terminal status as pending rather than guessing success.
+// toolStatus maps opencode's tool state.status to a neutral status. opencode marks
+// a genuinely failed tool with state.status == "error" (the one failure signal seen
+// in real data). A non-zero metadata.exit on a "completed" tool is a NORMAL command
+// result — `grep` with no match, `test`, `diff`, a failing build the agent expected —
+// NOT a tool failure, so the exit code is deliberately NOT consulted here (doing so
+// flipped every non-zero-exit shell call to failed, inflating failed-tool counts and
+// the turn/session status). A non-terminal status maps to pending, not a guessed success.
 func toolStatus(tp toolPart) string {
-	if tp.State.Metadata.Exit != nil && *tp.State.Metadata.Exit != 0 {
-		return trace.StatusFailed
-	}
 	switch tp.State.Status {
 	case "completed":
 		return trace.StatusSuccess
@@ -447,7 +491,18 @@ func toolError(tp toolPart, output string) string {
 // invocation status. Observed finishes are only "stop"/"tool-calls" (success);
 // the failure mappings are defensive (no real error/aborted sample) — the finish
 // reason itself is always preserved in Invocation.StopReason regardless.
-func invocationStatusFor(finish string) string {
+func invocationStatusFor(finish, errorName string) string {
+	// error.name takes precedence: on an aborted step opencode leaves finish empty
+	// and reports the abort here, so a finish-only mapping would call it a success.
+	switch errorName {
+	case "":
+		// no error → fall through to the finish-based mapping
+	case "MessageAbortedError":
+		return trace.StatusInterrupted
+	default:
+		// any other reported error is a non-clean termination, not a success
+		return trace.StatusFailed
+	}
 	switch finish {
 	case "error":
 		return trace.StatusFailed
@@ -461,15 +516,15 @@ func invocationStatusFor(finish string) string {
 // decodePartText extracts the text and the synthetic flag from a text part's data
 // ({"type":"text","text":…,"synthetic":bool}). synthetic marks opencode's injected
 // @file expansions (tool echo + file dump), which the caller drops.
-func decodePartText(data json.RawMessage) (text string, synthetic bool) {
+func decodePartText(data json.RawMessage) (text string, synthetic bool, err error) {
 	var p struct {
 		Text      string `json:"text"`
 		Synthetic bool   `json:"synthetic"`
 	}
 	if err := json.Unmarshal(data, &p); err != nil {
-		return "", false
+		return "", false, err
 	}
-	return strings.TrimSpace(p.Text), p.Synthetic
+	return strings.TrimSpace(p.Text), p.Synthetic, nil
 }
 
 // subagentTitleSuffix matches opencode's cosmetic " (@<agent> subagent)" suffix on

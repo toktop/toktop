@@ -95,7 +95,17 @@ const dbFileName = "toktop.db"
 // failed tools surface state.error detail, and invocation status derives from the
 // finish reason. Old opencode rows carry the stale projections, so an existing db is
 // wiped and rebuilt from the transcripts.
-const schemaUserVersion = 19
+//
+// Epoch 20: opencode tool-status projection changed — a "completed" tool with a
+// non-zero metadata.exit (a normal grep/test/diff exit) no longer projects to failed;
+// only state.status == "error" does. Turns/sessions containing such a tool re-derive,
+// so an existing db is wiped and rebuilt from the transcripts.
+//
+// Epoch 21: opencode invocation status now reads the assistant message's error.name —
+// an aborted step (finish empty, error.name "MessageAbortedError") projects to
+// interrupted instead of success, and the turn/session status re-derives. Old opencode
+// rows carry the stale success status, so an existing db is wiped and rebuilt.
+const schemaUserVersion = 21
 
 var writerCacheKiB, readerCacheKiB, sqliteMmapBytes = memoryBudget(memory.TotalMemory())
 

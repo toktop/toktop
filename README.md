@@ -317,9 +317,12 @@ instead of embedding the secret in the agent config.
 **opencode has no config-level shell hooks**, so `hooks install --sources=opencode`
 writes a small observer **plugin** into opencode's auto-loaded `plugins/` dir
 (`~/.config/opencode/plugins/toktop-observer.js`) instead of a `curl` entry; the plugin
-POSTs the same `/v1/hooks:intake` payload on each session event. It takes effect on
-opencode's next launch. A TCP endpoint bakes the bearer token into the plugin file (a
-secret on disk under the opencode config dir), so the default unix socket is preferred.
+POSTs to the same `/v1/hooks:intake` endpoint on each **top-level** session's status
+transition — busy/idle (opencode's `session.status`/`session.idle`), errors, and
+permission prompts — and drops subagent runs so live status stays top-level only, like
+the other providers. It takes effect on opencode's next launch. A TCP endpoint bakes the
+bearer token into the plugin file (a secret on disk under the opencode config dir), so
+the default unix socket is preferred.
 
 **Claude Code hooks fire immediately; Codex hooks must be trusted first.** Codex treats a
 third-party (unmanaged) hook as *untrusted* the first time it sees it and **only runs hooks

@@ -23,12 +23,13 @@ func (provider) Aliases() []string { return []string{"oc"} }
 
 func (provider) WatchSubdir() string { return "" } // single DB lives at the data-dir root
 
-// TranscriptExt is "" so opencode contributes no fsnotify watch extension. Its
-// commits land in opencode.db-wal, which no per-file ingest can claim (there is no
-// per-session transcript file), so watching it only routed every commit through the
-// daemon's unmapped-file path and inflated that diagnostic counter. opencode trace
-// ingest is driven by the periodic full reconcile (which seq-skips unchanged
-// sessions); live STATUS is the plugin push — neither needs a file-watch.
+// TranscriptExt is "" so opencode contributes no fsnotify watch at all: the
+// daemon's watcher skips registering a provider whose extension is empty (an empty
+// ext can never pass ShouldIngest). opencode has no per-session transcript file —
+// its state lives in a single SQLite DB whose commits land in opencode.db-wal — so
+// there is nothing a per-file watch could usefully claim. Trace ingest is driven by
+// the periodic full reconcile (which seq-skips unchanged sessions); live STATUS is
+// the plugin push — neither needs a file-watch.
 func (provider) TranscriptExt() string { return "" }
 
 func (provider) ResolveRoots(explicit, file []string) []ingest.SourceRoot {

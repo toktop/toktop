@@ -31,9 +31,17 @@ func newSourceWatcher(sourceNames []string, rootsBySource map[string][]string) (
 		transcriptExts: make(map[string]bool),
 	}
 	for _, sourceName := range sourceNames {
-		if ext := ingest.TranscriptExt(sourceName); ext != "" {
-			sw.transcriptExts[ext] = true
+		ext := ingest.TranscriptExt(sourceName)
+		if ext == "" {
+			// A provider with no transcript extension (e.g. opencode, whose state
+			// lives in a single SQLite DB) can never pass ShouldIngest, so recursively
+			// watching its data dir only burns fsnotify descriptors and wakeups on
+			// events that are always dropped. Its trace ingest runs via the periodic
+			// reconcile and its live status via the plugin push — neither needs a
+			// file watch.
+			continue
 		}
+		sw.transcriptExts[ext] = true
 		for _, dir := range WatchDirs(sourceName, rootsBySource[sourceName]) {
 			if err := sw.addRecursive(dir); err != nil {
 				_ = watcher.Close()
