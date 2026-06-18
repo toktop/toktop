@@ -16,7 +16,7 @@ func StreamSessions[F any](
 	sessions []F,
 	pathOf func(F) string,
 	fingerprintOf func(F) (source.Fingerprint, bool),
-	sizeOf func(F) int64,
+	byteSizeOf func(F) int64,
 	known map[string]source.Fingerprint,
 	metadata MetadataFn,
 	parseBatch BatchParser[F],
@@ -38,6 +38,15 @@ func StreamSessions[F any](
 		}
 	}
 
+	// Default batch-sizing reads the byte size straight from the fingerprints map
+	// PartitionByFingerprint already populated (zero extra syscalls) — the prior
+	// behavior file providers rely on. A provider whose fingerprint Size is not a
+	// byte count (opencode packs a seq into Token, leaving Size 0) supplies
+	// Spec.ByteSizeOf to weight batches itself.
+	sizeOf := byteSizeOf
+	if sizeOf == nil {
+		sizeOf = func(f F) int64 { return fingerprints[pathOf(f)].Size }
+	}
 	batches := collector.ChunkBySize(changed, sizeOf, maxBatchBytes)
 	if len(batches) == 0 {
 		return summary, nil

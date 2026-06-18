@@ -52,16 +52,6 @@ func (s Spec[F]) fingerprintOf(f F) (source.Fingerprint, bool) {
 	return source.Fingerprint{Size: size, MtimeNS: mtimeNS, Ino: ino}, ok
 }
 
-// byteSizeOf resolves the spec's batch-sizing weight, defaulting to the
-// fingerprint Size (the byte size for file providers).
-func (s Spec[F]) byteSizeOf(f F) int64 {
-	if s.ByteSizeOf != nil {
-		return s.ByteSizeOf(f)
-	}
-	fp, _ := s.fingerprintOf(f)
-	return fp.Size
-}
-
 // Driver runs the shared, provider-neutral ingest pipeline (parse → accumulate →
 // finalize → price → redact → intern) for a provider described by Spec. It lives
 // in package ingest (not collector) because it returns ingest.Result, and the
@@ -85,7 +75,7 @@ func (d Driver[F]) Stream(ctx context.Context, roots []SourceRoot, policy redact
 	parseBatch := func(ctx context.Context, batch []F) (Result, error) {
 		return d.IngestBatch(ctx, roots, policy, batch)
 	}
-	return StreamSessions(ctx, sessions, d.Spec.PathOf, d.Spec.fingerprintOf, d.Spec.byteSizeOf, known, metadata, parseBatch, BatchBytesThreshold, sink)
+	return StreamSessions(ctx, sessions, d.Spec.PathOf, d.Spec.fingerprintOf, d.Spec.ByteSizeOf, known, metadata, parseBatch, BatchBytesThreshold, sink)
 }
 
 func (d Driver[F]) newIndex(roots []SourceRoot, capHint int) trace.Index {
