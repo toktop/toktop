@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"regexp"
@@ -198,10 +199,14 @@ func (b *turnBuilder) startAssistant(rawEvent source.RawEvent, when time.Time) e
 		StartedAt:  msTime(data.Time.Created),
 		EndedAt:    msTime(data.Time.Completed),
 		StopReason: trace.InternString(data.Finish),
-		Status:     trace.StatusSuccess,
+		Status:     invocationStatusFor(data.Finish),
 		Tokens: trace.Tokens{
-			Input:      data.Tokens.Input,
-			Output:     data.Tokens.Output,
+			Input: data.Tokens.Input,
+			// opencode reports reasoning tokens separately from output (output is
+			// EXCLUSIVE of reasoning). Fold them together so opencode's Output means the
+			// same thing as claude-code's/codex's, whose output_tokens already include
+			// thinking/reasoning — otherwise opencode usage silently undercounts.
+			Output:     data.Tokens.Output + data.Tokens.Reasoning,
 			CacheRead:  data.Tokens.Cache.Read,
 			CacheWrite: data.Tokens.Cache.Write,
 		},
@@ -226,8 +231,13 @@ func (b *turnBuilder) handlePart(rawEvent source.RawEvent, when time.Time, addEr
 	}
 	switch rawEvent.EventType {
 	case KindText:
-		text := decodePartText(env.Data)
-		if text == "" {
+		text, synthetic := decodePartText(env.Data)
+		// opencode marks injected text — an @file mention expands into a synthetic
+		// "Called the <tool> tool…" echo plus a <path>…<content>… file dump on the
+		// SAME user message — with synthetic=true. Those are tool/file context, not
+		// the human/assistant message, so they must not pollute UserMessage /
+		// AssistantFinal (and the FTS index + handoff digest downstream).
+		if text == "" || synthetic {
 			return
 		}
 		if b.role == KindUser {
@@ -296,17 +306,47 @@ func (b *turnBuilder) recordToolCall(data json.RawMessage, when time.Time, rawEv
 	b.turn.ToolCalls = append(b.turn.ToolCalls, call)
 }
 
-// resolveOutput returns a tool call's full output: the inline state.output, or —
-// when opencode spilled a truncated output to a file — the full spill-file content
-// (state.metadata.outputPath). A spill read error falls back to the inline text.
+// spillReadCap bounds how much of a tool-output spill file the parser reads into
+// memory at ingest, so a pathological large spill can't spike RSS. Far above normal
+// tool output; a larger spill is truncated with a marker (the full bytes remain in
+// opencode's tool-output file, like any raw-transcript pointer).
+const spillReadCap = 8 << 20 // 8 MiB
+
+// resolveOutput returns a tool call's output: the full spill-file content when
+// opencode spilled a truncated output (state.metadata.outputPath, capped), else the
+// inline state.output, else — for a failed tool, whose detail lives in state.error
+// with output absent — the error text. A spill read error falls back to inline.
 func (b *turnBuilder) resolveOutput(tp toolPart) string {
 	inline := outputText(tp.State.Output)
 	if tp.State.Metadata.Truncated && tp.State.Metadata.OutputPath != "" {
-		if full, err := os.ReadFile(tp.State.Metadata.OutputPath); err == nil {
-			return string(full)
+		if full, ok := readCappedFile(tp.State.Metadata.OutputPath, spillReadCap); ok {
+			return full
+		}
+	}
+	if inline == "" {
+		if msg := strings.TrimSpace(tp.State.Error); msg != "" {
+			return msg
 		}
 	}
 	return inline
+}
+
+// readCappedFile reads up to max bytes of path; a file larger than max is truncated
+// with a marker. Returns ok=false on an open/read error (caller falls back).
+func readCappedFile(path string, max int64) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	buf, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return "", false
+	}
+	if int64(len(buf)) > max {
+		return string(buf[:max]) + "\n… [spill output truncated at " + strconv.Itoa(int(max)) + " bytes; full output in opencode's tool-output file] …", true
+	}
+	return string(buf), true
 }
 
 func (b *turnBuilder) finish() trace.Turn {
@@ -343,9 +383,10 @@ type assistantData struct {
 		Completed int64 `json:"completed"`
 	} `json:"time"`
 	Tokens struct {
-		Input  int `json:"input"`
-		Output int `json:"output"`
-		Cache  struct {
+		Input     int `json:"input"`
+		Output    int `json:"output"`
+		Reasoning int `json:"reasoning"` // separate from output; folded into Output
+		Cache     struct {
 			Read  int `json:"read"`
 			Write int `json:"write"`
 		} `json:"cache"`
@@ -360,6 +401,7 @@ type toolPart struct {
 		Status   string          `json:"status"`
 		Input    json.RawMessage `json:"input"`
 		Output   json.RawMessage `json:"output"`
+		Error    string          `json:"error"` // failure detail; output is absent on error
 		Metadata struct {
 			Truncated  bool   `json:"truncated"`
 			OutputPath string `json:"outputPath"`
@@ -391,6 +433,12 @@ func toolStatus(tp toolPart) string {
 }
 
 func toolError(tp toolPart, output string) string {
+	// opencode carries the failure detail in state.error (output is absent on a
+	// failed tool), so prefer it; fall back to a non-zero bash exit, then the
+	// inline output, then a generic constant.
+	if msg := strings.TrimSpace(tp.State.Error); msg != "" {
+		return textutil.OneLine(msg, 200)
+	}
 	if tp.State.Metadata.Exit != nil && *tp.State.Metadata.Exit != 0 {
 		return "exit code " + strconv.Itoa(*tp.State.Metadata.Exit)
 	}
@@ -403,15 +451,33 @@ func toolError(tp toolPart, output string) string {
 	return ""
 }
 
-// decodePartText extracts the text from a text part's data ({"type":"text","text":…}).
-func decodePartText(data json.RawMessage) string {
+// invocationStatusFor maps an opencode assistant finish reason to a neutral
+// invocation status. Observed finishes are only "stop"/"tool-calls" (success);
+// the failure mappings are defensive (no real error/aborted sample) — the finish
+// reason itself is always preserved in Invocation.StopReason regardless.
+func invocationStatusFor(finish string) string {
+	switch finish {
+	case "error":
+		return trace.StatusFailed
+	case "aborted", "cancelled", "canceled":
+		return trace.StatusInterrupted
+	default: // stop, tool-calls, length, "" → a normal completed step
+		return trace.StatusSuccess
+	}
+}
+
+// decodePartText extracts the text and the synthetic flag from a text part's data
+// ({"type":"text","text":…,"synthetic":bool}). synthetic marks opencode's injected
+// @file expansions (tool echo + file dump), which the caller drops.
+func decodePartText(data json.RawMessage) (text string, synthetic bool) {
 	var p struct {
-		Text string `json:"text"`
+		Text      string `json:"text"`
+		Synthetic bool   `json:"synthetic"`
 	}
 	if err := json.Unmarshal(data, &p); err != nil {
-		return ""
+		return "", false
 	}
-	return strings.TrimSpace(p.Text)
+	return strings.TrimSpace(p.Text), p.Synthetic
 }
 
 // inputText renders a tool call's input object as a compact JSON string,

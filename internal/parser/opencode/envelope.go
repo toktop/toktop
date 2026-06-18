@@ -28,24 +28,18 @@ const (
 	KindFile       = "file"
 )
 
-// SessionEnvelope mirrors the opencode session table columns the parser needs.
-// time_* are epoch milliseconds; tokens_* are session-level aggregates.
+// SessionEnvelope mirrors the opencode session table columns the parser needs:
+// identity (id, parent_id, agent), the title, the project directory, and the
+// creation time. Session-level token/cost/model columns are intentionally absent —
+// the parser derives Session.Tokens from the per-message MessageEnvelope tokens
+// (via FinalizeSession), so carrying the session aggregates here would be dead.
 type SessionEnvelope struct {
-	ID              string  `json:"id"`
-	ParentID        string  `json:"parent_id,omitempty"`
-	Agent           string  `json:"agent,omitempty"`
-	Title           string  `json:"title,omitempty"`
-	Directory       string  `json:"directory,omitempty"`
-	ProjectID       string  `json:"project_id,omitempty"`
-	Model           string  `json:"model,omitempty"` // JSON blob {id,providerID,variant}
-	TokensInput     int     `json:"tokens_input,omitempty"`
-	TokensOutput    int     `json:"tokens_output,omitempty"`
-	TokensReasoning int     `json:"tokens_reasoning,omitempty"`
-	TokensCacheRead int     `json:"tokens_cache_read,omitempty"`
-	TokensCacheWrt  int     `json:"tokens_cache_write,omitempty"`
-	Cost            float64 `json:"cost,omitempty"`
-	TimeCreated     int64   `json:"time_created,omitempty"`
-	TimeUpdated     int64   `json:"time_updated,omitempty"`
+	ID          string `json:"id"`
+	ParentID    string `json:"parent_id,omitempty"`
+	Agent       string `json:"agent,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Directory   string `json:"directory,omitempty"`
+	TimeCreated int64  `json:"time_created,omitempty"`
 }
 
 // MessageEnvelope wraps a message row: opencode's message.data JSON plus the row

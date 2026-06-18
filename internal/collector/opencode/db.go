@@ -39,13 +39,9 @@ func openReadOnly(dbPath string) (*sql.DB, error) {
 func readSessionRow(ctx context.Context, db *sql.DB, sessionID string) (opencodeparser.SessionEnvelope, error) {
 	var r opencodeparser.SessionEnvelope
 	err := db.QueryRowContext(ctx, `
-		SELECT id, COALESCE(parent_id,''), COALESCE(agent,''), title, directory, project_id,
-		       COALESCE(model,''), tokens_input, tokens_output, tokens_reasoning,
-		       tokens_cache_read, tokens_cache_write, cost, time_created, time_updated
+		SELECT id, COALESCE(parent_id,''), COALESCE(agent,''), title, directory, time_created
 		FROM session WHERE id = ?`, sessionID).Scan(
-		&r.ID, &r.ParentID, &r.Agent, &r.Title, &r.Directory, &r.ProjectID,
-		&r.Model, &r.TokensInput, &r.TokensOutput, &r.TokensReasoning,
-		&r.TokensCacheRead, &r.TokensCacheWrt, &r.Cost, &r.TimeCreated, &r.TimeUpdated)
+		&r.ID, &r.ParentID, &r.Agent, &r.Title, &r.Directory, &r.TimeCreated)
 	if err != nil {
 		return opencodeparser.SessionEnvelope{}, fmt.Errorf("read opencode session %s: %w", sessionID, err)
 	}

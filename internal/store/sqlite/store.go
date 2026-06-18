@@ -89,7 +89,13 @@ const dbFileName = "toktop.db"
 // Epoch 18: ingest_offsets gained fingerprint_token (provider-defined change marker
 // for non-file sources). The new NOT NULL column means an old ingest_offsets row
 // lacks it, so an existing db is wiped and rebuilt from the transcripts.
-const schemaUserVersion = 18
+//
+// Epoch 19: opencode projection semantics changed — synthetic @file-expansion text
+// parts are dropped from the user prompt, reasoning tokens are folded into output,
+// failed tools surface state.error detail, and invocation status derives from the
+// finish reason. Old opencode rows carry the stale projections, so an existing db is
+// wiped and rebuilt from the transcripts.
+const schemaUserVersion = 19
 
 var writerCacheKiB, readerCacheKiB, sqliteMmapBytes = memoryBudget(memory.TotalMemory())
 
