@@ -147,7 +147,7 @@ func (s *Service) Suggestions(ctx context.Context, ruleID string) ([]trace.Sugge
 }
 
 func (s *Service) RecomputeSuggestions(ctx context.Context, now time.Time) ([]trace.Suggestion, error) {
-	// Load the full history: ToolOutputDominates, RetryLoop, and
+	// Load the full history: ToolOutputBloat, RetryLoop, and
 	// LongSessionDegradation ignore `now` and scan the whole index, so a windowed
 	// load silently hid older signals here while the CLI's full-history path still
 	// surfaced them. MCPUnused30d applies its own 30-day cutoff, so a full load

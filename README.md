@@ -203,8 +203,9 @@ toktop turns timeline 2dcb402ffc459e93     # per-turn event timeline
 ```
 
 `suggestions` runs a small rule engine over your history — e.g. an MCP server enabled but
-unused for 30 days, a tool whose output dominates a turn's input tokens, a turn that took
-many invocations to succeed, or a session whose later turns balloon in token use. Estimated
+unused for 30 days, a large tool output that later turns keep carrying in context, a turn that
+took many invocations to succeed, or a session whose later turns carry far more context than its
+earlier ones. Estimated
 figures always carry a `confidence`; observed counts are exact.
 
 ---

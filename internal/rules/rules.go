@@ -42,7 +42,7 @@ type Rule interface {
 func All() []Rule {
 	return []Rule{
 		MCPUnused30d{},
-		ToolOutputDominates{},
+		ToolOutputBloat{},
 		RetryLoop{},
 		LongSessionDegradation{},
 		WorkflowInterrupted{},
@@ -58,50 +58,43 @@ type WorkflowInterrupted struct{}
 func (WorkflowInterrupted) ID() string { return "workflow_interrupted" }
 
 func (WorkflowInterrupted) Evaluate(_ context.Context, index trace.Index, _ time.Time) []trace.Suggestion {
-	type agg struct {
-		agentRuns     int
-		completedRuns int
-		lastIndex     int
-		lastHasFinal  bool
-		lastFailed    bool
-	}
-	bySession := map[string]*agg{}
-	var order []string
-	for ti := range index.Turns {
-		turn := &index.Turns[ti]
-		a, ok := bySession[turn.SessionID]
-		if !ok {
-			a = &agg{lastIndex: -1}
-			bySession[turn.SessionID] = a
-			order = append(order, turn.SessionID)
-		}
-		for _, call := range turn.ToolCalls {
-			if ingest.IsAgentTool(turn.Provider, call.Name) {
-				a.agentRuns++
-				if call.Status == trace.StatusSuccess {
-					a.completedRuns++
+	var out []trace.Suggestion
+	for sid, turns := range turnsBySession(index) {
+		agentRuns, completedRuns := 0, 0
+		for _, turn := range turns {
+			for _, call := range turn.ToolCalls {
+				if ingest.IsAgentTool(turn.Provider, call.Name) {
+					agentRuns++
+					if call.Status == trace.StatusSuccess {
+						completedRuns++
+					}
 				}
 			}
 		}
-		// Track the session's ending by the highest turn index: the interrupted
-		// signal is the closing turn never producing a synthesis, not whether any
-		// earlier turn did.
-		if turn.Index >= a.lastIndex {
-			a.lastIndex = turn.Index
-			a.lastHasFinal = strings.TrimSpace(turn.AssistantFinal) != ""
-			a.lastFailed = turn.Status == trace.StatusFailed
-		}
-	}
-	var out []trace.Suggestion
-	for _, sid := range order {
-		a := bySession[sid]
-		// A closing turn that produced a synthesis means the session wrapped up —
-		// a failed tool call within that turn is not an interruption. Only the
-		// absence of a final message signals "interrupted before wrap-up".
-		if a.agentRuns == 0 || a.lastHasFinal {
+		if agentRuns == 0 {
 			continue
 		}
-		ev, _ := json.Marshal(map[string]any{"session_id": sid, "agent_runs": a.agentRuns, "completed_runs": a.completedRuns, "last_turn_failed": a.lastFailed})
+		// The closing turn is the last one where the assistant actually ran
+		// (invocation_count>0). Trailing user-only or synthetic turns — a follow-up
+		// prompt, a /clear, a bash-stdout hook turn — carry no assistant output, and
+		// reading their empty AssistantFinal as "no synthesis" was the rule's whole
+		// false-positive class: the real wrap-up sits one turn earlier. A closing turn
+		// that produced a synthesis means the session wrapped up (a failed tool call
+		// within it is not an interruption); only its absence signals interruption.
+		var closing *trace.Turn
+		for _, turn := range slices.Backward(turns) {
+			if turn.InvocationCount > 0 {
+				closing = turn
+				break
+			}
+		}
+		// A real synthesis is non-empty AND actually generated (Tokens.Output>0); a
+		// closing turn whose "final" is only an injected stub — a usage-limit notice,
+		// a "No response requested." marker — produced no output and is an interruption.
+		if closing == nil || (strings.TrimSpace(closing.AssistantFinal) != "" && closing.Tokens.Output > 0) {
+			continue
+		}
+		ev, _ := json.Marshal(map[string]any{"session_id": sid, "agent_runs": agentRuns, "completed_runs": completedRuns, "last_turn_failed": closing.Status == trace.StatusFailed})
 		out = append(out, trace.Suggestion{
 			RuleID:         "workflow_interrupted",
 			Severity:       SeverityWarn,
@@ -109,7 +102,7 @@ func (WorkflowInterrupted) Evaluate(_ context.Context, index trace.Index, _ time
 			ScopeKind:      "session",
 			ScopeID:        sid,
 			EvidenceJSON:   string(ev),
-			Recommendation: fmt.Sprintf("%d agent run(s) ran but the session never produced a final synthesis; run `toktop handoff create --session %s` to recover — it classifies each run (completed/failed/stopped/in-flight) and packages the captured results instead of blindly re-running.", a.agentRuns, sid),
+			Recommendation: fmt.Sprintf("%d agent run(s) ran but the session never produced a final synthesis; run `toktop handoff create --session %s` to recover — it classifies each run (completed/failed/stopped/in-flight) and packages the captured results instead of blindly re-running.", agentRuns, sid),
 		})
 	}
 	return out
@@ -142,8 +135,6 @@ type MCPUnused30d struct{}
 func (MCPUnused30d) ID() string { return "mcp_unused_30d" }
 
 func (MCPUnused30d) Evaluate(_ context.Context, index trace.Index, now time.Time) []trace.Suggestion {
-	cutoff := now.Add(-30 * 24 * time.Hour)
-
 	// Availability is derived from the declared/enabled MCP server set, not from
 	// per-turn components: the only producer of MCP-server components always sets
 	// Relation=Invoked, so deriving availability from components could never yield
@@ -153,6 +144,32 @@ func (MCPUnused30d) Evaluate(_ context.Context, index trace.Index, now time.Time
 		if server.Enabled {
 			availability[server.Name] = true
 		}
+	}
+	if len(availability) == 0 {
+		return nil // nothing enabled to judge — skip the history scan entirely
+	}
+
+	cutoff := now.Add(-30 * 24 * time.Hour)
+
+	// "Unused for 30 days" is only assertable if the history spans those 30 days.
+	// created_at/updated_at are config-import timestamps, not real per-server enable
+	// dates, so a genuinely recently-added server can't be exempted individually;
+	// instead, if the earliest activity is itself inside the window, suppress the
+	// rule rather than brand every quiet server unused on a fresh install. LIMITATION:
+	// the span is global, not per-source — a multi-source home with one old provider
+	// unblocks the guard for a freshly-added provider too; a per-source span needs
+	// source→provider plumbing the neutral index does not carry today.
+	var earliest time.Time
+	for _, turn := range index.Turns {
+		if turn.StartedAt.IsZero() {
+			continue
+		}
+		if earliest.IsZero() || turn.StartedAt.Before(earliest) {
+			earliest = turn.StartedAt
+		}
+	}
+	if earliest.IsZero() || earliest.After(cutoff) {
+		return nil
 	}
 
 	// Count observed invocations within the 30-day window. Turns with a zero
@@ -191,47 +208,70 @@ func (MCPUnused30d) Evaluate(_ context.Context, index trace.Index, now time.Time
 	return out
 }
 
-type ToolOutputDominates struct{}
+// minBloatOutputTokens is the smallest tool output (estimated, ~4 bytes/token) worth
+// considering — under ~2k tokens (8 KB) trimming saves little however long it
+// lingers. minBloatCarriedCost floors the real cost: estimated output tokens × the
+// later turns that re-read it (token-turns of repeated context). Gating on this
+// cumulative cost rather than peak size catches a modest output carried across a long
+// session while ignoring a one-off output near the session's end, and no tiny output
+// qualifies however long it lingers. The old rule compared output to the same turn's
+// total_input_tokens, which on cache-heavy turns (near-zero fresh input) flagged
+// 13-byte echoes as "dominating".
+const (
+	minBloatOutputTokens  = 2000
+	minBloatCarriedCost   = 100000
+	hugeBloatOutputTokens = 12500 // a single output this large (~50 KB) is worth trimming however few turns carry it
+)
 
-func (ToolOutputDominates) ID() string { return "tool_output_dominates" }
+type ToolOutputBloat struct{}
 
-func (ToolOutputDominates) Evaluate(_ context.Context, index trace.Index, _ time.Time) []trace.Suggestion {
+func (ToolOutputBloat) ID() string { return "tool_output_bloat" }
+
+func (ToolOutputBloat) Evaluate(_ context.Context, index trace.Index, _ time.Time) []trace.Suggestion {
 	var out []trace.Suggestion
-	for _, turn := range index.Turns {
-		if turn.Tokens.Input == 0 {
-			continue
-		}
-		for _, call := range turn.ToolCalls {
-			tokenEstimate := call.OutputBytes / 4
-			if tokenEstimate == 0 {
-				continue
+	for _, turns := range turnsBySession(index) {
+		// The last turn's output is never re-read, so it costs nothing — skip it.
+		for i, turn := range turns[:len(turns)-1] {
+			carried := len(turns) - 1 - i // later turns that may still carry this output
+			for _, call := range turn.ToolCalls {
+				outTokens := int(call.OutputBytes / 4)
+				// Flag on cumulative carried cost (tokens × the later turns that re-read
+				// it), or on a single output so large it is worth trimming however few
+				// turns carry it — the cost product alone would miss a 50 KB+ blob that
+				// lands late in a session.
+				if outTokens < minBloatOutputTokens ||
+					(outTokens*carried < minBloatCarriedCost && outTokens < hugeBloatOutputTokens) {
+					continue
+				}
+				ev, _ := json.Marshal(map[string]any{
+					"turn_id":          turn.ID,
+					"tool_name":        call.Name,
+					"output_bytes":     call.OutputBytes,
+					"estimated_tokens": outTokens,
+					"carried_turns":    carried,
+				})
+				out = append(out, trace.Suggestion{
+					RuleID:         "tool_output_bloat",
+					Severity:       SeverityNotice,
+					Confidence:     trace.ConfidenceEstimated,
+					ScopeKind:      "turn",
+					ScopeID:        turn.ID,
+					EvidenceJSON:   string(ev),
+					Recommendation: fmt.Sprintf("Tool %s emitted ~%d tokens of output that up to %d later turn(s) re-read from context (unless compacted away); trim it (grep/head/tail) or store it to disk and re-read on demand.", call.Name, outTokens, carried),
+				})
+				break // one finding per turn (its first qualifying output)
 			}
-			ratio := float64(tokenEstimate) / float64(turn.Tokens.Input)
-			if ratio < 0.5 {
-				continue
-			}
-			ev, _ := json.Marshal(map[string]any{
-				"turn_id":           turn.ID,
-				"tool_name":         call.Name,
-				"output_bytes":      call.OutputBytes,
-				"estimated_tokens":  tokenEstimate,
-				"turn_input_tokens": turn.Tokens.Input,
-				"ratio":             ratio,
-			})
-			out = append(out, trace.Suggestion{
-				RuleID:         "tool_output_dominates",
-				Severity:       SeverityNotice,
-				Confidence:     trace.ConfidenceEstimated,
-				ScopeKind:      "turn",
-				ScopeID:        turn.ID,
-				EvidenceJSON:   string(ev),
-				Recommendation: fmt.Sprintf("Tool %s output is ~%.0f%% of this turn's input tokens; consider trimming the command output (grep/head/tail) or storing the result to disk and re-reading on demand.", call.Name, ratio*100),
-			})
-			break
 		}
 	}
 	return out
 }
+
+// retryLoopFailures is how many times one tool must fail within a single turn to
+// flag it. The old rule fired on invocation_count>=4 regardless of outcome — 35% of
+// all *successful* turns, 99% of them with zero failed calls — so it measured task
+// size, not failure. Repeated failures of one tool are the real friction signal, and
+// they are observed, not inferred.
+const retryLoopFailures = 3
 
 type RetryLoop struct{}
 
@@ -239,11 +279,39 @@ func (RetryLoop) ID() string { return "retry_loop" }
 
 func (RetryLoop) Evaluate(_ context.Context, index trace.Index, _ time.Time) []trace.Suggestion {
 	var out []trace.Suggestion
-	for _, turn := range index.Turns {
-		if turn.InvocationCount < 4 || turn.Status != trace.StatusSuccess {
+	for ti := range index.Turns {
+		turn := &index.Turns[ti]
+		// A user-interrupted turn's tool failures are aborts, not a tool the agent
+		// kept hitting — not friction worth flagging.
+		if turn.Status == trace.StatusInterrupted {
 			continue
 		}
-		ev, _ := json.Marshal(map[string]any{"turn_id": turn.ID, "invocations": turn.InvocationCount})
+		var failsByTool map[string]int
+		for _, call := range turn.ToolCalls {
+			// Skip agent/subagent dispatches: a failed run is an outcome, not a tool
+			// re-hit against bad arguments (provider-neutral via the agent-tool
+			// registry). LIMITATION: a user *declining* a tool use (rejecting a plan,
+			// dismissing a prompt) is also recorded as StatusFailed and is
+			// indistinguishable from a genuine error in the neutral trace today, so
+			// those still count; telling declines from errors belongs in the parser.
+			if call.Status == trace.StatusFailed && !ingest.IsAgentTool(turn.Provider, call.Name) {
+				if failsByTool == nil {
+					failsByTool = map[string]int{}
+				}
+				failsByTool[call.Name]++
+			}
+		}
+		// Report the worst-offending tool; ties break by name for deterministic output.
+		worstTool, worstFails := "", 0
+		for name, n := range failsByTool {
+			if n > worstFails || (n == worstFails && name < worstTool) {
+				worstTool, worstFails = name, n
+			}
+		}
+		if worstFails < retryLoopFailures {
+			continue
+		}
+		ev, _ := json.Marshal(map[string]any{"turn_id": turn.ID, "tool_name": worstTool, "failures": worstFails})
 		out = append(out, trace.Suggestion{
 			RuleID:         "retry_loop",
 			Severity:       SeverityInfo,
@@ -251,7 +319,7 @@ func (RetryLoop) Evaluate(_ context.Context, index trace.Index, _ time.Time) []t
 			ScopeKind:      "turn",
 			ScopeID:        turn.ID,
 			EvidenceJSON:   string(ev),
-			Recommendation: fmt.Sprintf("Turn took %d model invocations to reach success; consider splitting the request or tightening the prompt to avoid retry loops.", turn.InvocationCount),
+			Recommendation: fmt.Sprintf("Tool %s failed %d times in this turn; recurring failures of one tool often mean a wrong argument or path, or an approach that isn't converging.", worstTool, worstFails),
 		})
 	}
 	return out
@@ -262,30 +330,24 @@ type LongSessionDegradation struct{}
 func (LongSessionDegradation) ID() string { return "long_session_degradation" }
 
 func (LongSessionDegradation) Evaluate(_ context.Context, index trace.Index, _ time.Time) []trace.Suggestion {
-	bySession := make(map[string][]trace.Turn, len(index.Sessions))
-	for _, turn := range index.Turns {
-		bySession[turn.SessionID] = append(bySession[turn.SessionID], turn)
-	}
 	var out []trace.Suggestion
-	for sessionID, turns := range bySession {
+	for sessionID, turns := range turnsBySession(index) {
 		if len(turns) < 6 {
 			continue
 		}
-		// index.Turns arrives ordered by started_at, so a turn with an empty/zero
-		// started_at sorts to the front regardless of its real position. Order this
-		// session's turns by their turn index before the early/late split so the two
-		// halves are genuinely chronological.
-		slices.SortStableFunc(turns, func(a, b trace.Turn) int {
-			return cmp.Compare(a.Index, b.Index)
-		})
 		mid := len(turns) / 2
-		earlyAvg := avgInputTokens(turns[:mid])
-		lateAvg := avgInputTokens(turns[mid:])
+		earlyAvg := avgContext(turns[:mid])
+		lateAvg := avgContext(turns[mid:])
 		if earlyAvg == 0 {
 			continue
 		}
 		ratio := float64(lateAvg) / float64(earlyAvg)
-		if ratio < 1.6 {
+		// Flag a session heavy enough that a fresh start or compaction pays off, which
+		// takes a large absolute late context (~150k ≈ ¾ of a 200k window) reached
+		// either way: it grew sharply (ratio), OR it started saturated and stayed so —
+		// a session that begins heavy never shows a high ratio yet needs the advice
+		// most, so keying on growth alone would structurally miss it.
+		if lateAvg < lateContextFloor || (ratio < lateContextRatio && lateAvg < lateContextHeavy) {
 			continue
 		}
 		ev, _ := json.Marshal(map[string]any{
@@ -298,23 +360,68 @@ func (LongSessionDegradation) Evaluate(_ context.Context, index trace.Index, _ t
 		out = append(out, trace.Suggestion{
 			RuleID:         "long_session_degradation",
 			Severity:       SeverityNotice,
-			Confidence:     trace.ConfidenceObserved,
+			Confidence:     trace.ConfidenceInferred,
 			ScopeKind:      "session",
 			ScopeID:        sessionID,
 			EvidenceJSON:   string(ev),
-			Recommendation: fmt.Sprintf("Later turns in this session use ~%.1fx the input tokens of earlier turns; consider starting a fresh session or running a manual compaction.", ratio),
+			Recommendation: fmt.Sprintf("Later turns in this session average ~%dk tokens of context (~%.1fx the early turns); consider starting a fresh session or compacting.", lateAvg/1000, ratio),
 		})
 	}
 	return out
 }
 
-func avgInputTokens(turns []trace.Turn) int {
-	if len(turns) == 0 {
+const (
+	lateContextRatio = 2.0
+	lateContextFloor = 150000
+	lateContextHeavy = 300000
+)
+
+// turnsBySession groups the index's turns by session, each slice sorted by turn
+// Index. index.Turns arrives ordered by started_at, which mis-orders turns whose
+// started_at is zero, so any rule that reasons about turn order ("later turns",
+// early/late halves) must sort by Index first; the slices hold pointers to avoid
+// copying every Turn (with its ToolCalls) into the map.
+func turnsBySession(index trace.Index) map[string][]*trace.Turn {
+	bySession := make(map[string][]*trace.Turn, len(index.Sessions))
+	for i := range index.Turns {
+		t := &index.Turns[i]
+		bySession[t.SessionID] = append(bySession[t.SessionID], t)
+	}
+	for _, turns := range bySession {
+		slices.SortStableFunc(turns, func(a, b *trace.Turn) int {
+			return cmp.Compare(a.Index, b.Index)
+		})
+	}
+	return bySession
+}
+
+// turnContextTokens estimates the real context the model processed on a turn — the
+// prompt size, not the per-turn token bill. Two corrections over a bare
+// total_input_tokens: it adds cache_read (for cache-heavy providers the bulk of the
+// context lives there — ~87% of turns carry more cache-read than fresh input), and
+// it divides by the invocation count, because the per-turn token columns sum across
+// the turn's model calls, so an N-invocation turn counts the (largely static)
+// context ~N times. Unnormalized, a turn's "context" conflates prompt size with how
+// many times the model was called.
+func turnContextTokens(t *trace.Turn) int {
+	n := max(t.InvocationCount, 1)
+	return (t.Tokens.Input + t.Tokens.CacheRead) / n
+}
+
+func avgContext(turns []*trace.Turn) int {
+	total, n := 0, 0
+	for _, turn := range turns {
+		// A turn the model never ran (invocation_count==0: a user-only or synthetic
+		// turn) carries no context the model processed; averaging its zero deflates
+		// the half and hides a genuinely heavy session.
+		if turn.InvocationCount == 0 {
+			continue
+		}
+		total += turnContextTokens(turn)
+		n++
+	}
+	if n == 0 {
 		return 0
 	}
-	total := 0
-	for _, turn := range turns {
-		total += turn.Tokens.Input
-	}
-	return total / len(turns)
+	return total / n
 }
