@@ -226,8 +226,10 @@ toktop handoff create --session 7fe8484969b12a21
 The package leads with a lean **`digest.md`** — headed by the session's title
 and workflow status, then the user→assistant narrative with no tool-call bloat —
 so the receiver orients cheaply on *any* session. For a multi-agent workflow it also recovers each completed sub-agent's
-real result (so they are reused, not re-run), plus provenance pointers back to the
-raw transcript; every fact is tagged `evidence` / `inference` / `unknown`. The
+real result (so they are reused, not re-run), flags any run the user declined — a
+denied plan or dismissed prompt — so the receiver skips it rather than re-running,
+plus provenance pointers back to the raw transcript; every fact is tagged
+`evidence` / `inference` / `unknown`. The
 same package is served over HTTP at `GET /v1/sessions/{id}/handoff` (one JSON
 body, `digest` inline).
 

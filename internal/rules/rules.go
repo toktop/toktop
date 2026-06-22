@@ -102,7 +102,7 @@ func (WorkflowInterrupted) Evaluate(_ context.Context, index trace.Index, _ time
 			ScopeKind:      "session",
 			ScopeID:        sid,
 			EvidenceJSON:   string(ev),
-			Recommendation: fmt.Sprintf("%d agent run(s) ran but the session never produced a final synthesis; run `toktop handoff create --session %s` to recover — it classifies each run (completed/failed/stopped/in-flight) and packages the captured results instead of blindly re-running.", agentRuns, sid),
+			Recommendation: fmt.Sprintf("%d agent run(s) ran but the session never produced a final synthesis; run `toktop handoff create --session %s` to recover — it classifies each run (completed/failed/stopped/declined/in-flight) and packages the captured results instead of blindly re-running.", agentRuns, sid),
 		})
 	}
 	return out
