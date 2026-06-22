@@ -354,11 +354,24 @@ func (b *turnBuilder) applyResult(index int, result toolResult, when time.Time, 
 	if !call.StartedAt.IsZero() && when.After(call.StartedAt) {
 		call.DurationMs = when.Sub(call.StartedAt).Milliseconds()
 	}
-	if result.IsError {
+	switch {
+	case result.IsError && isUserDecline(result.Output):
+		call.Status = trace.StatusRejected
+	case result.IsError:
 		call.Status = trace.StatusFailed
-	} else {
+	default:
 		call.Status = trace.StatusSuccess
 	}
+}
+
+// userDeclineMarker is the system text Claude Code writes into a tool_result when
+// the user denies a tool use (declining a plan via ExitPlanMode, dismissing a
+// prompt). It is a user decision recorded as an error, not a tool failure, so it
+// maps to StatusRejected rather than StatusFailed.
+const userDeclineMarker = "The user doesn't want to proceed with this tool use. The tool use was rejected"
+
+func isUserDecline(output string) bool {
+	return strings.Contains(output, userDeclineMarker)
 }
 
 // resolvePendingResults re-attempts the buffered out-of-order tool_results,

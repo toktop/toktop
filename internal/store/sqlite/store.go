@@ -105,7 +105,12 @@ const dbFileName = "toktop.db"
 // an aborted step (finish empty, error.name "MessageAbortedError") projects to
 // interrupted instead of success, and the turn/session status re-derives. Old opencode
 // rows carry the stale success status, so an existing db is wiped and rebuilt.
-const schemaUserVersion = 21
+//
+// Epoch 22: a Claude Code tool use the user declined (the "user doesn't want to proceed"
+// tool_result) now projects to the new "rejected" status instead of "failed", so it no
+// longer reads as a tool failure. Old rows carry the stale failed status, so an existing
+// db is wiped and rebuilt.
+const schemaUserVersion = 22
 
 var writerCacheKiB, readerCacheKiB, sqliteMmapBytes = memoryBudget(memory.TotalMemory())
 

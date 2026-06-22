@@ -20,6 +20,9 @@ const (
 	StatusInterrupted          = "interrupted"
 	StatusSuccess              = "success"
 	StatusFailed               = "failed"
+	// StatusRejected is a tool use the user declined (denied a plan, dismissed a
+	// prompt) — a user decision, not a tool error, so it must not read as a failure.
+	StatusRejected             = "rejected"
 	StatusAwaitingConfirmation = "awaiting_confirmation"
 	StatusPending              = "pending"
 )
@@ -32,6 +35,7 @@ func StatusValues() []string {
 		StatusInterrupted,
 		StatusSuccess,
 		StatusFailed,
+		StatusRejected,
 		StatusAwaitingConfirmation,
 		StatusPending,
 	}

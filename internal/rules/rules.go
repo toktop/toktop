@@ -138,38 +138,37 @@ func (MCPUnused30d) Evaluate(_ context.Context, index trace.Index, now time.Time
 	// Availability is derived from the declared/enabled MCP server set, not from
 	// per-turn components: the only producer of MCP-server components always sets
 	// Relation=Invoked, so deriving availability from components could never yield
-	// an "available but never called" signal (#27).
-	availability := make(map[string]bool)
+	// an "available but never called" signal (#27). Each enabled server keeps its
+	// SourceID so it can be judged against its own provider's history.
+	type enabledServer struct{ name, sourceID string }
+	var servers []enabledServer
 	for _, server := range index.MCPServers {
 		if server.Enabled {
-			availability[server.Name] = true
+			servers = append(servers, enabledServer{server.Name, server.SourceID})
 		}
 	}
-	if len(availability) == 0 {
+	if len(servers) == 0 {
 		return nil // nothing enabled to judge — skip the history scan entirely
 	}
 
 	cutoff := now.Add(-30 * 24 * time.Hour)
 
-	// "Unused for 30 days" is only assertable if the history spans those 30 days.
-	// created_at/updated_at are config-import timestamps, not real per-server enable
-	// dates, so a genuinely recently-added server can't be exempted individually;
-	// instead, if the earliest activity is itself inside the window, suppress the
-	// rule rather than brand every quiet server unused on a fresh install. LIMITATION:
-	// the span is global, not per-source — a multi-source home with one old provider
-	// unblocks the guard for a freshly-added provider too; a per-source span needs
-	// source→provider plumbing the neutral index does not carry today.
-	var earliest time.Time
+	// "Unused for 30 days" is only assertable if the server's own provider has 30 days
+	// of history. created_at/updated_at are config-import timestamps, not real
+	// per-server enable dates, so a recently-added server can't be exempted
+	// individually; instead, a server is suppressed when its provider's earliest
+	// activity is itself inside the window — a fresh install, or a freshly-added
+	// provider in a multi-source home. The earliest is per provider, keyed by the
+	// reproducible SourceID, so an old provider never unblocks a newly-added one.
+	earliestBySource := make(map[string]time.Time)
 	for _, turn := range index.Turns {
 		if turn.StartedAt.IsZero() {
 			continue
 		}
-		if earliest.IsZero() || turn.StartedAt.Before(earliest) {
-			earliest = turn.StartedAt
+		src := trace.SourceID(turn.Provider)
+		if e, ok := earliestBySource[src]; !ok || turn.StartedAt.Before(e) {
+			earliestBySource[src] = turn.StartedAt
 		}
-	}
-	if earliest.IsZero() || earliest.After(cutoff) {
-		return nil
 	}
 
 	// Count observed invocations within the 30-day window. Turns with a zero
@@ -190,19 +189,23 @@ func (MCPUnused30d) Evaluate(_ context.Context, index trace.Index, now time.Time
 	}
 
 	var out []trace.Suggestion
-	for name := range availability {
-		if invoked[name] > 0 {
+	for _, server := range servers {
+		if invoked[server.name] > 0 {
 			continue
 		}
-		ev, _ := json.Marshal(map[string]any{"server": name})
+		// Suppress unless this server's provider has at least 30 days of history.
+		if earliest, ok := earliestBySource[server.sourceID]; !ok || earliest.After(cutoff) {
+			continue
+		}
+		ev, _ := json.Marshal(map[string]any{"server": server.name})
 		out = append(out, trace.Suggestion{
 			RuleID:         "mcp_unused_30d",
 			Severity:       SeverityInfo,
 			Confidence:     trace.ConfidenceInferred,
 			ScopeKind:      "global",
-			ScopeID:        name,
+			ScopeID:        server.name,
 			EvidenceJSON:   string(ev),
-			Recommendation: fmt.Sprintf("MCP server %q is enabled but has not been called in the last 30 days; consider disabling it to reduce context overhead.", name),
+			Recommendation: fmt.Sprintf("MCP server %q is enabled but has not been called in the last 30 days; consider disabling it to reduce context overhead.", server.name),
 		})
 	}
 	return out
