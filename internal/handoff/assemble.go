@@ -123,9 +123,9 @@ func (p Package) evidenceIndexMD() string {
 	if p.Manifest.Project != "" {
 		fmt.Fprintf(&b, " · project `%s`", p.Manifest.Project)
 	}
-	fmt.Fprintf(&b, "\n\nWorkflow status: **%s** · %d turns · %d agent runs (%d ok, %d failed, %d stopped, %d in-flight)\n\n",
+	fmt.Fprintf(&b, "\n\nWorkflow status: **%s** · %d turns · %d agent runs (%d ok, %d failed, %d stopped, %d declined, %d in-flight)\n\n",
 		p.Manifest.WorkflowStatus, p.Manifest.Turns, p.Manifest.AgentRuns,
-		p.Manifest.CompletedAgentRuns, p.Manifest.FailedAgentRuns, p.Manifest.InterruptedAgentRuns, p.Manifest.IncompleteAgentRuns)
+		p.Manifest.CompletedAgentRuns, p.Manifest.FailedAgentRuns, p.Manifest.InterruptedAgentRuns, p.Manifest.RejectedAgentRuns, p.Manifest.IncompleteAgentRuns)
 	fmt.Fprintf(&b, "Each item is tagged `evidence` (proven by the transcript), `inference` (derived), or `unknown`.\nProvenance points to the original transcript so you can re-read raw bytes; do not trust a claim you cannot trace.\n\n")
 	if len(p.Evidence) == 0 {
 		b.WriteString("_No evidence items extracted._\n")
@@ -161,8 +161,8 @@ func (p Package) receiverPromptMD() string {
 		p.Manifest.Provider, intro, p.Manifest.WorkflowStatus)
 	hasAgents := p.Manifest.AgentRuns > 0
 	if hasAgents {
-		fmt.Fprintf(&b, "This is a multi-agent recovery: %d run(s) — %d completed, %d with no captured result, %d stopped, %d failed. Reuse the captured results; do not redo that work.\n\n",
-			p.Manifest.AgentRuns, p.Manifest.CompletedAgentRuns, p.Manifest.IncompleteAgentRuns, p.Manifest.InterruptedAgentRuns, p.Manifest.FailedAgentRuns)
+		fmt.Fprintf(&b, "This is a multi-agent recovery: %d run(s) — %d completed, %d with no captured result, %d stopped, %d declined, %d failed. Reuse the captured results; do not redo that work.\n\n",
+			p.Manifest.AgentRuns, p.Manifest.CompletedAgentRuns, p.Manifest.IncompleteAgentRuns, p.Manifest.InterruptedAgentRuns, p.Manifest.RejectedAgentRuns, p.Manifest.FailedAgentRuns)
 	} else {
 		b.WriteString("This is a plain session digest — no sub-agents ran, so there is no parallel work to recover.\n\n")
 	}
@@ -201,6 +201,9 @@ func (p Package) receiverPromptMD() string {
 		}
 		if n := p.Manifest.InterruptedAgentRuns; n > 0 {
 			fmt.Fprintf(&b, "- %d run(s) were deliberately stopped; any output is partial and they were ended on purpose — reconcile rather than blindly redo.\n", n)
+		}
+		if n := p.Manifest.RejectedAgentRuns; n > 0 {
+			fmt.Fprintf(&b, "- %d dispatch(es) were declined by the user (a denied plan / dismissed prompt) — they never ran and were not meant to. Do NOT re-run them; reconcile against `digest.md` to see why they were skipped.\n", n)
 		}
 		if n := p.Manifest.FailedAgentRuns; n > 0 {
 			fmt.Fprintf(&b, "- %d run(s) failed; treat their output as unreliable and redo if needed.\n", n)

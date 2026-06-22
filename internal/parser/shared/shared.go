@@ -107,6 +107,11 @@ func LaterTime(a, b time.Time) time.Time {
 
 // StatusForTurn derives a turn's status: failed if any tool call failed, success
 // if the turn produced an assistant final or any invocations, else unknown.
+// Only StatusFailed propagates up to the turn: a StatusRejected call (a user
+// declining a plan/prompt) is deliberately NOT a turn failure — the assistant
+// still did its work (e.g. presented the declined plan), so such a turn derives by
+// its content (success when it produced output). Rejection stays a tool-call-grain
+// fact, queryable via tool_calls.status; do not add a StatusRejected case here.
 func StatusForTurn(turn trace.Turn) string {
 	for _, call := range turn.ToolCalls {
 		if call.Status == trace.StatusFailed {

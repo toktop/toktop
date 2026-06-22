@@ -161,11 +161,16 @@ func (MCPUnused30d) Evaluate(_ context.Context, index trace.Index, now time.Time
 	// provider in a multi-source home. The earliest is per provider, keyed by the
 	// reproducible SourceID, so an old provider never unblocks a newly-added one.
 	earliestBySource := make(map[string]time.Time)
+	sourceIDByProvider := make(map[string]string) // SourceID hashes; cache so it runs once per provider, not once per turn
 	for _, turn := range index.Turns {
 		if turn.StartedAt.IsZero() {
 			continue
 		}
-		src := trace.SourceID(turn.Provider)
+		src, ok := sourceIDByProvider[turn.Provider]
+		if !ok {
+			src = trace.SourceID(turn.Provider)
+			sourceIDByProvider[turn.Provider] = src
+		}
 		if e, ok := earliestBySource[src]; !ok || turn.StartedAt.Before(e) {
 			earliestBySource[src] = turn.StartedAt
 		}
@@ -293,10 +298,11 @@ func (RetryLoop) Evaluate(_ context.Context, index trace.Index, _ time.Time) []t
 		for _, call := range turn.ToolCalls {
 			// Skip agent/subagent dispatches: a failed run is an outcome, not a tool
 			// re-hit against bad arguments (provider-neutral via the agent-tool
-			// registry). LIMITATION: a user *declining* a tool use (rejecting a plan,
-			// dismissing a prompt) is also recorded as StatusFailed and is
-			// indistinguishable from a genuine error in the neutral trace today, so
-			// those still count; telling declines from errors belongs in the parser.
+			// registry). A user *declining* a tool use (rejecting a plan, dismissing a
+			// prompt) is not friction either: claude-code records it as StatusRejected,
+			// so the StatusFailed gate below already excludes it. LIMITATION: codex and
+			// opencode cannot — their on-disk formats record a decline indistinguishably
+			// from a genuine tool error, so a decline there still counts as a failure here.
 			if call.Status == trace.StatusFailed && !ingest.IsAgentTool(turn.Provider, call.Name) {
 				if failsByTool == nil {
 					failsByTool = map[string]int{}

@@ -158,7 +158,7 @@ keep a daemon running so the DB stays current automatically (see
 | `toktop search <query>` | Full-text search over turn text and tool calls (FTS5) |
 | `toktop mcps` | MCP server usage rollup (`mcps unused` = declared but never called) |
 | `toktop skills` | Skill usage rollup (`skills unused` = installed but never used) |
-| `toktop tools` | Tool-call usage (call / turn / failed counts per tool) |
+| `toktop tools` | Tool-call usage (call / turn / failed / rejected counts per tool) |
 | `toktop models` | Model invocation usage (call / turn / token counts, incl. cache, per provider+model) |
 | `toktop projects` | Per-project session / turn / tool counts |
 | `toktop suggestions` | Rule-engine findings (`suggestions recompute` reruns the rules) |

@@ -24,13 +24,14 @@ type ProjectListItem struct {
 }
 
 type ToolListItem struct {
-	Kind        string    `json:"kind"`
-	Name        string    `json:"name"`
-	MCPServer   string    `json:"mcp_server,omitzero"`
-	CallCount   int       `json:"call_count"`
-	TurnCount   int       `json:"turn_count"`
-	FailedCount int       `json:"failed_count"`
-	LastUsedAt  time.Time `json:"last_used_at,omitzero"`
+	Kind          string    `json:"kind"`
+	Name          string    `json:"name"`
+	MCPServer     string    `json:"mcp_server,omitzero"`
+	CallCount     int       `json:"call_count"`
+	TurnCount     int       `json:"turn_count"`
+	FailedCount   int       `json:"failed_count"`
+	RejectedCount int       `json:"rejected_count"`
+	LastUsedAt    time.Time `json:"last_used_at,omitzero"`
 }
 
 type MCPListItem struct {
@@ -405,6 +406,7 @@ func (s *Store) ListTools(ctx context.Context, f Filter) ([]ToolListItem, error)
 		       COUNT(*),
 		       COUNT(DISTINCT tool_calls.turn_id),
 		       COALESCE(SUM(CASE WHEN tool_calls.status = 'failed' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN tool_calls.status = 'rejected' THEN 1 ELSE 0 END), 0),
 		       COALESCE(MAX(`+toolCallActivityTimeExpr+`), '')
 		FROM tool_calls
 		JOIN turns ON turns.id = tool_calls.turn_id
@@ -421,7 +423,7 @@ func (s *Store) ListTools(ctx context.Context, f Filter) ([]ToolListItem, error)
 	for rows.Next() {
 		var item ToolListItem
 		var lastUsed sql.NullString
-		if err := rows.Scan(&item.Kind, &item.Name, &item.MCPServer, &item.CallCount, &item.TurnCount, &item.FailedCount, &lastUsed); err != nil {
+		if err := rows.Scan(&item.Kind, &item.Name, &item.MCPServer, &item.CallCount, &item.TurnCount, &item.FailedCount, &item.RejectedCount, &lastUsed); err != nil {
 			return nil, fmt.Errorf("scan tool: %w", err)
 		}
 		item.LastUsedAt = parseTimeOpt(lastUsed)

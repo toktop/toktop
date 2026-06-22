@@ -366,7 +366,7 @@ func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	addFilterFlags(fs, &sources, &projects, &sessions, &statuses)
 	subagents := addSubagentsFlag(fs)
-	setFlagUsage(fs, "usage: toktop tools [flags]", "Roll up tool-call usage (call / turn / failed counts per tool).")
+	setFlagUsage(fs, "usage: toktop tools [flags]", "Roll up tool-call usage (call / turn / failed / rejected counts per tool).")
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
@@ -394,10 +394,10 @@ func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		cliErr(stderr, err)
 		return 1
 	}
-	return emitList(*output, stdout, stderr, format, *columns, tools, []string{"kind", "name", "mcp_server", "calls", "turns", "failed", "last_used"}, func(item sqlite.ToolListItem) []string {
+	return emitList(*output, stdout, stderr, format, *columns, tools, []string{"kind", "name", "mcp_server", "calls", "turns", "failed", "rejected", "last_used"}, func(item sqlite.ToolListItem) []string {
 		return []string{item.Kind, item.Name, item.MCPServer,
 			strconv.Itoa(item.CallCount), strconv.Itoa(item.TurnCount),
-			strconv.Itoa(item.FailedCount), formatTime(item.LastUsedAt)}
+			strconv.Itoa(item.FailedCount), strconv.Itoa(item.RejectedCount), formatTime(item.LastUsedAt)}
 	})
 }
 

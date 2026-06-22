@@ -22,6 +22,12 @@ const (
 	StatusFailed               = "failed"
 	// StatusRejected is a tool use the user declined (denied a plan, dismissed a
 	// prompt) — a user decision, not a tool error, so it must not read as a failure.
+	// Only claude-code can emit it: codex and opencode record a decline
+	// indistinguishably from a tool error on disk (codex as failing function_call
+	// output text, opencode as part.state.status="error"), so their declines stay
+	// StatusFailed. It is a tool-call-grain status only — it never propagates to a
+	// turn or session status (like pending/awaiting_confirmation), so it is not a
+	// matchable --status value on sessions/turns.
 	StatusRejected             = "rejected"
 	StatusAwaitingConfirmation = "awaiting_confirmation"
 	StatusPending              = "pending"

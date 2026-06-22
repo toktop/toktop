@@ -41,6 +41,13 @@ func buildEvidence(session trace.Session, turns []trace.Turn, agents []AgentRun)
 			// against the digest rather than blindly resuming.
 			typ = "stopped_agent"
 			conf = ConfidenceUnknown
+		case trace.StatusRejected:
+			// The user DECLINED this dispatch (denied the plan / dismissed it): it
+			// never ran and was not meant to — not a failure and not work to resume.
+			// Flag it distinctly so the recovering agent skips/reconciles rather than
+			// re-running it.
+			typ = "declined_agent"
+			conf = ConfidenceUnknown
 		default:
 			// pending / active: launched but never completed or stopped — not
 			// authoritative evidence; flag it so the recovering agent knows to resume

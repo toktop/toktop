@@ -72,7 +72,7 @@ type AgentRun struct {
 // EvidenceItem is one provenance-carrying fact for the handoff index.
 type EvidenceItem struct {
 	ID         string        `json:"id"`
-	Type       string        `json:"type"` // agent_result | last_assistant_message | failed_agent | stopped_agent | incomplete_agent
+	Type       string        `json:"type"` // agent_result | last_assistant_message | failed_agent | stopped_agent | incomplete_agent | declined_agent
 	Claim      string        `json:"claim"`
 	Confidence Confidence    `json:"confidence"`
 	Source     SourcePointer `json:"source"`
@@ -104,6 +104,10 @@ type Manifest struct {
 	// recovery differs: reconcile a stop vs resume an in-flight run.
 	InterruptedAgentRuns   int       `json:"interrupted_agent_runs"`
 	IncompleteAgentRuns    int       `json:"incomplete_agent_runs"`
+	// RejectedAgentRuns counts dispatches the user DECLINED (a denied plan /
+	// dismissed prompt): a deliberate decision, not work to resume or re-run — a
+	// recovering agent should skip it and reconcile against the digest, never redo it.
+	RejectedAgentRuns      int       `json:"rejected_agent_runs"`
 	FinalSynthesisPresent  bool      `json:"final_synthesis_present"`
 	// RecommendedEntrypoints names the package files in reading order; it is a
 	// directory-form (CLI) concept, so the HTTP handler clears it (omitempty) —
@@ -309,7 +313,7 @@ func subagentRunStatus(sessionStatus string) string {
 }
 
 func buildManifest(now time.Time, session trace.Session, turns []trace.Turn, agents []AgentRun) Manifest {
-	completed, failed, interrupted, incomplete := 0, 0, 0, 0
+	completed, failed, interrupted, rejected, incomplete := 0, 0, 0, 0, 0
 	for _, a := range agents {
 		switch a.Status {
 		case trace.StatusSuccess:
@@ -321,6 +325,11 @@ func buildManifest(now time.Time, session trace.Session, turns []trace.Turn, age
 			// produced, but unlike an in-flight run it was killed on purpose, so a
 			// recovering agent should reconcile rather than blindly resume it.
 			interrupted++
+		case trace.StatusRejected:
+			// The user DECLINED this dispatch (denied the plan / dismissed it) — it
+			// never ran and was not meant to. Unlike an in-flight run there is nothing
+			// to resume; a recovering agent should skip and reconcile it, not re-run it.
+			rejected++
 		default:
 			// pending / active / unknown: launched but never completed or stopped —
 			// in-flight / abandoned, neither a usable result nor a failure.
@@ -353,6 +362,7 @@ func buildManifest(now time.Time, session trace.Session, turns []trace.Turn, age
 		FailedAgentRuns:        failed,
 		InterruptedAgentRuns:   interrupted,
 		IncompleteAgentRuns:    incomplete,
+		RejectedAgentRuns:      rejected,
 		FinalSynthesisPresent:  finalPresent,
 		RecommendedEntrypoints: entrypoints,
 	}

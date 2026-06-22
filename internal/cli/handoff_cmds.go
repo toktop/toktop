@@ -112,7 +112,7 @@ func runHandoffCreate(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 	m := pkg.Manifest
 	fmt.Fprintf(stdout, "handoff written to %s\n", output)
-	fmt.Fprintf(stdout, "  status=%s  turns=%d  agent_runs=%d (%d ok, %d failed, %d stopped, %d in-flight)  final_synthesis=%v\n",
-		m.WorkflowStatus, m.Turns, m.AgentRuns, m.CompletedAgentRuns, m.FailedAgentRuns, m.InterruptedAgentRuns, m.IncompleteAgentRuns, m.FinalSynthesisPresent)
+	fmt.Fprintf(stdout, "  status=%s  turns=%d  agent_runs=%d (%d ok, %d failed, %d stopped, %d declined, %d in-flight)  final_synthesis=%v\n",
+		m.WorkflowStatus, m.Turns, m.AgentRuns, m.CompletedAgentRuns, m.FailedAgentRuns, m.InterruptedAgentRuns, m.RejectedAgentRuns, m.IncompleteAgentRuns, m.FinalSynthesisPresent)
 	return 0
 }
