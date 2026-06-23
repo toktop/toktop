@@ -227,3 +227,130 @@ export interface SearchResponse {
 export interface ApiErrorBody {
   error: { code: string; message: string }
 }
+
+// ── analytics list items (mirrors internal/store/sqlite listings.go) ───────────
+
+export interface ProjectListItem {
+  id:             string
+  source_id:      string
+  name:           string
+  path?:          string
+  session_count:  number
+  turn_count:     number
+  tool_call_count: number
+  last_activity?: string
+}
+
+export interface ToolListItem {
+  kind:            string
+  name:            string
+  mcp_server?:     string
+  call_count:      number
+  turn_count:      number
+  failed_count:    number
+  rejected_count:  number
+  last_used_at?:   string
+}
+
+export interface ModelListItem {
+  provider:               string
+  model:                  string
+  call_count:             number
+  turn_count:             number
+  input_tokens:           number
+  output_tokens:          number
+  cache_read_tokens:      number
+  cache_write_tokens:     number
+  cache_write_long_tokens: number
+  last_used_at?:          string
+}
+
+export interface MCPListItem {
+  source_id:            string
+  server:               string
+  call_count:           number
+  tool_count:           number
+  turn_count:           number
+  last_used_at?:        string
+  availability_observed: number
+  declared:             boolean
+  scope?:               string
+  config_path?:         string
+}
+
+export interface SkillListItem {
+  source_id:          string
+  name:               string
+  scope?:             string
+  source_path?:       string
+  description?:       string
+  version?:           string
+  argument_hint?:     string
+  user_invocable?:    boolean
+  triggers?:          unknown
+  allowed_tools?:     unknown
+  tools?:             unknown
+  compatibility?:     string
+  license?:           string
+  installed:          boolean
+  inferred_used_count: number
+  last_used_at?:      string
+}
+
+// ── daemon status (mirrors internal/runtime/state.go + internal/httpapi/daemon.go) ─
+
+export interface DaemonCounters {
+  full_runs:                number
+  full_failures:            number
+  file_runs:                number
+  file_failures:            number
+  unmapped_files:           number
+  ingest_auto_dropped_total?: number
+  emit_dropped_total?:       number
+}
+
+export interface DaemonBackpressure {
+  persist_queue_full_total:        number
+  sse_slow_subscriber_dropped_total: number
+  spool_dropped_total:             number
+  spool_dropped_bytes:             number
+  durable_lag:                     number
+  persist_queue_len:               number
+  live_sessions:                   number
+}
+
+export interface DaemonStatus {
+  state:             string
+  sources:           string[]
+  interval:          string
+  debounce:          string
+  started_at?:       string
+  last_full_at?:     string
+  last_full_reason?: string
+  last_file_at?:     string
+  last_file_path?:   string
+  pending_files:     number
+  watched_paths:     number
+  counters:          DaemonCounters
+  backpressure:      DaemonBackpressure
+}
+
+// ── config (mirrors internal/httpapi/handlers_ops.go handleConfig) ─────────────
+
+export interface ConfigResponse {
+  home_dir:       string
+  config_dir:     string
+  data_dir:       string
+  api_token_path: string
+  api_token_set:  boolean
+  redact:         string
+  roots:          Record<string, string[]>
+}
+
+// ── sources (mirrors internal/httpapi/handlers_ops.go handleSources) ──────────
+
+export interface SourceRoot {
+  source: string
+  root:   string
+  exists: boolean
+}

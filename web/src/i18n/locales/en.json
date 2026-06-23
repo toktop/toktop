@@ -132,8 +132,137 @@
       "noResults":    "No results for \"{{q}}\".",
       "error":        "Search failed."
     },
-    "analytics": { "title": "Analytics" },
-    "daemon":    { "title": "Daemon" },
+    "analytics": {
+      "title":      "Analytics",
+      "tabsLabel":  "Analytics tabs",
+      "empty":      "No data.",
+      "tabs": {
+        "projects": "Projects",
+        "tools":    "Tools",
+        "models":   "Models",
+        "mcps":     "MCPs",
+        "skills":   "Skills"
+      },
+      "summary": {
+        "sessions":     "Sessions",
+        "turns":        "Turns",
+        "toolCalls":    "Tool calls",
+        "inputTokens":  "Input tokens",
+        "outputTokens": "Output tokens"
+      },
+      "projects": {
+        "name":         "Project",
+        "source":       "Source",
+        "sessions":     "Sessions",
+        "turns":        "Turns",
+        "tools":        "Tools",
+        "lastActivity": "Last activity"
+      },
+      "tools": {
+        "name":      "Tool",
+        "kind":      "Kind",
+        "mcpServer": "MCP server",
+        "calls":     "Calls",
+        "turns":     "Turns",
+        "failed":    "Failed",
+        "rejected":  "Rejected",
+        "lastUsed":  "Last used"
+      },
+      "models": {
+        "model":        "Model",
+        "provider":     "Provider",
+        "calls":        "Calls",
+        "turns":        "Turns",
+        "inputTokens":  "Input tokens",
+        "outputTokens": "Output tokens",
+        "cacheRead":      "Cache read",
+        "cacheWrite":     "Cache write",
+        "cacheWriteLong": "Cache write (long)",
+        "lastUsed":       "Last used"
+      },
+      "mcps": {
+        "server":       "Server",
+        "source":       "Source",
+        "declared":     "Declared",
+        "scope":        "Scope",
+        "calls":        "Calls",
+        "tools":        "Tools",
+        "turns":        "Turns",
+        "availability": "Avail.",
+        "lastUsed":     "Last used",
+        "unusedOnly":   "Show unused only",
+        "yes":          "yes",
+        "no":           "no"
+      },
+      "skills": {
+        "name":        "Skill",
+        "source":      "Source",
+        "scope":       "Scope",
+        "installed":   "Installed",
+        "description": "Description",
+        "usedCount":   "Used (inferred)",
+        "lastUsed":    "Last used",
+        "unusedOnly":  "Show unused only",
+        "yes":         "yes",
+        "no":          "no"
+      }
+    },
+    "daemon": {
+      "title": "Daemon",
+      "runtime": {
+        "title":        "Runtime status",
+        "state":        "State",
+        "sources":      "Sources",
+        "interval":     "Interval",
+        "debounce":     "Debounce",
+        "startedAt":    "Started",
+        "lastFull":     "Last full run",
+        "lastFile":     "Last file run",
+        "lastFilePath": "Last file",
+        "pendingFiles": "Pending files",
+        "watchedPaths": "Watched paths"
+      },
+      "counters": {
+        "title":        "Ingest counters",
+        "fullRuns":     "Full runs",
+        "fullFailures": "Full failures",
+        "fileRuns":     "File runs",
+        "fileFailures": "File failures",
+        "unmapped":     "Unmapped files",
+        "ingestDrop":   "Ingest auto-dropped",
+        "emitDrop":     "Emit dropped"
+      },
+      "backpressure": {
+        "title":             "Backpressure",
+        "liveSessions":      "Live sessions",
+        "persistQueueLen":   "Persist queue length",
+        "durableLag":        "Durable lag",
+        "persistFull":       "Persist queue full (total)",
+        "sseDropped":        "SSE slow-subscriber dropped",
+        "spoolDropped":      "Spool dropped",
+        "spoolDroppedBytes": "Spool dropped bytes"
+      },
+      "config": {
+        "title":      "Configuration",
+        "homeDir":    "Home dir",
+        "configDir":  "Config dir",
+        "dataDir":    "Data dir",
+        "apiToken":   "API token",
+        "tokenSet":   "set",
+        "tokenUnset": "not set",
+        "redact":     "Redact policy",
+        "roots":      "Provider roots"
+      },
+      "sources": {
+        "title":  "Sources",
+        "empty":  "No sources found.",
+        "source": "Provider",
+        "root":   "Root path",
+        "exists": "Exists",
+        "yes":    "yes",
+        "no":     "missing"
+      }
+    },
     "settings":  { "title": "Settings" }
   },
   "common": {

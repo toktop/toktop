@@ -1,13 +1,21 @@
 import { useQuery } from "@tanstack/react-query"
 import { apiGet } from "./client"
 import type {
+  ConfigResponse,
+  DaemonStatus,
   HandoffPackage,
   LiveSessionItem,
+  MCPListItem,
+  ModelListItem,
   Page,
+  ProjectListItem,
   SearchResponse,
   Session,
   SessionDetail,
+  SkillListItem,
+  SourceRoot,
   Summary,
+  ToolListItem,
 } from "./types"
 
 type Filter = Record<string, string | number | boolean | undefined>
@@ -59,4 +67,69 @@ export const useSearch = ({ q, kind, subagents }: SearchParams) =>
       subagents: subagents ? 1 : undefined,
     }),
     enabled:  q.length > 0,
+  })
+
+// ── analytics list hooks ──────────────────────────────────────────────────────
+
+export const useProjects = (f?: Filter) =>
+  useQuery({
+    queryKey: ["projects", f],
+    queryFn:  () => apiGet<ProjectListItem[]>("/projects", f),
+  })
+
+export const useTools = (f?: Filter) =>
+  useQuery({
+    queryKey: ["tools", f],
+    queryFn:  () => apiGet<ToolListItem[]>("/tools", f),
+  })
+
+export const useModels = (f?: Filter) =>
+  useQuery({
+    queryKey: ["models", f],
+    queryFn:  () => apiGet<ModelListItem[]>("/models", f),
+  })
+
+export const useMcps = (f?: Filter) =>
+  useQuery({
+    queryKey: ["mcps", f],
+    queryFn:  () => apiGet<MCPListItem[]>("/mcps", f),
+  })
+
+export const useUnusedMcps = () =>
+  useQuery({
+    queryKey: ["mcps", "unused"],
+    queryFn:  () => apiGet<MCPListItem[]>("/mcps/unused"),
+  })
+
+export const useSkills = (f?: Filter) =>
+  useQuery({
+    queryKey: ["skills", f],
+    queryFn:  () => apiGet<SkillListItem[]>("/skills", f),
+  })
+
+export const useUnusedSkills = () =>
+  useQuery({
+    queryKey: ["skills", "unused"],
+    queryFn:  () => apiGet<SkillListItem[]>("/skills/unused"),
+  })
+
+// ── daemon / config / sources hooks ──────────────────────────────────────────
+
+export const useDaemon = () =>
+  useQuery({
+    queryKey:        ["daemon"],
+    queryFn:         () => apiGet<DaemonStatus>("/daemon"),
+    refetchInterval: 5_000,
+  })
+
+export const useConfig = () =>
+  useQuery({
+    queryKey: ["config"],
+    queryFn:  () => apiGet<ConfigResponse>("/config"),
+  })
+
+export const useSources = () =>
+  useQuery({
+    queryKey: ["sources"],
+    queryFn:  () => apiGet<SourceRoot[]>("/sources"),
   })
