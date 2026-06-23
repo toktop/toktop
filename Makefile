@@ -16,10 +16,21 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS  = -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
-.PHONY: build vet vuln lint check fmt
+.PHONY: build vet vuln lint check fmt web-dist ui
 
 build:
 	$(GO) build -tags $(TAGS) -ldflags "$(LDFLAGS)" -o toktop ./cmd/toktop
+
+# Build the web UI into internal/web/dist (Vite outDir), where //go:build ui
+# embeds it. Standalone target — deliberately NOT a prerequisite of
+# `build`/`check`, so the default Go build never needs Node.
+web-dist:
+	cd web && pnpm install --frozen-lockfile && pnpm build
+
+# Build toktop WITH the embedded web UI. Depends on web-dist so the //go:build ui
+# embed always has assets to read.
+ui: web-dist
+	$(GO) build -tags $(TAGS),ui -ldflags "$(LDFLAGS)" -o toktop ./cmd/toktop
 
 vet:
 	$(GO) vet -tags $(TAGS) ./...

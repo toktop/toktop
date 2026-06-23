@@ -11,4 +11,8 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    outDir:      "../internal/web/dist",
+    emptyOutDir: true,
+  },
 })
