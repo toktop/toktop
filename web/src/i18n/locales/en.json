@@ -68,7 +68,50 @@
         "next":    "Next"
       }
     },
-    "session":   { "title": "Session" },
+    "session": {
+      "title":             "Session",
+      "tabs": {
+        "turns":           "Turns",
+        "handoff":         "Handoff"
+      },
+      "back":              "Back to sessions",
+      "notFound":          "Session not found.",
+      "ambiguous":         "Ambiguous ID — multiple sessions matched:",
+      "subagent":          "Sub-agent",
+      "parent":            "Parent session",
+      "agentType":         "Agent type",
+      "subagentCount":     "{{count}} sub-agents",
+      "turns": {
+        "empty":           "No turns.",
+        "index":           "#{{n}}",
+        "user":            "User",
+        "assistant":       "Assistant",
+        "tokens":          "{{n}} tokens",
+        "tools":           "{{n}} tools",
+        "showTools":       "Show tool calls",
+        "hideTools":       "Hide tool calls",
+        "noUser":          "(no user message)",
+        "noAssistant":     "(no assistant message)"
+      },
+      "handoff": {
+        "loading":         "Loading handoff…",
+        "error":           "Failed to load handoff.",
+        "workflowStatus":  "Workflow status",
+        "agentRuns":       "Agent runs",
+        "completed":       "completed",
+        "failed":          "failed",
+        "interrupted":     "interrupted",
+        "incomplete":      "incomplete",
+        "rejected":        "rejected",
+        "noAgentRuns":     "No agent runs.",
+        "duration":        "{{ms}}ms",
+        "outputBytes":     "{{n}} bytes output",
+        "source":          "Source",
+        "digest":          "Digest",
+        "noDigest":        "No digest available."
+      },
+      "lastAssistant":     "Last assistant message"
+    },
     "search":    { "title": "Search" },
     "analytics": { "title": "Analytics" },
     "daemon":    { "title": "Daemon" },

@@ -33,13 +33,37 @@ export interface Session {
   turn_count:        number
   tool_call_count:   number
   tokens:            Tokens
-  is_subagent?:      boolean
-  parent_session_id?: string
+  is_subagent?:         boolean
+  parent_external_id?:  string
+  parent_session_id?:   string
   parent_tool_use_id?: string
   workflow_run_id?:  string
   subagent_kind?:    string
   agent_type?:       string
   subagent_count?:   number
+}
+
+export interface ToolCall {
+  id:           string
+  turn_id:      string
+  session_id:   string
+  call_index:   number
+  kind:         string
+  name:         string
+  mcp_server?:  string
+  mcp_tool?:    string
+  use_id?:            string
+  invocation_id?:     string
+  raw_use_event_id?:  string
+  raw_result_event_id?: string
+  input?:       string
+  output?:      string
+  output_bytes?: number
+  status:       string
+  error?:       string
+  started_at?:  string
+  ended_at?:    string
+  duration_ms?: number
 }
 
 export interface Turn {
@@ -56,7 +80,7 @@ export interface Turn {
   invocation_count: number
   tool_call_count:  number
   tokens:           Tokens
-  // tool_calls / invocations / components omitted; add when a page needs them
+  tool_calls?:      ToolCall[]
 }
 
 export interface LiveSessionItem {
@@ -116,6 +140,16 @@ export interface Summary {
   raw_events:             number
 }
 
+export interface SourcePointer {
+  provider:        string
+  session_id:      string
+  turn_id?:        string
+  tool_call_id?:   string
+  file?:           string
+  use_event_id?:   string
+  result_event_id?: string
+}
+
 export interface AgentRun {
   id:           string
   tool:         string
@@ -128,6 +162,8 @@ export interface AgentRun {
   started_at?:  string
   ended_at?:    string
   duration_ms?: number
+  output_bytes?: number
+  source:       SourcePointer
 }
 
 export interface EvidenceItem {
@@ -135,6 +171,7 @@ export interface EvidenceItem {
   type:       string
   claim:      string
   confidence: string
+  source:     SourcePointer
 }
 
 export interface HandoffManifest {
