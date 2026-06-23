@@ -15,8 +15,10 @@ import { reltime } from "@/lib/format"
 const sessionKey = (s: { source_id: string; session_id: string }) =>
   `${s.source_id}:${s.session_id}`
 
+// The card's primary label is the session title; project name is shown
+// separately and de-emphasized. Fall back to project/id only when untitled.
 function cardLabel(s: LiveSessionItem): string {
-  return s.project_name || s.title || s.external_session_id || s.session_id
+  return s.title || s.project_name || s.external_session_id || s.session_id
 }
 
 // ── summary ────────────────────────────────────────────────────────────────────
@@ -72,7 +74,12 @@ function SessionCard({ item, onOpen }: { item: LiveSessionItem; onOpen: () => vo
         </span>
         <StatusBadge status={item.current_status} />
       </div>
-      <p className="truncate text-sm font-medium" title={label}>{label}</p>
+      <div className="min-w-0">
+        <p className="truncate text-sm font-medium" title={label}>{label}</p>
+        {item.project_name && item.project_name !== label && (
+          <p className="truncate text-xs text-muted-foreground" title={item.project_name}>{item.project_name}</p>
+        )}
+      </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
         <span>{item.turn_count} {t("page.dashboard.card.turns")}</span>
         <span>{item.tool_call_count} {t("page.dashboard.card.tools")}</span>
@@ -134,7 +141,12 @@ function LiveDetailDialog({
         </div>
 
         <div className="space-y-4 overflow-auto px-5 py-4">
-          <p className="text-sm font-medium" title={label}>{label}</p>
+          <div className="min-w-0">
+            <p className="text-sm font-medium" title={label}>{label}</p>
+            {item.project_name && item.project_name !== label && (
+              <p className="truncate text-xs text-muted-foreground" title={item.project_name}>{item.project_name}</p>
+            )}
+          </div>
 
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
             {rows.map(([k, v]) => (
