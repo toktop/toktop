@@ -6,7 +6,9 @@
     "search":     "Search",
     "analytics":  "Analytics",
     "daemon":     "Daemon",
-    "settings":   "Settings"
+    "settings":   "Settings",
+    "openMenu":   "Open menu",
+    "closeMenu":  "Close menu"
   },
   "theme": {
     "light":      "Light",

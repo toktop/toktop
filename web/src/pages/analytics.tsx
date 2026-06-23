@@ -403,7 +403,7 @@ export function AnalyticsPage() {
         className="space-y-3"
       >
         <Tabs.List
-          className="flex gap-1 rounded-lg border border-border bg-muted/40 p-1 w-fit"
+          className="flex w-fit max-w-full gap-1 overflow-x-auto rounded-lg border border-border bg-muted/40 p-1"
           aria-label={t("page.analytics.tabsLabel")}
         >
           {TABS.map((id) => (
