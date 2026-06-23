@@ -78,6 +78,7 @@ func NewRootCmd(info Info) *cobra.Command {
 		buildSimpleCmd("status", "Show current live session-state snapshot (one-shot)", runStatus),
 		buildSimpleCmd("stream", "Tail the live event stream in real time", runStream),
 		buildSimpleCmd("emit", "Write one live event into a running server", runEmit),
+		buildSimpleCmd("ui", "Open the local web UI in your browser", runUI),
 
 		buildSimpleCmd("data", "Data lifecycle: prune | retention", runData),
 		buildSimpleCmd("export", "Export the current trace index", runExport),
