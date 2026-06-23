@@ -44,9 +44,19 @@ export const useSummary = (f?: Filter) =>
     queryFn:  () => apiGet<Summary>("/summary", f),
   })
 
-export const useSearch = (q: string) =>
+interface SearchParams {
+  q:          string
+  kind?:      string
+  subagents?: boolean
+}
+
+export const useSearch = ({ q, kind, subagents }: SearchParams) =>
   useQuery({
-    queryKey: ["search", q],
-    queryFn:  () => apiGet<SearchResponse>("/search", { q }),
+    queryKey: ["search", q, kind, subagents],
+    queryFn:  () => apiGet<SearchResponse>("/search", {
+      q,
+      kind:      kind      || undefined,
+      subagents: subagents ? 1 : undefined,
+    }),
     enabled:  q.length > 0,
   })

@@ -112,7 +112,26 @@
       },
       "lastAssistant":     "Last assistant message"
     },
-    "search":    { "title": "Search" },
+    "search": {
+      "title":        "Search",
+      "inputLabel":   "Search",
+      "inputPH":      "Search sessions and turns…",
+      "hint":         "Type to search across all sessions and turns.",
+      "filters": {
+        "subagents":  "Include sub-agents",
+        "kind":       "Kind",
+        "kindAll":    "All kinds",
+        "kindSession": "session",
+        "kindTurn":   "turn"
+      },
+      "result": {
+        "session":    "session",
+        "turn":       "turn",
+        "viewSession": "View session"
+      },
+      "noResults":    "No results for \"{{q}}\".",
+      "error":        "Search failed."
+    },
     "analytics": { "title": "Analytics" },
     "daemon":    { "title": "Daemon" },
     "settings":  { "title": "Settings" }
