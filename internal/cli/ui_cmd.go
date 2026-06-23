@@ -91,6 +91,7 @@ func runUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "toktop ui: could not open a browser (%v); open the URL above manually\n", e)
 	}
 
+	go keepaliveDaemonSSE(ctx, addr, daemonToken)
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -102,6 +103,32 @@ func runUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// keepaliveDaemonSSE holds one GET /v1/stream connection to the daemon for as
+// long as ctx is live. The daemon's idle monitor counts SSE subscribers; without
+// this the daemon would idle-stop after ~60 s when no dashboard page is open,
+// causing 502 on every /v1 request until the user restarts toktop ui.
+// On EOF or any error it waits 2 s and reconnects; on ctx cancellation it exits.
+func keepaliveDaemonSSE(ctx context.Context, addr, token string) {
+	client, base := httpClientFor(addr, 0)
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/stream", nil)
+		if err == nil {
+			if token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			if resp, err2 := client.Do(req); err2 == nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
 // daemonProxy reverse-proxies /v1 to the daemon at addr (unix socket or tcp),
