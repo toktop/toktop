@@ -16,7 +16,7 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS  = -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
-.PHONY: build vet vuln lint check fmt web-dist ui
+.PHONY: build vet vuln lint check fmt web-dist ui ui-check
 
 build:
 	$(GO) build -tags $(TAGS) -ldflags "$(LDFLAGS)" -o toktop ./cmd/toktop
@@ -31,6 +31,14 @@ web-dist:
 # embed always has assets to read.
 ui: web-dist
 	$(GO) build -tags $(TAGS),ui -ldflags "$(LDFLAGS)" -o toktop ./cmd/toktop
+
+# Vet + lint the ui-tagged Go as well. The default `check` only covers the base
+# tag, so //go:build ui files (e.g. internal/web/embed.go) would never be gated.
+# Opt-in (needs web-dist for the //go:embed to resolve); run before a release.
+ui-check: web-dist
+	$(GO) vet -tags $(TAGS),ui ./...
+	golangci-lint run --build-tags $(TAGS),ui --default=none \
+		-E staticcheck -E unused -E perfsprint -E modernize -E usestdlibvars ./...
 
 vet:
 	$(GO) vet -tags $(TAGS) ./...
