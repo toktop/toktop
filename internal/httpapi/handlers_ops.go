@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"os"
@@ -64,7 +65,82 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 		"api_token_set":  tokenErr == nil,
 		"redact":         s.redactValue(),
 		"roots":          s.rootsMap(),
+		"settings":       s.configSettings(),
 	})
+}
+
+// configSettings builds the settings block for GET /v1/config: value+source+editable
+// for each key the web UI may display. addr is included read-only (editable:false)
+// so the page can show the current listen address without being able to change it.
+func (s *Server) configSettings() map[string]any {
+	type entry struct {
+		Value    string `json:"value"`
+		Source   string `json:"source"`
+		Editable bool   `json:"editable"`
+	}
+	if s.cfgLoader == nil {
+		return map[string]any{}
+	}
+	snap := s.cfgLoader.Current()
+	canonicalBool := func(b bool) string {
+		if b {
+			return "on"
+		}
+		return "off"
+	}
+	canonicalInterval := func(d time.Duration) string {
+		if d == 0 {
+			return ""
+		}
+		return d.String()
+	}
+	keys := []string{"redact", "autostart", "idle_stop", "timezone", "interval", "addr"}
+	values := map[string]string{
+		"redact":    config.CanonicalRedact(snap.RedactPolicy),
+		"autostart": canonicalBool(snap.Autostart),
+		"idle_stop": canonicalBool(snap.IdleStop),
+		"timezone":  snap.Timezone,
+		"interval":  canonicalInterval(snap.Interval),
+		"addr":      snap.Addr,
+	}
+	out := make(map[string]any, len(keys))
+	for _, k := range keys {
+		out[k] = entry{
+			Value:    values[k],
+			Source:   s.cfgLoader.Source(k),
+			Editable: config.RemoteSettable(k),
+		}
+	}
+	return out
+}
+
+func (s *Server) handleConfigSet(w http.ResponseWriter, r *http.Request) {
+	if s.cfgLoader == nil {
+		writeError(w, http.StatusServiceUnavailable, "config_unavailable", "no config loader")
+		return
+	}
+	var body struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if body.Key == "" {
+		writeError(w, http.StatusBadRequest, "missing_key", "key is required")
+		return
+	}
+	if !config.RemoteSettable(body.Key) {
+		writeError(w, http.StatusForbidden, "key_not_remote_settable",
+			"this key cannot be set over the API; change it with `toktop config set "+body.Key+" <value>`")
+		return
+	}
+	if err := s.cfgLoader.Set(body.Key, body.Value); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_config_value", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"key": body.Key, "value": body.Value, "reloaded": true})
 }
 
 // handleConfigReload re-reads config.json into the live loader.

@@ -13,6 +13,23 @@ import (
 	"toktop.unceas.dev/internal/textutil"
 )
 
+// remoteSettable is the allow-list of config keys that may be set over the HTTP
+// API (POST /v1/config:set), and thus from the web UI. Default-deny: addr and
+// roots.* are exposure-affecting (network reach / what gets ingested), and any
+// unknown or future key is excluded until explicitly opted in — so a local web
+// client can never widen the daemon's own attack surface. Those keys require
+// shell access via `toktop config set`.
+var remoteSettable = map[string]bool{
+	"redact":    true,
+	"autostart": true,
+	"idle_stop": true,
+	"timezone":  true,
+	"interval":  true,
+}
+
+// RemoteSettable reports whether key may be set via the HTTP API.
+func RemoteSettable(key string) bool { return remoteSettable[key] }
+
 // SetKey validates+normalizes value for key, then writes it into config.json,
 // preserving other keys via a temp-file + rename atomic write. Keys are
 // redact, autostart, idle_stop, timezone, addr, interval, or "roots.<provider>"

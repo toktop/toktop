@@ -205,6 +205,27 @@ func (l *Loader) Watch(ctx context.Context, logger *slog.Logger) error {
 	}
 }
 
+// Set validates and writes key=value to config.json via SetKey (the same path
+// the CLI's `config set` uses), then reloads the live snapshot so the caller
+// sees the effect synchronously. The fsnotify watch would also catch the write;
+// the explicit Reload just makes the API response deterministic. A bad value is
+// rejected by SetKey before any write (no partial state); Reload is fail-safe.
+func (l *Loader) Set(key, value string) error {
+	if err := SetKey(l.path, key, value); err != nil {
+		return err
+	}
+	return l.Reload()
+}
+
+// Source reports where key currently resolves from for display: the config file
+// when present there, else the built-in default.
+func (l *Loader) Source(key string) string {
+	if ok, err := FileHasKey(l.path, key); err == nil && ok {
+		return "file config.json"
+	}
+	return "default"
+}
+
 // CanonicalRedact renders a redact policy as its canonical "on"/"off" string.
 // Exported so the cli/httpapi display surfaces derive it from RedactPolicy
 // instead of the Snapshot carrying a second, hand-synced copy.

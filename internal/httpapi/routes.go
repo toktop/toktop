@@ -38,6 +38,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/sources", s.handleSources)
 	s.mux.HandleFunc("GET /v1/config", s.handleConfig)
 	s.mux.HandleFunc("POST /v1/config:reload", s.handleConfigReload)
+	s.mux.HandleFunc("POST /v1/config:set", s.handleConfigSet)
 
 	s.mux.HandleFunc("POST /v1/data:prune", s.handleDataPruneRaw)
 	s.mux.HandleFunc("GET /v1/data/retention", s.handleRetentionStatus)
