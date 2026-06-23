@@ -9,7 +9,7 @@ import { useStream, type StreamStatus } from "@/api/useStream"
 import type { LiveEvent, LiveSessionItem, Summary } from "@/api/types"
 import { StatusBadge } from "@/components/status-badge"
 import { LiveDot } from "@/components/live-dot"
-import { reltime } from "@/lib/format"
+import { reltime, clockTime } from "@/lib/format"
 
 // Unique per live session (source_id is per-provider, not per-session).
 const sessionKey = (s: { source_id: string; session_id: string }) =>
@@ -164,35 +164,39 @@ function LiveDetailDialog({
             </div>
           )}
 
-          {/* live event feed for this session */}
+          {/* recent events — a short preview; the full, interactive (pause/filter)
+              and session-scoped list is one click away on the events page. */}
           <div className="space-y-1.5">
-            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              {t("page.dashboard.detail.events")}
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                {t("page.dashboard.detail.events")}
+              </span>
+              <Link
+                to={`/events?session=${encodeURIComponent(item.session_id)}`}
+                className="shrink-0 text-xs text-primary hover:underline"
+              >
+                {t("page.dashboard.detail.viewEvents")} →
+              </Link>
             </div>
             {events.length === 0 ? (
               <p className="text-xs text-muted-foreground">{t("page.dashboard.detail.noEvents")}</p>
             ) : (
               <ul className="divide-y divide-border rounded-md border border-border bg-muted/30">
-                {events.map((e, i) => (
+                {events.slice(0, 5).map((e, i) => (
                   <li key={e.event_id ?? i} className="flex items-center gap-2 px-3 py-1.5 text-xs">
                     <span className="font-mono text-foreground">{e.type}</span>
                     {e.status && <StatusBadge status={e.status} />}
                     {e.reason && <span className="truncate text-muted-foreground">{e.reason}</span>}
-                    <span className="ml-auto shrink-0 text-muted-foreground">{reltime(e.at)}</span>
+                    <span className="ml-auto shrink-0 font-mono text-muted-foreground">{clockTime(e.at)}</span>
                   </li>
                 ))}
               </ul>
             )}
           </div>
 
-          <div className="flex flex-wrap gap-4">
-            <Link to={`/sessions/${item.session_id}`} className="text-sm text-primary hover:underline">
-              {t("page.dashboard.detail.viewSession")} →
-            </Link>
-            <Link to={`/events?session=${encodeURIComponent(item.session_id)}`} className="text-sm text-primary hover:underline">
-              {t("page.dashboard.detail.viewEvents")} →
-            </Link>
-          </div>
+          <Link to={`/sessions/${item.session_id}`} className="inline-block text-sm text-primary hover:underline">
+            {t("page.dashboard.detail.viewSession")} →
+          </Link>
         </div>
       </div>
     </div>
