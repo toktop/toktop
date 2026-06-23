@@ -1,17 +1,192 @@
+import { useCallback, useEffect, useRef } from "react"
 import { useTranslation } from "react-i18next"
-import { useLiveStatus } from "@/api/queries"
+import { useQueryClient } from "@tanstack/react-query"
+import { formatDistanceToNow } from "date-fns"
+
+import { useLiveStatus, useSummary } from "@/api/queries"
+import { useStream } from "@/api/useStream"
+import { cn } from "@/lib/utils"
+import type { LiveSessionItem, Summary } from "@/api/types"
+
+// ── status badge ─────────────────────────────────────────────────────────────
+
+type StatusVariant = "active" | "waiting" | "idle" | "success" | "error" | "default"
+
+function statusVariant(s: string): StatusVariant {
+  switch (s) {
+    case "active":
+    case "busy":
+    case "running":
+      return "active"
+    case "awaiting_confirmation":
+    case "awaiting":
+    case "waiting":
+      return "waiting"
+    case "idle":
+      return "idle"
+    case "success":
+    case "completed":
+      return "success"
+    case "failed":
+    case "error":
+      return "error"
+    default:
+      return "default"
+  }
+}
+
+const badgeClasses: Record<StatusVariant, string> = {
+  active:  "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300",
+  waiting: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300",
+  idle:    "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
+  success: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
+  error:   "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
+  default: "bg-muted text-muted-foreground",
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const variant = statusVariant(status)
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+        badgeClasses[variant],
+      )}
+    >
+      {status}
+    </span>
+  )
+}
+
+// ── summary stat card ─────────────────────────────────────────────────────────
+
+function StatCard({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="rounded-lg border border-border bg-card px-4 py-3 text-card-foreground">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="mt-1 text-2xl font-semibold tabular-nums">{value.toLocaleString()}</p>
+    </div>
+  )
+}
+
+// ── summary band ─────────────────────────────────────────────────────────────
+
+function SummaryBand({ summary }: { summary: Summary }) {
+  const { t } = useTranslation()
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <StatCard label={t("page.dashboard.stat.sessions")} value={summary.sessions} />
+      <StatCard label={t("page.dashboard.stat.turns")}    value={summary.turns} />
+      <StatCard label={t("page.dashboard.stat.tools")}    value={summary.tool_calls} />
+      <StatCard label={t("page.dashboard.stat.tokens")}
+                value={summary.input_tokens + summary.output_tokens} />
+    </div>
+  )
+}
+
+// ── session card ──────────────────────────────────────────────────────────────
+
+function relativeTime(iso?: string): string {
+  if (!iso) return "—"
+  try {
+    return formatDistanceToNow(new Date(iso), { addSuffix: true })
+  } catch {
+    return "—"
+  }
+}
+
+function SessionCard({ item }: { item: LiveSessionItem }) {
+  const { t } = useTranslation()
+  const label = item.project_name ?? item.title ?? item.external_session_id ?? item.session_id
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-4 text-card-foreground transition-colors hover:border-ring/40">
+      {/* top row: provider badge + status badge */}
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          {item.provider}
+        </span>
+        <StatusBadge status={item.current_status} />
+      </div>
+
+      {/* project / title */}
+      <p className="truncate text-sm font-medium" title={label}>
+        {label}
+      </p>
+
+      {/* meta row */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <span>
+          {item.turn_count} {t("page.dashboard.card.turns")}
+        </span>
+        <span>
+          {item.tool_call_count} {t("page.dashboard.card.tools")}
+        </span>
+        <span className="ml-auto shrink-0">{relativeTime(item.last_activity_at)}</span>
+      </div>
+    </div>
+  )
+}
+
+// ── page ──────────────────────────────────────────────────────────────────────
 
 export function DashboardPage() {
   const { t } = useTranslation()
-  const { data, isLoading } = useLiveStatus()
+  const qc = useQueryClient()
+
+  // debounced invalidation — burst of events → single refetch
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const debouncedInvalidate = useCallback(() => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => {
+      void qc.invalidateQueries({ queryKey: ["status"] })
+      void qc.invalidateQueries({ queryKey: ["summary"] })
+    }, 250)
+  }, [qc])
+
+  // clear any pending debounce timer on unmount
+  useEffect(() => () => { if (timerRef.current !== null) clearTimeout(timerRef.current) }, [])
+
+  // wire live stream → cache invalidation; keeping this mounted keeps the SSE
+  // connection open (which also resets the daemon idle-stop timer)
+  useStream(debouncedInvalidate, { onResync: debouncedInvalidate })
+
+  const { data: statusData, isLoading: statusLoading, error: statusError } = useLiveStatus()
+  const { data: summary, isLoading: summaryLoading }                       = useSummary()
+
+  const isLoading = statusLoading || summaryLoading
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">{t("page.dashboard")}</h1>
-      {isLoading && <p className="text-muted-foreground">{t("common.loading")}</p>}
-      {data && data.items.length === 0 && (
-        <p className="text-muted-foreground">{t("common.empty")}</p>
-      )}
+    <div className="space-y-6">
+      <h1 className="text-2xl font-semibold">{t("page.dashboard.title")}</h1>
+
+      {/* summary stats */}
+      {summary && <SummaryBand summary={summary} />}
+
+      {/* session list */}
+      <section aria-label={t("page.dashboard.sessions.label")}>
+        {isLoading && (
+          <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
+        )}
+
+        {statusError && (
+          <p className="text-sm text-destructive" role="alert">
+            {statusError.message ?? t("common.error")}
+          </p>
+        )}
+
+        {!isLoading && !statusError && statusData && statusData.items.length === 0 && (
+          <p className="text-sm text-muted-foreground">{t("page.dashboard.empty")}</p>
+        )}
+
+        {statusData && statusData.items.length > 0 && (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {statusData.items.map((item) => (
+              <SessionCard key={item.source_id} item={item} />
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   )
 }

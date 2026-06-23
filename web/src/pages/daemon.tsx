@@ -5,7 +5,7 @@ export function DaemonPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">{t("page.daemon")}</h1>
+      <h1 className="text-2xl font-semibold">{t("page.daemon.title")}</h1>
     </div>
   )
 }

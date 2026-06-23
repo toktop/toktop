@@ -19,13 +19,29 @@
     "en":         "English"
   },
   "page": {
-    "dashboard":  "Dashboard",
-    "sessions":   "Sessions",
-    "session":    "Session",
-    "search":     "Search",
-    "analytics":  "Analytics",
-    "daemon":     "Daemon",
-    "settings":   "Settings"
+    "dashboard": {
+      "title":          "Dashboard",
+      "empty":          "No active sessions.",
+      "sessions": {
+        "label":        "Live sessions"
+      },
+      "stat": {
+        "sessions":     "Sessions",
+        "turns":        "Turns",
+        "tools":        "Tool calls",
+        "tokens":       "Tokens"
+      },
+      "card": {
+        "turns":        "turns",
+        "tools":        "tools"
+      }
+    },
+    "sessions":  { "title": "Sessions" },
+    "session":   { "title": "Session" },
+    "search":    { "title": "Search" },
+    "analytics": { "title": "Analytics" },
+    "daemon":    { "title": "Daemon" },
+    "settings":  { "title": "Settings" }
   },
   "common": {
     "loading":    "Loading…",

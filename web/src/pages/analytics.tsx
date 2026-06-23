@@ -5,7 +5,7 @@ export function AnalyticsPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">{t("page.analytics")}</h1>
+      <h1 className="text-2xl font-semibold">{t("page.analytics.title")}</h1>
     </div>
   )
 }

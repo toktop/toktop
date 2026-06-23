@@ -9,7 +9,7 @@ export function SessionDetailPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">{t("page.session")}</h1>
+      <h1 className="text-2xl font-semibold">{t("page.session.title")}</h1>
       {isLoading && <p className="text-muted-foreground">{t("common.loading")}</p>}
       {data && (
         <p className="text-sm text-muted-foreground">

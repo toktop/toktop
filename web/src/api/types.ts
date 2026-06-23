@@ -11,10 +11,10 @@ export interface Page<T> {
 }
 
 export interface Tokens {
-  input_tokens:            number
-  output_tokens:           number
-  cache_read_tokens:       number
-  cache_write_tokens:      number
+  input_tokens?:            number
+  output_tokens?:           number
+  cache_read_tokens?:       number
+  cache_write_tokens?:      number
   cache_write_long_tokens?: number
 }
 
@@ -111,7 +111,7 @@ export interface Summary {
   output_tokens:          number
   cache_read_tokens:      number
   cache_write_tokens:     number
-  cache_write_long_tokens?: number
+  cache_write_long_tokens: number
   parse_errors:           number
   raw_events:             number
 }
