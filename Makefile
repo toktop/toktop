@@ -16,7 +16,13 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS  = -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
-.PHONY: build vet vuln lint check fmt web-dist ui ui-check
+# Local web-UI dev: an isolated toktop home (under tmp/, gitignored) so your real
+# ~/.toktop config is untouched; provider data (~/.claude, ~/.codex, …) is still
+# auto-detected and ingested.
+DEV_HOME ?= $(CURDIR)/tmp/toktop-dev
+DEV_ADDR ?= tcp://127.0.0.1:8787
+
+.PHONY: build vet vuln lint check fmt web-dist ui ui-check dev
 
 build:
 	$(GO) build -tags $(TAGS) -ldflags "$(LDFLAGS)" -o toktop ./cmd/toktop
@@ -39,6 +45,21 @@ ui-check: web-dist
 	$(GO) vet -tags $(TAGS),ui ./...
 	golangci-lint run --build-tags $(TAGS),ui --default=none \
 		-E staticcheck -E unused -E perfsprint -E modernize -E usestdlibvars ./...
+
+# Web-UI development with hot reload. Runs the daemon API on a loopback TCP port
+# (--no-auth so Vite's dev proxy can reach it token-free) AND the Vite dev server
+# together. Open http://localhost:5173 — Vite serves the SPA with HMR and proxies
+# /v1 to the daemon. Ctrl-C stops both. The embedded `toktop ui` is the
+# production path; this target is for fast frontend iteration only.
+dev: build
+	@TOKTOP_HOME=$(DEV_HOME) ./toktop config set addr $(DEV_ADDR) >/dev/null
+	@TOKTOP_HOME=$(DEV_HOME) ./toktop config set idle_stop off >/dev/null
+	@cd web && pnpm install --frozen-lockfile >/dev/null
+	@echo "▸ daemon API → $(DEV_ADDR) (no-auth)   ▸ Vite → http://localhost:5173 (proxies /v1)   — Ctrl-C stops both"
+	@TOKTOP_HOME=$(DEV_HOME) ./toktop daemon serve --no-auth & \
+		DAEMON_PID=$$! ; \
+		trap 'kill $$DAEMON_PID 2>/dev/null' INT TERM EXIT ; \
+		cd web && pnpm dev
 
 vet:
 	$(GO) vet -tags $(TAGS) ./...
