@@ -4,6 +4,7 @@ import { useTranslation }              from "react-i18next"
 
 import { useSearch }     from "@/api/queries"
 import type { SearchResult } from "@/api/types"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 // ── snippet rendering ─────────────────────────────────────────────────────────
 //
@@ -160,19 +161,17 @@ export function SearchPage() {
 
         {/* kind select */}
         <div className="flex items-center gap-2">
-          <label htmlFor="kind-select" className="text-xs text-muted-foreground">
-            {t("page.search.filters.kind")}
-          </label>
-          <select
-            id="kind-select"
-            className="h-7 rounded-md border border-input bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-            value={kind}
-            onChange={(e) => setKind(e.target.value)}
-          >
-            <option value="">{t("page.search.filters.kindAll")}</option>
-            <option value="turn">{t("page.search.filters.kindTurn")}</option>
-            <option value="tool_call">{t("page.search.filters.kindToolCall")}</option>
-          </select>
+          <span className="text-xs text-muted-foreground">{t("page.search.filters.kind")}</span>
+          <Select value={kind || "all"} onValueChange={(v) => setKind(v === "all" ? "" : (v as string))}>
+            <SelectTrigger size="sm" className="w-36" aria-label={t("page.search.filters.kind")}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t("page.search.filters.kindAll")}</SelectItem>
+              <SelectItem value="turn">{t("page.search.filters.kindTurn")}</SelectItem>
+              <SelectItem value="tool_call">{t("page.search.filters.kindToolCall")}</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       </div>
 

@@ -7,6 +7,7 @@ import { useConfig, useSetConfig } from "@/api/queries"
 import { ApiError }                from "@/api/client"
 import type { ConfigSetting }      from "@/api/types"
 import { Button }                  from "@/components/ui/button"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn }                      from "@/lib/utils"
 
 // ── zod validators (mirror server's config.SetKey) ───────────────────────────
@@ -157,23 +158,24 @@ function EditableField({ fieldKey, setting }: EditableFieldProps) {
               return (
                 <>
                   {isBoolKey ? (
-                    <select
-                      id={`setting-${fieldKey}`}
-                      name={field.name}
+                    <Select
                       value={field.state.value}
-                      onBlur={field.handleBlur}
-                      onChange={(e) => field.handleChange(e.target.value)}
-                      aria-describedby={describedBy}
-                      aria-invalid={hasAnyError || undefined}
-                      className={cn(
-                        "h-8 rounded-md border border-border bg-background px-2 text-sm",
-                        "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/30",
-                        hasFieldError ? "border-destructive" : "",
-                      )}
+                      onValueChange={(v) => field.handleChange(v as string)}
                     >
-                      <option value="on">{t("page.settings.options.on")}</option>
-                      <option value="off">{t("page.settings.options.off")}</option>
-                    </select>
+                      <SelectTrigger
+                        size="sm"
+                        className="w-28"
+                        id={`setting-${fieldKey}`}
+                        aria-describedby={describedBy}
+                        aria-invalid={hasAnyError || undefined}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="on">{t("page.settings.options.on")}</SelectItem>
+                        <SelectItem value="off">{t("page.settings.options.off")}</SelectItem>
+                      </SelectContent>
+                    </Select>
                   ) : (
                     <input
                       id={`setting-${fieldKey}`}

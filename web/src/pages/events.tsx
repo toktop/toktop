@@ -7,6 +7,7 @@ import { useStream } from "@/api/useStream"
 import type { LiveEvent } from "@/api/types"
 import { StatusBadge } from "@/components/status-badge"
 import { LiveDot } from "@/components/live-dot"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { clockTime } from "@/lib/format"
 
 // Cap the in-memory feed; this is a live tail, not a history store (the event log
@@ -74,15 +75,15 @@ export function EventsPage() {
 
       {/* toolbar */}
       <div className="flex flex-wrap items-center gap-3">
-        <select
-          aria-label={t("page.events.filterType")}
-          value={typeFilter}
-          onChange={(e) => setTypeFilter(e.target.value)}
-          className="h-8 rounded-md border border-input bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-        >
-          <option value="">{t("page.events.allTypes")}</option>
-          {types.map((ty) => <option key={ty} value={ty}>{ty}</option>)}
-        </select>
+        <Select value={typeFilter || "all"} onValueChange={(v) => setTypeFilter(v === "all" ? "" : (v as string))}>
+          <SelectTrigger size="sm" className="w-48" aria-label={t("page.events.filterType")}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">{t("page.events.allTypes")}</SelectItem>
+            {types.map((ty) => <SelectItem key={ty} value={ty}>{ty}</SelectItem>)}
+          </SelectContent>
+        </Select>
 
         <button
           type="button"

@@ -6,9 +6,11 @@ import { parseISO } from "date-fns"
 import { z }               from "zod"
 import { ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react"
 
-import { useSessions, useSources } from "@/api/queries"
-import type { Session } from "@/api/types"
+import { useSessions, useSources, useProjects } from "@/api/queries"
+import type { Session, ProjectListItem } from "@/api/types"
 import { StatusBadge } from "@/components/status-badge"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from "@/components/ui/combobox"
 import { reltime, fmtTokens } from "@/lib/format"
 
 // ── constants ─────────────────────────────────────────────────────────────────
@@ -47,10 +49,14 @@ interface FilterBarProps {
 
 function FilterBar({ onSubmit, initial }: FilterBarProps) {
   const { t } = useTranslation()
-  const { data: sources } = useSources()
+  const { data: sources }  = useSources()
+  const { data: projects } = useProjects()
   // distinct provider names (handleSources returns one row per provider+root);
   // the server folds the name to a source_id via ResolveSourceToken.
   const sourceOptions = [...new Set((sources ?? []).map((s) => s.source))]
+  // Full project objects: the `project` filter matches sessions.project_id, so the
+  // combobox value is the id while the label/search key is the (nicer) name.
+  const projectList = [...(projects ?? [])].sort((a, b) => a.name.localeCompare(b.name))
 
   const form = useForm({
     defaultValues: initial,
@@ -67,36 +73,49 @@ function FilterBar({ onSubmit, initial }: FilterBarProps) {
       <form.Field name="sources">
         {(field) => (
           <div className="flex flex-col gap-1">
-            <label htmlFor={field.name} className="text-xs text-muted-foreground">
-              {t("page.sessions.filters.sources")}
-            </label>
-            <select
-              id={field.name}
-              className="h-8 rounded-md border border-input bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              value={field.state.value ?? ""}
-              onChange={(e) => field.handleChange(e.target.value)}
+            <span className="text-xs text-muted-foreground">{t("page.sessions.filters.sources")}</span>
+            <Select
+              value={field.state.value || "all"}
+              onValueChange={(v) => field.handleChange(v === "all" ? "" : (v as string))}
             >
-              <option value="">{t("page.sessions.filters.sourcesAll")}</option>
-              {sourceOptions.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+              <SelectTrigger size="sm" className="w-36" aria-label={t("page.sessions.filters.sources")}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t("page.sessions.filters.sourcesAll")}</SelectItem>
+                {sourceOptions.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </div>
         )}
       </form.Field>
 
-      {/* project */}
+      {/* project (searchable) */}
       <form.Field name="project">
         {(field) => (
           <div className="flex flex-col gap-1">
-            <label htmlFor={field.name} className="text-xs text-muted-foreground">
-              {t("page.sessions.filters.project")}
-            </label>
-            <input
-              id={field.name}
-              className="h-8 w-40 rounded-md border border-input bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              placeholder={t("page.sessions.filters.projectPH")}
-              value={field.state.value ?? ""}
-              onChange={(e) => field.handleChange(e.target.value)}
-            />
+            <span className="text-xs text-muted-foreground">{t("page.sessions.filters.project")}</span>
+            <Combobox
+              items={projectList}
+              itemToStringLabel={(p: ProjectListItem) => p.name}
+              value={projectList.find((p) => p.id === field.state.value) ?? null}
+              onValueChange={(p) => field.handleChange((p as ProjectListItem | null)?.id ?? "")}
+            >
+              <ComboboxInput
+                className="w-48"
+                placeholder={t("page.sessions.filters.projectPH")}
+                aria-label={t("page.sessions.filters.project")}
+                showClear
+              />
+              <ComboboxContent>
+                <ComboboxEmpty>{t("page.sessions.filters.projectNone")}</ComboboxEmpty>
+                <ComboboxList>
+                  {(p: ProjectListItem) => (
+                    <ComboboxItem key={p.id} value={p}>{p.name}</ComboboxItem>
+                  )}
+                </ComboboxList>
+              </ComboboxContent>
+            </Combobox>
           </div>
         )}
       </form.Field>
@@ -105,19 +124,20 @@ function FilterBar({ onSubmit, initial }: FilterBarProps) {
       <form.Field name="status">
         {(field) => (
           <div className="flex flex-col gap-1">
-            <label htmlFor={field.name} className="text-xs text-muted-foreground">
-              {t("page.sessions.filters.status")}
-            </label>
-            <select
-              id={field.name}
-              className="h-8 rounded-md border border-input bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              value={field.state.value ?? ""}
-              onChange={(e) => field.handleChange(e.target.value)}
+            <span className="text-xs text-muted-foreground">{t("page.sessions.filters.status")}</span>
+            <Select
+              value={field.state.value || "all"}
+              onValueChange={(v) => field.handleChange(v === "all" ? "" : (v as string))}
             >
-              <option value="">{t("page.sessions.filters.statusAll")}</option>
-              <option value="completed">{t("page.sessions.filters.statusCompleted")}</option>
-              <option value="unknown">{t("page.sessions.filters.statusUnknown")}</option>
-            </select>
+              <SelectTrigger size="sm" className="w-32" aria-label={t("page.sessions.filters.status")}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t("page.sessions.filters.statusAll")}</SelectItem>
+                <SelectItem value="completed">{t("page.sessions.filters.statusCompleted")}</SelectItem>
+                <SelectItem value="unknown">{t("page.sessions.filters.statusUnknown")}</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         )}
       </form.Field>

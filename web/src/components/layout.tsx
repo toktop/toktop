@@ -15,6 +15,7 @@ import {
 } from "lucide-react"
 
 import { ThemeToggle } from "@/components/theme-toggle"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 
 type NavItem = {
@@ -72,18 +73,16 @@ function LanguageSwitcher() {
   ]
 
   return (
-    <select
-      aria-label={t("lang.switcher")}
-      value={i18n.language}
-      onChange={(e) => void i18n.changeLanguage(e.target.value)}
-      className="cursor-pointer rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring/50"
-    >
-      {locales.map((l) => (
-        <option key={l.code} value={l.code}>
-          {t(l.labelKey)}
-        </option>
-      ))}
-    </select>
+    <Select value={i18n.language} onValueChange={(v) => void i18n.changeLanguage(v as string)}>
+      <SelectTrigger size="sm" className="w-28" aria-label={t("lang.switcher")}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {locales.map((l) => (
+          <SelectItem key={l.code} value={l.code}>{t(l.labelKey)}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   )
 }
 
