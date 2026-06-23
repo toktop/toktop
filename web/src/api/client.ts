@@ -22,8 +22,7 @@ function qs(params?: Params): string {
   return s ? `?${s}` : ""
 }
 
-export async function apiGet<T>(path: string, params?: Params): Promise<T> {
-  const res = await fetch(`/v1${path}${qs(params)}`, { credentials: "same-origin" })
+async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let code = "http_error"
     let message = res.statusText
@@ -37,4 +36,19 @@ export async function apiGet<T>(path: string, params?: Params): Promise<T> {
     throw new ApiError(code, message)
   }
   return (await res.json()) as T
+}
+
+export async function apiGet<T>(path: string, params?: Params): Promise<T> {
+  const res = await fetch(`/v1${path}${qs(params)}`, { credentials: "same-origin" })
+  return handleResponse<T>(res)
+}
+
+export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`/v1${path}`, {
+    method:      "POST",
+    credentials: "same-origin",
+    headers:     { "Content-Type": "application/json" },
+    body:        JSON.stringify(body),
+  })
+  return handleResponse<T>(res)
 }

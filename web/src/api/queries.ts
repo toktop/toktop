@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query"
-import { apiGet } from "./client"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { apiGet, apiPost } from "./client"
 import type {
   ConfigResponse,
   DaemonStatus,
@@ -133,3 +133,25 @@ export const useSources = () =>
     queryKey: ["sources"],
     queryFn:  () => apiGet<SourceRoot[]>("/sources"),
   })
+
+interface SetConfigVars {
+  key:   string
+  value: string
+}
+
+interface SetConfigResult {
+  key:      string
+  value:    string
+  reloaded: boolean
+}
+
+export function useSetConfig() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (vars: SetConfigVars) =>
+      apiPost<SetConfigResult>("/config:set", vars),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["config"] })
+    },
+  })
+}

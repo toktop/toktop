@@ -337,6 +337,12 @@ export interface DaemonStatus {
 
 // ── config (mirrors internal/httpapi/handlers_ops.go handleConfig) ─────────────
 
+export interface ConfigSetting {
+  value:    string
+  source:   string
+  editable: boolean
+}
+
 export interface ConfigResponse {
   home_dir:       string
   config_dir:     string
@@ -345,6 +351,7 @@ export interface ConfigResponse {
   api_token_set:  boolean
   redact:         string
   roots:          Record<string, string[]>
+  settings:       Record<string, ConfigSetting>
 }
 
 // ── sources (mirrors internal/httpapi/handlers_ops.go handleSources) ──────────

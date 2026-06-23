@@ -263,7 +263,57 @@
         "no":     "missing"
       }
     },
-    "settings":  { "title": "Settings" }
+    "settings": {
+      "title":        "Settings",
+      "loading":      "Loading settings…",
+      "error":        "Failed to load settings.",
+      "editable": {
+        "title":      "Editable settings",
+        "desc":       "Changes are applied immediately and persisted to config.json."
+      },
+      "readonly": {
+        "title":      "Read-only settings",
+        "cliOnly":    "Change with `toktop config set <key> <value>`"
+      },
+      "source": {
+        "label":      "Source",
+        "default":    "default",
+        "file":       "config.json"
+      },
+      "keys": {
+        "redact":     "Redact policy",
+        "autostart":  "Autostart daemon",
+        "idle_stop":  "Idle stop",
+        "timezone":   "Timezone",
+        "interval":   "Poll interval",
+        "addr":       "Listen address"
+      },
+      "desc": {
+        "redact":     "Redact secrets from stored tool inputs and outputs (on/off).",
+        "autostart":  "Auto-start the daemon when the UI connects (on/off).",
+        "idle_stop":  "Stop the daemon when no consumers are connected (on/off).",
+        "timezone":   "Timezone for display: \"\" (local), \"utc\", \"local\", or IANA zone (e.g. America/New_York).",
+        "interval":   "Polling interval as a Go duration (e.g. 30s, 2m).",
+        "addr":       "Daemon listen address. Not settable via the web UI."
+      },
+      "options": {
+        "on":         "on",
+        "off":        "off"
+      },
+      "roots": {
+        "title":      "Provider roots",
+        "cliOnly":    "Change with `toktop config set <key> <value>`"
+      },
+      "save":         "Save",
+      "saving":       "Saving…",
+      "saved":        "Saved",
+      "validation": {
+        "onOff":      "Must be \"on\" or \"off\".",
+        "timezone":   "Must be \"\", \"utc\", \"local\", or a valid IANA timezone.",
+        "interval":   "Must be a Go duration > 0 (e.g. 30s, 5m).",
+        "tooLong":    "Value is too long."
+      }
+    }
   },
   "common": {
     "loading":    "Loading…",
