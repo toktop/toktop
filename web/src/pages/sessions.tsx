@@ -363,13 +363,20 @@ function SessionRow({
         }
       }}
     >
-      {/* title */}
-      <td className="max-w-[200px] truncate px-4 py-2 font-medium" title={title}>
-        {title}
-        {s.is_subagent && (
-          <span className="ml-1 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
-            {t("page.sessions.subBadge")}
-          </span>
+      {/* title + project */}
+      <td className="max-w-[240px] px-4 py-2">
+        <div className="truncate font-medium" title={title}>
+          {title}
+          {s.is_subagent && (
+            <span className="ml-1 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+              {t("page.sessions.subBadge")}
+            </span>
+          )}
+        </div>
+        {s.project_name && s.project_name !== title && (
+          <div className="truncate text-xs text-muted-foreground" title={s.project_name}>
+            {s.project_name}
+          </div>
         )}
       </td>
 
