@@ -12,6 +12,7 @@ import { useStream }                   from "@/api/useStream"
 import type { AgentRun, LiveEvent, Turn } from "@/api/types"
 import { StatusBadge }                 from "@/components/status-badge"
 import { LiveDot }                     from "@/components/live-dot"
+import { RecentEvents }                from "@/components/recent-events"
 import { reltime, fmtTokens, fmtMs }   from "@/lib/format"
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -283,6 +284,7 @@ export function SessionDetailPage() {
   const qc             = useQueryClient()
   const { data, isLoading, error } = useSession(id)
   const sess           = data?.session
+  const [events, setEvents] = useState<LiveEvent[]>([])
 
   // Live refresh: when a stream event references this session, refetch its turns
   // + handoff (debounced) so the detail reflects real-time activity rather than a
@@ -301,7 +303,10 @@ export function SessionDetailPage() {
     const matches =
       e.session_id === id ||
       (sess ? e.session_id === sess.id || (!!sess.external_id && e.external_session_id === sess.external_id) : false)
-    if (matches) refresh()
+    if (matches) {
+      setEvents((prev) => [e, ...prev].slice(0, 50))
+      refresh()
+    }
   }, [id, sess, refresh])
   const streamStatus = useStream(onEvent, { onResync: refresh })
 
@@ -397,6 +402,14 @@ export function SessionDetailPage() {
                 </p>
               )}
             </div>
+
+            {/* recent live events for this session */}
+            <RecentEvents
+              events={events}
+              viewAllHref={`/events?session=${encodeURIComponent(session.id)}`}
+              max={5}
+              showSession={false}
+            />
 
             {/* tabs */}
             <Tabs.Root defaultValue="turns">

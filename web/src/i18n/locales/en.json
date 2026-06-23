@@ -39,21 +39,7 @@
         "turns":        "turns",
         "tools":        "tools"
       },
-      "detail": {
-        "close":        "Close",
-        "provider":     "Provider",
-        "sessionStatus":"Session status",
-        "lastEvent":    "Last event",
-        "turns":        "Turns",
-        "tools":        "Tool calls",
-        "started":      "Started",
-        "lastActivity": "Last activity",
-        "transcript":   "Transcript",
-        "events":       "Recent events",
-        "noEvents":     "No events captured yet — they appear here as they stream in.",
-        "viewSession":  "View session",
-        "viewEvents":   "View events"
-      }
+      "viewAllSessions": "View all"
     },
     "events": {
       "title":      "Events",
@@ -358,6 +344,11 @@
         "tooLong":    "Value is too long."
       }
     }
+  },
+  "events": {
+    "recent":  "Recent events",
+    "viewAll": "View all",
+    "none":    "No events yet — they appear here as they stream in."
   },
   "common": {
     "loading":      "Loading…",
