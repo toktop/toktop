@@ -64,8 +64,8 @@
       "title": "Sessions",
       "empty": "No sessions found.",
       "filters": {
-        "sources":   "Sources",
-        "sourcesPH": "e.g. claudecode",
+        "sources":    "Sources",
+        "sourcesAll": "All",
         "project":   "Project",
         "projectPH": "project name",
         "status":    "Status",

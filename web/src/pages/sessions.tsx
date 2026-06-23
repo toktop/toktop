@@ -6,7 +6,7 @@ import { parseISO } from "date-fns"
 import { z }               from "zod"
 import { ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react"
 
-import { useSessions } from "@/api/queries"
+import { useSessions, useSources } from "@/api/queries"
 import type { Session } from "@/api/types"
 import { StatusBadge } from "@/components/status-badge"
 import { reltime, fmtTokens } from "@/lib/format"
@@ -47,6 +47,10 @@ interface FilterBarProps {
 
 function FilterBar({ onSubmit, initial }: FilterBarProps) {
   const { t } = useTranslation()
+  const { data: sources } = useSources()
+  // distinct provider names (handleSources returns one row per provider+root);
+  // the server folds the name to a source_id via ResolveSourceToken.
+  const sourceOptions = [...new Set((sources ?? []).map((s) => s.source))]
 
   const form = useForm({
     defaultValues: initial,
@@ -66,13 +70,15 @@ function FilterBar({ onSubmit, initial }: FilterBarProps) {
             <label htmlFor={field.name} className="text-xs text-muted-foreground">
               {t("page.sessions.filters.sources")}
             </label>
-            <input
+            <select
               id={field.name}
-              className="h-8 w-32 rounded-md border border-input bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              placeholder={t("page.sessions.filters.sourcesPH")}
+              className="h-8 rounded-md border border-input bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               value={field.state.value ?? ""}
               onChange={(e) => field.handleChange(e.target.value)}
-            />
+            >
+              <option value="">{t("page.sessions.filters.sourcesAll")}</option>
+              {sourceOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
           </div>
         )}
       </form.Field>
