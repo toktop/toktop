@@ -1,4 +1,4 @@
-import { useState }            from "react"
+import { useEffect, useState } from "react"
 import { useTranslation }       from "react-i18next"
 import { useForm }              from "@tanstack/react-form"
 import { z }                    from "zod"
@@ -16,13 +16,18 @@ const onOffSchema = z.enum(["on", "off"])
 // Simplified IANA/Go timezone validation: allow "", "utc", "local", or a zone
 // containing a slash (e.g. America/New_York) — the server stays authoritative.
 const timezoneSchema = z.string().max(64).refine(
-  (v) => v === "" || v === "utc" || v === "local" || /^[A-Za-z]+\/[A-Za-z_/]+$/.test(v),
+  // utc/local are case-insensitive on the server (normalizeTimezone lower-cases
+  // before matching); accept "" (unset) and slash zones too. Server authoritative.
+  (v) => v === "" || /^(utc|local)$/i.test(v) || /^[A-Za-z]+\/[A-Za-z_/]+$/.test(v),
   { message: "invalid_timezone" },
 )
 
-// Minimal Go duration: a positive number followed by a unit (s/m/h/…).
+// Go duration: one or more <number><unit> segments — accepts both single-unit
+// ("5s", "1m") and the compound canonical form the daemon returns via
+// Duration.String() ("1m0s", "1h30m0s"); "" means unset (server default).
+// zod is UX-only pre-validation; the server stays authoritative.
 const intervalSchema = z.string().max(32).refine(
-  (v) => /^\d+(\.\d+)?(ns|us|µs|ms|s|m|h)$/.test(v) && parseFloat(v) > 0,
+  (v) => v === "" || /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/.test(v),
   { message: "invalid_interval" },
 )
 
@@ -90,6 +95,15 @@ function EditableField({ fieldKey, setting }: EditableFieldProps) {
       }
     },
   })
+
+  // Resync the form when the server value changes — after a save the daemon
+  // returns a canonicalized value (e.g. interval "1m" → "1m0s") that differs from
+  // what was typed; without this the field keeps the stale input and the Save
+  // button stays enabled (isDirty never clears). The dep only changes on refetch,
+  // so it never clobbers in-progress typing.
+  useEffect(() => {
+    form.reset({ value: setting.value })
+  }, [form, setting.value])
 
   const sourceLabel = setting.source === "default"
     ? t("page.settings.source.default")
