@@ -109,9 +109,8 @@ function FilterBar({ onSubmit, initial }: FilterBarProps) {
               onChange={(e) => field.handleChange(e.target.value)}
             >
               <option value="">{t("page.sessions.filters.statusAll")}</option>
-              <option value="success">{t("page.sessions.filters.statusSuccess")}</option>
-              <option value="failed">{t("page.sessions.filters.statusFailed")}</option>
-              <option value="running">{t("page.sessions.filters.statusRunning")}</option>
+              <option value="completed">{t("page.sessions.filters.statusCompleted")}</option>
+              <option value="unknown">{t("page.sessions.filters.statusUnknown")}</option>
             </select>
           </div>
         )}
