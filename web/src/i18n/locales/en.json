@@ -36,7 +36,38 @@
         "tools":        "tools"
       }
     },
-    "sessions":  { "title": "Sessions" },
+    "sessions": {
+      "title": "Sessions",
+      "empty": "No sessions found.",
+      "filters": {
+        "sources":   "Sources",
+        "sourcesPH": "e.g. claudecode",
+        "project":   "Project",
+        "projectPH": "project name",
+        "status":    "Status",
+        "statusAll": "All",
+        "since":     "Since",
+        "sincePH":   "e.g. 7d",
+        "subagents": "Include sub-agents",
+        "apply":     "Apply"
+      },
+      "columns": {
+        "title":    "Title / Project",
+        "provider": "Provider",
+        "status":   "Status",
+        "kind":     "Kind",
+        "turns":    "Turns",
+        "tools":    "Tools",
+        "tokens":   "Tokens",
+        "started":  "Started",
+        "duration": "Duration"
+      },
+      "pagination": {
+        "showing": "{{from}}–{{to}} of {{total}}",
+        "prev":    "Previous",
+        "next":    "Next"
+      }
+    },
     "session":   { "title": "Session" },
     "search":    { "title": "Search" },
     "analytics": { "title": "Analytics" },
