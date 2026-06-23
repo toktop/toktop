@@ -20,6 +20,9 @@ coverage.out
 
 tmp
 
+# Playwright MCP scratch output (screenshots/snapshots from local UI verification)
+.playwright-mcp/
+
 .claude
 .codex
 CLAUDE.md
