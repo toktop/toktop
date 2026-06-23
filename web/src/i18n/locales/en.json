@@ -1,0 +1,38 @@
+{
+  "nav": {
+    "label":      "Main navigation",
+    "dashboard":  "Dashboard",
+    "sessions":   "Sessions",
+    "search":     "Search",
+    "analytics":  "Analytics",
+    "daemon":     "Daemon",
+    "settings":   "Settings"
+  },
+  "theme": {
+    "light":      "Light",
+    "dark":       "Dark",
+    "system":     "System",
+    "toggle":     "Toggle theme"
+  },
+  "lang": {
+    "switcher":   "Language",
+    "en":         "English"
+  },
+  "page": {
+    "dashboard":  "Dashboard",
+    "sessions":   "Sessions",
+    "session":    "Session",
+    "search":     "Search",
+    "analytics":  "Analytics",
+    "daemon":     "Daemon",
+    "settings":   "Settings"
+  },
+  "common": {
+    "loading":    "Loading…",
+    "empty":      "No results.",
+    "error":      "Something went wrong.",
+    "sessions":   "sessions",
+    "turns":      "turns",
+    "tokens":     "tokens"
+  }
+}

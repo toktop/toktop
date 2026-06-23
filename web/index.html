@@ -4,7 +4,18 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>vite-app</title>
+    <title>toktop</title>
+    <!-- Pre-paint theme: set .dark before React hydrates to prevent FOUC -->
+    <script>
+      ;(function () {
+        var stored = localStorage.getItem("toktop-theme")
+        var isDark =
+          stored === "dark" ||
+          (stored !== "light" &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches)
+        if (isDark) document.documentElement.classList.add("dark")
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -1,20 +1,27 @@
-import { Button } from "@/components/ui/button"
+import { Routes, Route } from "react-router-dom"
+
+import { Layout }          from "@/components/layout"
+import { DashboardPage }   from "@/pages/dashboard"
+import { SessionsPage }    from "@/pages/sessions"
+import { SessionDetailPage } from "@/pages/session-detail"
+import { SearchPage }      from "@/pages/search"
+import { AnalyticsPage }   from "@/pages/analytics"
+import { DaemonPage }      from "@/pages/daemon"
+import { SettingsPage }    from "@/pages/settings"
 
 export function App() {
   return (
-    <div className="flex min-h-svh p-6">
-      <div className="flex max-w-md min-w-0 flex-col gap-4 text-sm leading-loose">
-        <div>
-          <h1 className="font-medium">Project ready!</h1>
-          <p>You may now add components and start building.</p>
-          <p>We&apos;ve already added the button component for you.</p>
-          <Button className="mt-2">Button</Button>
-        </div>
-        <div className="font-mono text-xs text-muted-foreground">
-          (Press <kbd>d</kbd> to toggle dark mode)
-        </div>
-      </div>
-    </div>
+    <Routes>
+      <Route element={<Layout />}>
+        <Route index             element={<DashboardPage />} />
+        <Route path="sessions"   element={<SessionsPage />} />
+        <Route path="sessions/:id" element={<SessionDetailPage />} />
+        <Route path="search"     element={<SearchPage />} />
+        <Route path="analytics"  element={<AnalyticsPage />} />
+        <Route path="daemon"     element={<DaemonPage />} />
+        <Route path="settings"   element={<SettingsPage />} />
+      </Route>
+    </Routes>
   )
 }
 
