@@ -11,8 +11,8 @@ import { useSession, useHandoff }      from "@/api/queries"
 import { useStream }                   from "@/api/useStream"
 import type { AgentRun, LiveEvent, Turn } from "@/api/types"
 import { StatusBadge }                 from "@/components/status-badge"
+import { LiveDot }                     from "@/components/live-dot"
 import { reltime, fmtTokens, fmtMs }   from "@/lib/format"
-import { cn }                          from "@/lib/utils"
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -355,16 +355,7 @@ export function SessionDetailPage() {
                   {session.title ?? session.project_name ?? session.id}
                 </h1>
                 <div className="flex items-center gap-2">
-                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground" aria-live="polite">
-                    <span
-                      className={cn(
-                        "inline-block size-1.5 rounded-full",
-                        streamStatus === "live" ? "bg-green-500 motion-safe:animate-pulse" : "bg-yellow-500",
-                      )}
-                      aria-hidden="true"
-                    />
-                    {streamStatus === "live" ? t("page.session.live") : t("page.session.reconnecting")}
-                  </span>
+                  <LiveDot status={streamStatus} />
                   <StatusBadge status={session.status} />
                 </div>
               </div>

@@ -5,6 +5,7 @@ import { DashboardPage }   from "@/pages/dashboard"
 import { SessionsPage }    from "@/pages/sessions"
 import { SessionDetailPage } from "@/pages/session-detail"
 import { SearchPage }      from "@/pages/search"
+import { EventsPage }      from "@/pages/events"
 import { AnalyticsPage }   from "@/pages/analytics"
 import { DaemonPage }      from "@/pages/daemon"
 import { SettingsPage }    from "@/pages/settings"
@@ -17,6 +18,7 @@ export function App() {
         <Route path="sessions"   element={<SessionsPage />} />
         <Route path="sessions/:id" element={<SessionDetailPage />} />
         <Route path="search"     element={<SearchPage />} />
+        <Route path="events"     element={<EventsPage />} />
         <Route path="analytics"  element={<AnalyticsPage />} />
         <Route path="daemon"     element={<DaemonPage />} />
         <Route path="settings"   element={<SettingsPage />} />

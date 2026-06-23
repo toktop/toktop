@@ -1,9 +1,17 @@
-import { formatDistanceToNow, parseISO } from "date-fns"
+import { format, formatDistanceToNow, parseISO } from "date-fns"
 import type { Tokens } from "@/api/types"
 
 export function reltime(iso?: string): string {
   if (!iso) return "—"
   try { return formatDistanceToNow(parseISO(iso), { addSuffix: true }) } catch { return "—" }
+}
+
+// clockTime is for high-frequency streams (the events feed) where every row is
+// "less than a minute ago": a precise local wall-clock time with milliseconds so
+// rows are distinguishable and ordered.
+export function clockTime(iso?: string): string {
+  if (!iso) return "—"
+  try { return format(parseISO(iso), "HH:mm:ss.SSS") } catch { return "—" }
 }
 
 export function totalTokens(t: Tokens): number {

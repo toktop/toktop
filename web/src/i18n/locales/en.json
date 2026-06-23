@@ -4,6 +4,7 @@
     "dashboard":  "Dashboard",
     "sessions":   "Sessions",
     "search":     "Search",
+    "events":     "Events",
     "analytics":  "Analytics",
     "daemon":     "Daemon",
     "settings":   "Settings",
@@ -24,8 +25,6 @@
     "dashboard": {
       "title":          "Dashboard",
       "empty":          "No active sessions.",
-      "live":           "Live",
-      "reconnecting":   "Reconnecting…",
       "updated":        "updated {{time}}",
       "sessions": {
         "label":        "Live sessions"
@@ -53,6 +52,23 @@
         "events":       "Recent events",
         "noEvents":     "No events captured yet — they appear here as they stream in.",
         "viewSession":  "View session"
+      }
+    },
+    "events": {
+      "title":      "Events",
+      "subtitle":   "Live event stream from the daemon — newest first.",
+      "filterType": "Filter by event type",
+      "allTypes":   "All types",
+      "pause":      "Pause",
+      "resume":     "Resume ({{count}})",
+      "count":      "{{n}} shown",
+      "empty":      "Waiting for events… they appear here as they stream in.",
+      "col": {
+        "time":     "Time",
+        "type":     "Type",
+        "provider": "Provider",
+        "session":  "Session",
+        "detail":   "Detail"
       }
     },
     "sessions": {
@@ -101,8 +117,6 @@
         "handoff":         "Handoff"
       },
       "back":              "Back to sessions",
-      "live":              "Live",
-      "reconnecting":      "Reconnecting…",
       "notFound":          "Session not found.",
       "ambiguous":         "Ambiguous ID — multiple sessions matched:",
       "subagent":          "Sub-agent",
@@ -343,11 +357,13 @@
     }
   },
   "common": {
-    "loading":    "Loading…",
-    "empty":      "No results.",
-    "error":      "Something went wrong.",
-    "sessions":   "sessions",
-    "turns":      "turns",
-    "tokens":     "tokens"
+    "loading":      "Loading…",
+    "empty":        "No results.",
+    "error":        "Something went wrong.",
+    "live":         "Live",
+    "reconnecting": "Reconnecting…",
+    "sessions":     "sessions",
+    "turns":        "turns",
+    "tokens":       "tokens"
   }
 }

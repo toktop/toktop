@@ -5,11 +5,11 @@ import { useQueryClient } from "@tanstack/react-query"
 import { X } from "lucide-react"
 
 import { useLiveStatus, useSummary } from "@/api/queries"
-import { useStream } from "@/api/useStream"
+import { useStream, type StreamStatus } from "@/api/useStream"
 import type { LiveEvent, LiveSessionItem, Summary } from "@/api/types"
 import { StatusBadge } from "@/components/status-badge"
+import { LiveDot } from "@/components/live-dot"
 import { reltime } from "@/lib/format"
-import { cn } from "@/lib/utils"
 
 // Unique per live session (source_id is per-provider, not per-session).
 const sessionKey = (s: { source_id: string; session_id: string }) =>
@@ -45,19 +45,11 @@ function SummaryBand({ summary }: { summary: Summary }) {
 
 // ── live indicator ─────────────────────────────────────────────────────────────
 
-function LiveIndicator({ status, lastAt }: { status: string; lastAt?: string }) {
+function LiveIndicator({ status, lastAt }: { status: StreamStatus; lastAt?: string }) {
   const { t } = useTranslation()
-  const live = status === "live"
   return (
-    <div className="flex items-center gap-2 text-xs text-muted-foreground" aria-live="polite">
-      <span
-        className={cn(
-          "inline-block size-2 rounded-full",
-          live ? "bg-green-500 motion-safe:animate-pulse" : "bg-yellow-500",
-        )}
-        aria-hidden="true"
-      />
-      <span>{live ? t("page.dashboard.live") : t("page.dashboard.reconnecting")}</span>
+    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+      <LiveDot status={status} />
       {lastAt && <span>· {t("page.dashboard.updated", { time: reltime(lastAt) })}</span>}
     </div>
   )
