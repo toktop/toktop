@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { LiveEvent } from "./types"
 
 // LIVE_EVENT_TYPES lists every SSE event name the server sends as a named event
@@ -33,6 +33,8 @@ export const LIVE_EVENT_TYPES = [
 
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number]
 
+export type StreamStatus = "connecting" | "live" | "reconnecting"
+
 export interface UseStreamOptions {
   onResync?: () => void
 }
@@ -40,7 +42,10 @@ export interface UseStreamOptions {
 export function useStream(
   onEvent:  (ev: LiveEvent) => void,
   opts?:    UseStreamOptions,
-): void {
+): StreamStatus {
+  // Connection state for a live indicator. EventSource auto-reconnects, so a
+  // drop flips to "reconnecting" and the next open returns to "live".
+  const [status, setStatus] = useState<StreamStatus>("connecting")
   // Store callbacks in refs so the effect closure always calls the latest
   // version without re-subscribing. Refs are written inside the effect, not
   // during render, to satisfy the react-hooks/refs rule.
@@ -54,10 +59,12 @@ export function useStream(
 
   useEffect(() => {
     const es = new EventSource("/v1/stream", { withCredentials: true })
+    es.onopen  = () => setStatus("live")
+    es.onerror = () => setStatus("reconnecting")
 
     // Control frames — hello signals replay complete; resync_required means the
     // client should refetch all queries. ping is ignored.
-    es.addEventListener("hello",           () => { onResyncRef.current?.() })
+    es.addEventListener("hello",           () => { setStatus("live"); onResyncRef.current?.() })
     es.addEventListener("resync_required", () => { onResyncRef.current?.() })
     // replay.error is a server-side replay failure hint; log and ignore.
     es.addEventListener("replay.error", (e) => {
@@ -83,4 +90,6 @@ export function useStream(
       es.close()
     }
   }, [])
+
+  return status
 }
