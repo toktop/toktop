@@ -204,7 +204,7 @@ function SortButton({ label, colKey, current, dir, onChange }: SortButtonProps) 
   return (
     <button
       type="button"
-      className="flex items-center gap-1 font-medium hover:text-foreground"
+      className="inline-flex items-center gap-1 font-medium hover:text-foreground"
       onClick={() => onChange(colKey, next)}
       aria-label={t("page.sessions.sortBy", { column: label })}
     >
