@@ -347,6 +347,58 @@ and any time you can ask `toktop status` (or `GET /v1/status`) for the current s
 
 ---
 
+## Web UI (opt-in build)
+
+`toktop ui` opens a local web interface backed by the running daemon. It is a **daemon
+client** — the same `/v1` HTTP API everything else uses — so it requires the daemon to be up
+(auto-started by default, see above).
+
+**The web UI is opt-in at build time.** The standard `make build` / `go build` does not include
+it. To build with the embedded SPA:
+
+```bash
+make ui                                     # builds the React SPA then compiles it in
+# equivalent: cd web && pnpm build, then:
+go build -tags sqlite_fts5,ui ./cmd/toktop
+```
+
+A binary built without the UI flag prints `this build has no web UI; rebuild with -tags ui`
+and exits when `toktop ui` is invoked.
+
+**Start the web UI:**
+
+```bash
+toktop ui                   # bind on a random loopback port, open browser automatically
+toktop ui --no-browser      # print the URL instead of opening a browser
+toktop ui --addr 127.0.0.1:8080   # bind on a fixed port
+```
+
+`toktop ui` starts an ephemeral **loopback reverse-proxy** that:
+
+- serves the embedded SPA at `/`
+- proxies all `/v1` traffic (including SSE) to the daemon, injecting the daemon bearer token
+  so the browser never sees it
+
+The proxy is guarded by an **ephemeral per-launch token**: the URL printed on startup includes
+`?t=<nonce>`. Opening that URL sets a `HttpOnly; SameSite=Strict` cookie for the session;
+every subsequent same-origin request (including `EventSource` for the live stream) carries
+the cookie automatically. Unauthenticated requests get `401`. The nonce is regenerated on
+every invocation, so old URLs do not grant access.
+
+**Flags:**
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--no-browser` | off | Print the URL to stdout instead of opening the default browser |
+| `--addr` | `127.0.0.1:0` | Loopback address to bind the proxy on (must be `127.0.0.1` or `localhost`; a port of `0` picks a random free port) |
+
+**Security model.** The proxy binds loopback only — no remote access, no inbound connections
+from the network. The bearer token the proxy uses to reach the daemon never leaves the local
+process. The SPA has no backend of its own; it reads data exclusively through the proxied
+`/v1` endpoints. No external services, no telemetry, offline-capable.
+
+---
+
 ## HTTP API v1
 
 Start a server two ways:
