@@ -138,7 +138,7 @@ function FilterBar({ onSubmit, initial }: FilterBarProps) {
       {/* subagents toggle */}
       <form.Field name="subagents">
         {(field) => (
-          <label className="flex cursor-pointer items-center gap-2 text-sm select-none">
+          <label className="flex h-8 cursor-pointer items-center gap-2 text-sm select-none">
             <input
               type="checkbox"
               className="h-4 w-4 rounded border-input accent-primary"
