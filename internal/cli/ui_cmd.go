@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"flag"
 	"fmt"
@@ -76,13 +77,17 @@ func runUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		cliErrf(stderr, "bind UI address %s: %v", *bindAddr, err)
 		return 2
 	}
-	port    := ln.Addr().(*net.TCPAddr).Port
-	openURL := fmt.Sprintf("http://127.0.0.1:%d/?t=%s", port, uiNonce)
+	openURL := fmt.Sprintf("http://%s/?t=%s", ln.Addr().(*net.TCPAddr).String(), uiNonce)
 
 	mux := http.NewServeMux()
-	mux.Handle("/v1/", daemonProxy(addr, daemonToken))
+	mux.Handle("/v1/", observeOnly(daemonProxy(addr, daemonToken)))
 	mux.Handle("/", spaHandler(assets))
-	srv := &http.Server{Handler: uiAuth(uiNonce, mux)}
+	srv := &http.Server{
+		Handler:           uiAuth(uiNonce, mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 
 	fmt.Fprintf(stdout, "toktop ui: %s\n", openURL)
 	if *noBrowser {
@@ -177,13 +182,30 @@ func spaHandler(assets fs.FS) http.Handler {
 	})
 }
 
+// observeOnly enforces the web UI's read-only-plus-config-set contract: it
+// forwards GET routes (all of which are reads, incl. /v1/stream) and the one
+// allowed mutation, POST /v1/config:set, and 403s everything else — so the UI
+// can never reach the daemon's destructive control routes (prune, daemon
+// trigger/pause/resume, export, emit, …). Mirrors the config RemoteSettable
+// default-deny stance, applied to the whole surface.
+func observeOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || (r.Method == http.MethodPost && r.URL.Path == "/v1/config:set") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.Error(w, "this route is not available over the web UI; use the toktop CLI", http.StatusForbidden)
+	})
+}
+
 // uiAuth gates browser<->proxy traffic with an ephemeral per-launch nonce.
 // A valid ?t= sets a same-site HttpOnly cookie so subsequent same-origin
 // fetch/EventSource requests carry it automatically. Unauthenticated → 401.
 func uiAuth(nonce string, next http.Handler) http.Handler {
 	const cookieName = "toktop_ui"
+	nb := []byte(nonce)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if q := r.URL.Query().Get("t"); q == nonce {
+		if q := r.URL.Query().Get("t"); subtle.ConstantTimeCompare([]byte(q), nb) == 1 {
 			http.SetCookie(w, &http.Cookie{
 				Name:     cookieName,
 				Value:    nonce,
@@ -194,7 +216,7 @@ func uiAuth(nonce string, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if c, err := r.Cookie(cookieName); err == nil && c.Value == nonce {
+		if c, err := r.Cookie(cookieName); err == nil && subtle.ConstantTimeCompare([]byte(c.Value), nb) == 1 {
 			next.ServeHTTP(w, r)
 			return
 		}
