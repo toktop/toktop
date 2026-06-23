@@ -170,8 +170,8 @@ export function SearchPage() {
             onChange={(e) => setKind(e.target.value)}
           >
             <option value="">{t("page.search.filters.kindAll")}</option>
-            <option value="session">{t("page.search.filters.kindSession")}</option>
             <option value="turn">{t("page.search.filters.kindTurn")}</option>
+            <option value="tool_call">{t("page.search.filters.kindToolCall")}</option>
           </select>
         </div>
       </div>

@@ -130,8 +130,8 @@
         "subagents":  "Include sub-agents",
         "kind":       "Kind",
         "kindAll":    "All kinds",
-        "kindSession": "session",
-        "kindTurn":   "turn"
+        "kindTurn":   "turn",
+        "kindToolCall": "tool call"
       },
       "result": {
         "session":    "session",
