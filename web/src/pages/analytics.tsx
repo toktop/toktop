@@ -410,7 +410,7 @@ export function AnalyticsPage() {
             <Tabs.Tab
               key={id}
               value={id}
-              className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground data-[selected]:bg-background data-[selected]:text-foreground data-[selected]:shadow-sm"
+              className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground aria-selected:bg-background aria-selected:text-foreground aria-selected:shadow-sm"
             >
               {t(`page.analytics.tabs.${id}`)}
             </Tabs.Tab>

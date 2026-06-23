@@ -348,7 +348,7 @@ export function SessionDetailPage() {
                   <Tabs.Tab
                     key={tab}
                     value={tab}
-                    className="rounded-md px-4 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground data-[selected]:bg-background data-[selected]:text-foreground data-[selected]:shadow-sm"
+                    className="rounded-md px-4 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground aria-selected:bg-background aria-selected:text-foreground aria-selected:shadow-sm"
                   >
                     {t(`page.session.tabs.${tab}`)}
                   </Tabs.Tab>
