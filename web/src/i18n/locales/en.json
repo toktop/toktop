@@ -101,6 +101,8 @@
         "handoff":         "Handoff"
       },
       "back":              "Back to sessions",
+      "live":              "Live",
+      "reconnecting":      "Reconnecting…",
       "notFound":          "Session not found.",
       "ambiguous":         "Ambiguous ID — multiple sessions matched:",
       "subagent":          "Sub-agent",

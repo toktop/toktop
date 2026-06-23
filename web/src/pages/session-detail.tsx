@@ -1,15 +1,18 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useParams, Link }             from "react-router-dom"
 import { useTranslation }              from "react-i18next"
+import { useQueryClient }              from "@tanstack/react-query"
 import { Tabs }                        from "@base-ui/react/tabs"
 import { X }                           from "lucide-react"
 import ReactMarkdown                   from "react-markdown"
 import remarkGfm                       from "remark-gfm"
 
 import { useSession, useHandoff }      from "@/api/queries"
-import type { AgentRun, Turn }         from "@/api/types"
+import { useStream }                   from "@/api/useStream"
+import type { AgentRun, LiveEvent, Turn } from "@/api/types"
 import { StatusBadge }                 from "@/components/status-badge"
 import { reltime, fmtTokens, fmtMs }   from "@/lib/format"
+import { cn }                          from "@/lib/utils"
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -277,7 +280,30 @@ function HandoffTab({ sessionId }: { sessionId: string }) {
 export function SessionDetailPage() {
   const { id = "" }    = useParams<{ id: string }>()
   const { t }          = useTranslation()
+  const qc             = useQueryClient()
   const { data, isLoading, error } = useSession(id)
+  const sess           = data?.session
+
+  // Live refresh: when a stream event references this session, refetch its turns
+  // + handoff (debounced) so the detail reflects real-time activity rather than a
+  // snapshot frozen at the last ingest.
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const refresh = useCallback(() => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => {
+      void qc.invalidateQueries({ queryKey: ["session", id] })
+      void qc.invalidateQueries({ queryKey: ["handoff", id] })
+    }, 300)
+  }, [qc, id])
+  useEffect(() => () => { if (timerRef.current !== null) clearTimeout(timerRef.current) }, [])
+
+  const onEvent = useCallback((e: LiveEvent) => {
+    const matches =
+      e.session_id === id ||
+      (sess ? e.session_id === sess.id || (!!sess.external_id && e.external_session_id === sess.external_id) : false)
+    if (matches) refresh()
+  }, [id, sess, refresh])
+  const streamStatus = useStream(onEvent, { onResync: refresh })
 
   return (
     <div className="space-y-4">
@@ -328,7 +354,19 @@ export function SessionDetailPage() {
                 <h1 className="text-xl font-semibold leading-snug">
                   {session.title ?? session.project_name ?? session.id}
                 </h1>
-                <StatusBadge status={session.status} />
+                <div className="flex items-center gap-2">
+                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground" aria-live="polite">
+                    <span
+                      className={cn(
+                        "inline-block size-1.5 rounded-full",
+                        streamStatus === "live" ? "bg-green-500 motion-safe:animate-pulse" : "bg-yellow-500",
+                      )}
+                      aria-hidden="true"
+                    />
+                    {streamStatus === "live" ? t("page.session.live") : t("page.session.reconnecting")}
+                  </span>
+                  <StatusBadge status={session.status} />
+                </div>
               </div>
 
               <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
