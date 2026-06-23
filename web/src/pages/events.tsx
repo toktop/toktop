@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react"
-import { Link } from "react-router-dom"
+import { Link, useSearchParams } from "react-router-dom"
 import { useTranslation } from "react-i18next"
 import { Pause, Play } from "lucide-react"
 
@@ -15,6 +15,8 @@ const CAP = 300
 
 export function EventsPage() {
   const { t } = useTranslation()
+  const [searchParams] = useSearchParams()
+  const sessionFilter = searchParams.get("session") ?? ""
   const [events, setEvents]         = useState<LiveEvent[]>([])
   const [paused, setPaused]         = useState(false)
   const [pendingCount, setPending]  = useState(0)
@@ -47,7 +49,10 @@ export function EventsPage() {
   const types = [...new Set(events.map((e) => e.type))].sort()
   // Sort by event time (desc) so the column reads strictly newest-first; events
   // can arrive slightly out of timestamp order across providers/pipeline stages.
-  const filtered = typeFilter ? events.filter((e) => e.type === typeFilter) : events
+  const filtered = events.filter((e) =>
+    (!typeFilter || e.type === typeFilter) &&
+    (!sessionFilter || e.session_id === sessionFilter),
+  )
   const shown = [...filtered].sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""))
 
   return (
@@ -58,6 +63,14 @@ export function EventsPage() {
       </div>
 
       <p className="text-sm text-muted-foreground">{t("page.events.subtitle")}</p>
+
+      {sessionFilter && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs">
+          <span className="shrink-0 text-muted-foreground">{t("page.events.sessionScope")}</span>
+          <code className="min-w-0 truncate font-mono text-foreground">{sessionFilter}</code>
+          <Link to="/events" className="ml-auto shrink-0 text-primary hover:underline">{t("page.events.showAll")}</Link>
+        </div>
+      )}
 
       {/* toolbar */}
       <div className="flex flex-wrap items-center gap-3">

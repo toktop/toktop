@@ -80,7 +80,7 @@ function SessionCard({ item, onOpen }: { item: LiveSessionItem; onOpen: () => vo
           <p className="truncate text-xs text-muted-foreground" title={item.project_name}>{item.project_name}</p>
         )}
       </div>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+      <div className="mt-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
         <span>{item.turn_count} {t("page.dashboard.card.turns")}</span>
         <span>{item.tool_call_count} {t("page.dashboard.card.tools")}</span>
         <span className="ml-auto shrink-0">{reltime(item.last_activity_at)}</span>
@@ -185,9 +185,14 @@ function LiveDetailDialog({
             )}
           </div>
 
-          <Link to={`/sessions/${item.session_id}`} className="inline-block text-sm text-primary hover:underline">
-            {t("page.dashboard.detail.viewSession")} →
-          </Link>
+          <div className="flex flex-wrap gap-4">
+            <Link to={`/sessions/${item.session_id}`} className="text-sm text-primary hover:underline">
+              {t("page.dashboard.detail.viewSession")} →
+            </Link>
+            <Link to={`/events?session=${encodeURIComponent(item.session_id)}`} className="text-sm text-primary hover:underline">
+              {t("page.dashboard.detail.viewEvents")} →
+            </Link>
+          </div>
         </div>
       </div>
     </div>

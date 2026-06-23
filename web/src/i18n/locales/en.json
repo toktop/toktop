@@ -51,7 +51,8 @@
         "transcript":   "Transcript",
         "events":       "Recent events",
         "noEvents":     "No events captured yet — they appear here as they stream in.",
-        "viewSession":  "View session"
+        "viewSession":  "View session",
+        "viewEvents":   "View events"
       }
     },
     "events": {
@@ -59,6 +60,8 @@
       "subtitle":   "Live event stream from the daemon — newest first.",
       "filterType": "Filter by event type",
       "allTypes":   "All types",
+      "sessionScope": "Showing events for one session:",
+      "showAll":    "Show all events",
       "pause":      "Pause",
       "resume":     "Resume ({{count}})",
       "count":      "{{n}} shown",
