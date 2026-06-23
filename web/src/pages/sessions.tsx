@@ -224,7 +224,7 @@ export function SessionsPage() {
   const params: Record<string, string | number | boolean | undefined> = {
     limit:     PAGE_LIMIT,
     offset,
-    sort:      sortDir === "asc" ? sortKey : `-${sortKey}`,
+    sort:      `${sortKey}_${sortDir}`,
     sources:   filter.sources   || undefined,
     project:   filter.project   || undefined,
     status:    filter.status    || undefined,
