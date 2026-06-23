@@ -1,4 +1,5 @@
 import { useState }       from "react"
+import type { ReactNode }  from "react"
 import { useTranslation }  from "react-i18next"
 import { Tabs }            from "@base-ui/react/tabs"
 
@@ -70,8 +71,12 @@ function Thead({ children }: { children: React.ReactNode }) {
 
 type TabState = { loading: boolean; error: Error | null }
 
-function TabStatus({ state, empty, emptyLabel }: { state: TabState; empty: boolean; emptyLabel: string }) {
-  const { t } = useTranslation()
+function tabStatus(
+  state: TabState,
+  empty: boolean,
+  emptyLabel: string,
+  t: (key: string) => string,
+): ReactNode | null {
   if (state.loading) return <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
   if (state.error)   return <p className="text-sm text-destructive" role="alert">{state.error.message ?? t("common.error")}</p>
   if (empty)         return <p className="text-sm text-muted-foreground">{emptyLabel}</p>
@@ -86,7 +91,7 @@ function ProjectsTab() {
   const items: ProjectListItem[]    = data ?? []
 
   const ts: TabState = { loading: isLoading, error: error as Error | null }
-  const status = <TabStatus state={ts} empty={items.length === 0} emptyLabel={t("page.analytics.empty")} />
+  const status = tabStatus(ts, items.length === 0, t("page.analytics.empty"), t)
 
   return status ?? (
     <TableShell>
@@ -129,7 +134,7 @@ function ToolsTab() {
   const items: ToolListItem[]      = data ?? []
 
   const ts: TabState = { loading: isLoading, error: error as Error | null }
-  const status = <TabStatus state={ts} empty={items.length === 0} emptyLabel={t("page.analytics.empty")} />
+  const status = tabStatus(ts, items.length === 0, t("page.analytics.empty"), t)
 
   return status ?? (
     <TableShell>
@@ -178,7 +183,7 @@ function ModelsTab() {
   const items: ModelListItem[]     = data ?? []
 
   const ts: TabState = { loading: isLoading, error: error as Error | null }
-  const status = <TabStatus state={ts} empty={items.length === 0} emptyLabel={t("page.analytics.empty")} />
+  const status = tabStatus(ts, items.length === 0, t("page.analytics.empty"), t)
 
   return status ?? (
     <TableShell>
@@ -226,7 +231,7 @@ function MCPsTab() {
   const items: MCPListItem[]                = active.data ?? []
 
   const ts: TabState = { loading: active.isLoading, error: active.error as Error | null }
-  const status = <TabStatus state={ts} empty={items.length === 0} emptyLabel={t("page.analytics.empty")} />
+  const status = tabStatus(ts, items.length === 0, t("page.analytics.empty"), t)
 
   return (
     <div className="space-y-3">
@@ -290,7 +295,7 @@ function SkillsTab() {
   const items: SkillListItem[]            = active.data ?? []
 
   const ts: TabState = { loading: active.isLoading, error: active.error as Error | null }
-  const status = <TabStatus state={ts} empty={items.length === 0} emptyLabel={t("page.analytics.empty")} />
+  const status = tabStatus(ts, items.length === 0, t("page.analytics.empty"), t)
 
   return (
     <div className="space-y-3">
