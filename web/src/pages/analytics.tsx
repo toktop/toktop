@@ -417,11 +417,11 @@ export function AnalyticsPage() {
           ))}
         </Tabs.List>
 
-        <Tabs.Panel value="projects" className="outline-none"><ProjectsTab /></Tabs.Panel>
-        <Tabs.Panel value="tools"    className="outline-none"><ToolsTab /></Tabs.Panel>
-        <Tabs.Panel value="models"   className="outline-none"><ModelsTab /></Tabs.Panel>
-        <Tabs.Panel value="mcps"     className="outline-none"><MCPsTab /></Tabs.Panel>
-        <Tabs.Panel value="skills"   className="outline-none"><SkillsTab /></Tabs.Panel>
+        <Tabs.Panel value="projects" className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><ProjectsTab /></Tabs.Panel>
+        <Tabs.Panel value="tools"    className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><ToolsTab /></Tabs.Panel>
+        <Tabs.Panel value="models"   className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><ModelsTab /></Tabs.Panel>
+        <Tabs.Panel value="mcps"     className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><MCPsTab /></Tabs.Panel>
+        <Tabs.Panel value="skills"   className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><SkillsTab /></Tabs.Panel>
       </Tabs.Root>
     </div>
   )

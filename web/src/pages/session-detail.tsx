@@ -4,33 +4,13 @@ import { useTranslation }              from "react-i18next"
 import { Tabs }                        from "@base-ui/react/tabs"
 import ReactMarkdown                   from "react-markdown"
 import remarkGfm                       from "remark-gfm"
-import { formatDistanceToNow, parseISO } from "date-fns"
 
 import { useSession, useHandoff }      from "@/api/queries"
-import type { AgentRun, Turn, Tokens } from "@/api/types"
+import type { AgentRun, Turn }         from "@/api/types"
 import { StatusBadge }                 from "@/components/status-badge"
+import { reltime, fmtTokens, fmtMs }   from "@/lib/format"
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-
-function reltime(iso?: string): string {
-  if (!iso) return "—"
-  try { return formatDistanceToNow(parseISO(iso), { addSuffix: true }) } catch { return "—" }
-}
-
-function fmtTokens(t: Tokens): string {
-  const n = (t.input_tokens ?? 0) + (t.output_tokens ?? 0)
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`
-  return n.toString()
-}
-
-function fmtMs(ms?: number): string {
-  if (ms == null) return "—"
-  if (ms < 1_000)       return `${ms}ms`
-  if (ms < 60_000)      return `${(ms / 1_000).toFixed(1)}s`
-  if (ms < 3_600_000)   return `${Math.round(ms / 60_000)}m`
-  return `${(ms / 3_600_000).toFixed(1)}h`
-}
 
 function fmtBytes(n?: number): string {
   if (!n) return "—"
@@ -216,7 +196,7 @@ function HandoffTab({ sessionId }: { sessionId: string }) {
             ["interrupted",manifest.interrupted_agent_runs],
             ["incomplete", manifest.incomplete_agent_runs],
             ["rejected",   manifest.rejected_agent_runs],
-          ].filter(([, n]) => n as number >= 0).map(([key, n]) => (
+          ].map(([key, n]) => (
             <div key={key as string} className="flex flex-col items-center">
               <span className="text-lg font-semibold tabular-nums">{n as number}</span>
               <span className="text-[11px] text-muted-foreground">
@@ -362,7 +342,7 @@ export function SessionDetailPage() {
             <Tabs.Root defaultValue="turns">
               <Tabs.List
                 className="flex gap-1 rounded-lg bg-muted p-1 w-fit"
-                aria-label={t("page.session.title")}
+                aria-label={t("page.session.tabsLabel")}
               >
                 {(["turns", "handoff"] as const).map((tab) => (
                   <Tabs.Tab
@@ -375,11 +355,11 @@ export function SessionDetailPage() {
                 ))}
               </Tabs.List>
 
-              <Tabs.Panel value="turns" className="pt-4 focus:outline-none">
+              <Tabs.Panel value="turns" className="pt-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
                 <TurnsTab turns={turns} />
               </Tabs.Panel>
 
-              <Tabs.Panel value="handoff" className="pt-4 focus:outline-none">
+              <Tabs.Panel value="handoff" className="pt-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
                 <HandoffTab sessionId={id} />
               </Tabs.Panel>
             </Tabs.Root>

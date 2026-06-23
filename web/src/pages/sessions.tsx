@@ -2,19 +2,20 @@ import { useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useTranslation } from "react-i18next"
 import { useForm }         from "@tanstack/react-form"
-import { formatDistanceToNow, parseISO } from "date-fns"
+import { parseISO } from "date-fns"
 import { z }               from "zod"
 import { ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react"
 
 import { useSessions } from "@/api/queries"
-import type { Session, Tokens } from "@/api/types"
+import type { Session } from "@/api/types"
 import { StatusBadge } from "@/components/status-badge"
+import { reltime, fmtTokens } from "@/lib/format"
 
 // ── constants ─────────────────────────────────────────────────────────────────
 
 const PAGE_LIMIT = 25
 
-type SortKey = "started" | "tokens" | "duration" | "turns"
+type SortKey = "started" | "turns"
 type SortDir = "asc" | "desc"
 
 // ── zod filter schema ─────────────────────────────────────────────────────────
@@ -35,24 +36,6 @@ const defaultFilter: FilterValues = {
   status:    "",
   since:     "",
   subagents: false,
-}
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-function reltime(iso?: string): string {
-  if (!iso) return "—"
-  try { return formatDistanceToNow(parseISO(iso), { addSuffix: true }) } catch { return "—" }
-}
-
-function totalTokens(t: Tokens): number {
-  return (t.input_tokens ?? 0) + (t.output_tokens ?? 0)
-}
-
-function fmtTokens(t: Tokens): string {
-  const n = totalTokens(t)
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`
-  return n.toString()
 }
 
 // ── filter bar ────────────────────────────────────────────────────────────────
@@ -126,9 +109,9 @@ function FilterBar({ onSubmit, initial }: FilterBarProps) {
               onChange={(e) => field.handleChange(e.target.value)}
             >
               <option value="">{t("page.sessions.filters.statusAll")}</option>
-              <option value="success">success</option>
-              <option value="failed">failed</option>
-              <option value="running">running</option>
+              <option value="success">{t("page.sessions.filters.statusSuccess")}</option>
+              <option value="failed">{t("page.sessions.filters.statusFailed")}</option>
+              <option value="running">{t("page.sessions.filters.statusRunning")}</option>
             </select>
           </div>
         )}
@@ -189,6 +172,7 @@ interface SortButtonProps {
 }
 
 function SortButton({ label, colKey, current, dir, onChange }: SortButtonProps) {
+  const { t } = useTranslation()
   const active = current === colKey
   const next   = active && dir === "desc" ? "asc" : "desc"
 
@@ -197,7 +181,7 @@ function SortButton({ label, colKey, current, dir, onChange }: SortButtonProps) 
       type="button"
       className="flex items-center gap-1 font-medium hover:text-foreground"
       onClick={() => onChange(colKey, next)}
-      aria-label={`Sort by ${label}`}
+      aria-label={t("page.sessions.sortBy", { column: label })}
     >
       {label}
       {active
@@ -303,18 +287,8 @@ export function SessionsPage() {
                   <th scope="col" className="px-4 py-2 text-right font-medium">
                     {t("page.sessions.columns.tools")}
                   </th>
-                  <th
-                    scope="col"
-                    className="px-4 py-2 text-right font-medium"
-                    aria-sort={sortKey === "tokens" ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
-                  >
-                    <SortButton
-                      label={t("page.sessions.columns.tokens")}
-                      colKey="tokens"
-                      current={sortKey}
-                      dir={sortDir}
-                      onChange={changeSort}
-                    />
+                  <th scope="col" className="px-4 py-2 text-right font-medium">
+                    {t("page.sessions.columns.tokens")}
                   </th>
                   <th
                     scope="col"
@@ -329,18 +303,8 @@ export function SessionsPage() {
                       onChange={changeSort}
                     />
                   </th>
-                  <th
-                    scope="col"
-                    className="px-4 py-2 text-right font-medium"
-                    aria-sort={sortKey === "duration" ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
-                  >
-                    <SortButton
-                      label={t("page.sessions.columns.duration")}
-                      colKey="duration"
-                      current={sortKey}
-                      dir={sortDir}
-                      onChange={changeSort}
-                    />
+                  <th scope="col" className="px-4 py-2 text-right font-medium">
+                    {t("page.sessions.columns.duration")}
                   </th>
                 </tr>
               </thead>
@@ -379,6 +343,7 @@ function SessionRow({
   showKind,
   onClick,
 }: { session: Session; showKind: boolean; onClick: () => void }) {
+  const { t } = useTranslation()
   const title = s.title ?? s.project_name ?? s.id
 
   return (
@@ -386,13 +351,20 @@ function SessionRow({
       className="border-b border-border last:border-0 hover:bg-muted/40 cursor-pointer transition-colors"
       onClick={onClick}
       tabIndex={0}
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onClick() }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          onClick()
+        }
+      }}
     >
       {/* title */}
       <td className="max-w-[200px] truncate px-4 py-2 font-medium" title={title}>
         {title}
         {s.is_subagent && (
-          <span className="ml-1 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">sub</span>
+          <span className="ml-1 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+            {t("page.sessions.subBadge")}
+          </span>
         )}
       </td>
 
@@ -409,7 +381,9 @@ function SessionRow({
       {/* kind (subagents mode) */}
       {showKind && (
         <td className="px-4 py-2 text-xs text-muted-foreground">
-          {s.is_subagent ? (s.subagent_kind ?? "subagent") : "top-level"}
+          {s.is_subagent
+            ? (s.subagent_kind ?? t("page.sessions.kindSubagent"))
+            : t("page.sessions.kindTopLevel")}
         </td>
       )}
 

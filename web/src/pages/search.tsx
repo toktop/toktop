@@ -67,7 +67,6 @@ function ProviderBadge({ provider }: { provider: string }) {
 // ── result item ───────────────────────────────────────────────────────────────
 
 function ResultItem({ result, onClick }: { result: SearchResult; onClick: () => void }) {
-  const { t }   = useTranslation()
   const idLabel = result.turn_id
     ? `${result.session_id.slice(0, 8)}… / turn ${result.turn_id.slice(0, 8)}…`
     : `${result.session_id.slice(0, 8)}…`
@@ -78,7 +77,6 @@ function ResultItem({ result, onClick }: { result: SearchResult; onClick: () => 
         type="button"
         className="w-full rounded-lg border border-border bg-card p-4 text-left hover:bg-muted/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors cursor-pointer"
         onClick={onClick}
-        aria-label={t("page.search.result.viewSession")}
       >
         {/* header row: badges + id */}
         <div className="flex flex-wrap items-center gap-2 mb-2">

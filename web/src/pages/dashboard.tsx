@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { useQueryClient } from "@tanstack/react-query"
-import { formatDistanceToNow } from "date-fns"
 
 import { useLiveStatus, useSummary } from "@/api/queries"
 import { useStream } from "@/api/useStream"
 import type { LiveSessionItem, Summary } from "@/api/types"
 import { StatusBadge } from "@/components/status-badge"
+import { reltime } from "@/lib/format"
 
 // ── summary stat card ─────────────────────────────────────────────────────────
 
@@ -36,15 +36,6 @@ function SummaryBand({ summary }: { summary: Summary }) {
 
 // ── session card ──────────────────────────────────────────────────────────────
 
-function relativeTime(iso?: string): string {
-  if (!iso) return "—"
-  try {
-    return formatDistanceToNow(new Date(iso), { addSuffix: true })
-  } catch {
-    return "—"
-  }
-}
-
 function SessionCard({ item }: { item: LiveSessionItem }) {
   const { t } = useTranslation()
   const label = item.project_name ?? item.title ?? item.external_session_id ?? item.session_id
@@ -72,7 +63,7 @@ function SessionCard({ item }: { item: LiveSessionItem }) {
         <span>
           {item.tool_call_count} {t("page.dashboard.card.tools")}
         </span>
-        <span className="ml-auto shrink-0">{relativeTime(item.last_activity_at)}</span>
+        <span className="ml-auto shrink-0">{reltime(item.last_activity_at)}</span>
       </div>
     </div>
   )
