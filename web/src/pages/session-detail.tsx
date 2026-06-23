@@ -1,7 +1,8 @@
-import { useState }                   from "react"
+import { useEffect, useRef, useState } from "react"
 import { useParams, Link }             from "react-router-dom"
 import { useTranslation }              from "react-i18next"
 import { Tabs }                        from "@base-ui/react/tabs"
+import { X }                           from "lucide-react"
 import ReactMarkdown                   from "react-markdown"
 import remarkGfm                       from "remark-gfm"
 
@@ -22,94 +23,124 @@ function fmtBytes(n?: number): string {
 // ── turn row ──────────────────────────────────────────────────────────────────
 
 function TurnRow({ turn }: { turn: Turn }) {
-  const { t }    = useTranslation()
+  const { t }           = useTranslation()
   const [open, setOpen] = useState(false)
+  const closeRef        = useRef<HTMLButtonElement>(null)
 
-  const userText  = turn.user_message?.trim()    || ""
-  const asstText  = turn.assistant_final?.trim() || ""
-  const tokenStr  = fmtTokens(turn.tokens)
-  const hasTools  = turn.tool_call_count > 0
+  const userText = turn.user_message?.trim()    || ""
+  const asstText = turn.assistant_final?.trim() || ""
+  const tokenStr = fmtTokens(turn.tokens)
+  const hasTools = turn.tool_call_count > 0
+  const label    = t("page.session.turns.index", { n: turn.index + 1 })
 
-  return (
-    <div className="rounded-lg border border-border bg-card overflow-hidden">
-      {/* header row */}
-      <div className="flex items-start justify-between gap-4 px-4 py-3">
-        <div className="min-w-0 flex-1 space-y-1.5">
-          {/* index + status */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-mono text-muted-foreground">
-              {t("page.session.turns.index", { n: turn.index + 1 })}
-            </span>
-            <StatusBadge status={turn.status} />
-            {tokenStr !== "0" && (
-              <span className="text-xs text-muted-foreground">
-                {t("page.session.turns.tokens", { n: tokenStr })}
-              </span>
-            )}
-            {hasTools && (
-              <span className="text-xs text-muted-foreground">
-                {t("page.session.turns.tools", { n: turn.tool_call_count })}
-              </span>
-            )}
-          </div>
+  // Dialog a11y: Esc closes, body scroll locks, focus moves to the close button
+  // (and returns to the trigger on close).
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false) }
+    document.addEventListener("keydown", onKey)
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    closeRef.current?.focus()
+    return () => {
+      document.removeEventListener("keydown", onKey)
+      document.body.style.overflow = prevOverflow
+    }
+  }, [open])
 
-          {/* user message */}
-          {userText && (
-            <p className="text-sm leading-snug line-clamp-2 text-foreground/80">
-              <span className="mr-1 text-xs uppercase tracking-wide text-muted-foreground">
-                {t("page.session.turns.user")}
-              </span>
-              {userText}
-            </p>
-          )}
-
-          {/* assistant message */}
-          {asstText && (
-            <p className="text-sm leading-snug line-clamp-2 text-foreground">
-              <span className="mr-1 text-xs uppercase tracking-wide text-muted-foreground">
-                {t("page.session.turns.assistant")}
-              </span>
-              {asstText}
-            </p>
-          )}
-        </div>
-
-        {/* expand toggle */}
-        {hasTools && (
-          <button
-            type="button"
-            onClick={() => setOpen(v => !v)}
-            className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
-          >
-            {open
-              ? t("page.session.turns.hideTools")
-              : t("page.session.turns.showTools")}
-          </button>
-        )}
-      </div>
-
-      {/* tool calls expansion */}
-      {open && turn.tool_calls && turn.tool_calls.length > 0 && (
-        <div className="border-t border-border divide-y divide-border bg-muted/30">
-          {turn.tool_calls.map((tc) => (
-            <div key={tc.id} className="px-4 py-2 text-xs">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-mono font-medium text-foreground">{tc.name}</span>
-                <StatusBadge status={tc.status} />
-                {tc.duration_ms != null && (
-                  <span className="text-muted-foreground">{fmtMs(tc.duration_ms)}</span>
-                )}
-              </div>
-              {tc.input && (
-                <pre className="mt-1 max-h-24 overflow-auto rounded bg-background p-2 text-[11px] text-muted-foreground whitespace-pre-wrap break-all">
-                  {tc.input}
-                </pre>
-              )}
-            </div>
-          ))}
-        </div>
+  const meta = (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="font-mono text-xs text-muted-foreground">{label}</span>
+      <StatusBadge status={turn.status} />
+      {tokenStr !== "0" && (
+        <span className="text-xs text-muted-foreground">{t("page.session.turns.tokens", { n: tokenStr })}</span>
+      )}
+      {hasTools && (
+        <span className="text-xs text-muted-foreground">{t("page.session.turns.tools", { n: turn.tool_call_count })}</span>
       )}
     </div>
+  )
+
+  return (
+    <>
+      {/* preview row — opens the full turn in a dialog */}
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="block w-full space-y-1.5 rounded-lg border border-border bg-card px-4 py-3 text-start transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      >
+        {meta}
+        {userText && (
+          <p className="line-clamp-2 text-sm leading-snug text-foreground/80">
+            <span className="mr-1 text-xs uppercase tracking-wide text-muted-foreground">{t("page.session.turns.user")}</span>
+            {userText}
+          </p>
+        )}
+        {asstText && (
+          <p className="line-clamp-2 text-sm leading-snug text-foreground">
+            <span className="mr-1 text-xs uppercase tracking-wide text-muted-foreground">{t("page.session.turns.assistant")}</span>
+            {asstText}
+          </p>
+        )}
+      </button>
+
+      {/* full-turn dialog */}
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={label}>
+          <div className="absolute inset-0 bg-black/50" onClick={() => setOpen(false)} aria-hidden="true" />
+          <div className="relative z-10 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
+              {meta}
+              <button
+                ref={closeRef}
+                type="button"
+                onClick={() => setOpen(false)}
+                aria-label={t("page.session.turns.close")}
+                className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              >
+                <X className="size-5" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="space-y-5 overflow-auto px-5 py-4">
+              {userText && (
+                <div className="space-y-1">
+                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("page.session.turns.user")}</div>
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{userText}</p>
+                </div>
+              )}
+              {asstText && (
+                <div className="space-y-1">
+                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("page.session.turns.assistant")}</div>
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">{asstText}</p>
+                </div>
+              )}
+              {hasTools && turn.tool_calls && turn.tool_calls.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    {t("page.session.turns.tools", { n: turn.tool_call_count })}
+                  </div>
+                  <div className="divide-y divide-border rounded-md border border-border bg-muted/30">
+                    {turn.tool_calls.map((tc) => (
+                      <div key={tc.id} className="px-3 py-2 text-xs">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono font-medium text-foreground">{tc.name}</span>
+                          <StatusBadge status={tc.status} />
+                          {tc.duration_ms != null && <span className="text-muted-foreground">{fmtMs(tc.duration_ms)}</span>}
+                        </div>
+                        {tc.input && (
+                          <pre className="mt-1 max-h-48 overflow-auto rounded bg-background p-2 text-[11px] text-muted-foreground whitespace-pre-wrap break-all">{tc.input}</pre>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 

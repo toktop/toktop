@@ -97,8 +97,7 @@
         "assistant":       "Assistant",
         "tokens":          "{{n}} tokens",
         "tools":           "{{n}} tools",
-        "showTools":       "Show tool calls",
-        "hideTools":       "Hide tool calls",
+        "close":           "Close",
         "noUser":          "(no user message)",
         "noAssistant":     "(no assistant message)"
       },
