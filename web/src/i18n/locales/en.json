@@ -174,13 +174,6 @@
         "mcps":     "MCPs",
         "skills":   "Skills"
       },
-      "summary": {
-        "sessions":     "Sessions",
-        "turns":        "Turns",
-        "toolCalls":    "Tool calls",
-        "inputTokens":  "Input tokens",
-        "outputTokens": "Output tokens"
-      },
       "projects": {
         "name":         "Project",
         "source":       "Source",

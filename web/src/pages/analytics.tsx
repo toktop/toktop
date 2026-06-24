@@ -9,7 +9,6 @@ import {
   useModels,
   useProjects,
   useSkills,
-  useSummary,
   useTools,
   useUnusedMcps,
   useUnusedSkills,
@@ -353,33 +352,6 @@ function SkillsTab() {
   )
 }
 
-// ── summary strip ─────────────────────────────────────────────────────────────
-
-function SummaryStrip() {
-  const { t }                      = useTranslation()
-  const { data, isLoading, error } = useSummary()
-  if (isLoading || error || !data) return null
-
-  const stats = [
-    { key: "sessions",  value: n(data.sessions) },
-    { key: "turns",     value: n(data.turns) },
-    { key: "toolCalls", value: n(data.tool_calls) },
-    { key: "inputTokens",  value: n(data.input_tokens) },
-    { key: "outputTokens", value: n(data.output_tokens) },
-  ]
-
-  return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-      {stats.map(({ key, value }) => (
-        <div key={key} className="rounded-lg border border-border bg-card px-4 py-3">
-          <p className="text-2xl font-semibold tabular-nums">{value}</p>
-          <p className="text-xs text-muted-foreground">{t(`page.analytics.summary.${key}`)}</p>
-        </div>
-      ))}
-    </div>
-  )
-}
-
 // ── tab ids ───────────────────────────────────────────────────────────────────
 
 type TabId = "projects" | "tools" | "models" | "mcps" | "skills"
@@ -394,8 +366,6 @@ export function AnalyticsPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-semibold">{t("page.analytics.title")}</h1>
-
-      <SummaryStrip />
 
       <Tabs.Root
         value={tab}
