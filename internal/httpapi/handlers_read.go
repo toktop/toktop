@@ -250,6 +250,44 @@ func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tools)
 }
 
+func (s *Server) handleToolCalls(w http.ResponseWriter, r *http.Request) {
+	filter, err := parseFilter(r)
+	if err != nil {
+		writeQueryError(w, err, "invalid_filter")
+		return
+	}
+	q := r.URL.Query()
+	name := q.Get("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "missing_param", "name is required")
+		return
+	}
+	// On /v1/tool-calls, `status` filters the tool call's OWN status (failed /
+	// rejected) — a different grain from turn status. parseFilter accepted it against
+	// the union status set and stashed it in filter.Statuses; lift it onto the tool
+	// call, clear it so it does not also constrain turns.status, and re-validate at
+	// the tool-call grain so a turn-only status (e.g. interrupted) errors rather than
+	// silently matching zero rows.
+	callStatuses := filter.Statuses
+	filter.Statuses = nil
+	if err := query.ValidateToolCallStatuses(callStatuses); err != nil {
+		writeQueryError(w, err, "invalid_filter")
+		return
+	}
+	calls, err := s.service.ListToolCalls(r.Context(), sqlite.ToolCallFilter{
+		Scope:        filter,
+		Kind:         q.Get("kind"),
+		Name:         name,
+		MCPServer:    q.Get("mcp_server"),
+		CallStatuses: callStatuses,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "list_tool_calls_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, calls)
+}
+
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	filter, err := parseFilter(r)
 	if err != nil {

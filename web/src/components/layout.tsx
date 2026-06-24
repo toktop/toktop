@@ -15,6 +15,7 @@ import {
 } from "lucide-react"
 
 import { ThemeToggle } from "@/components/theme-toggle"
+import { Brand } from "@/components/logo"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 
@@ -67,19 +68,18 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
 function LanguageSwitcher() {
   const { i18n, t } = useTranslation()
 
-  // Only one locale now; the select will expand as locales are added.
-  const locales: { code: string; labelKey: string }[] = [
-    { code: "en", labelKey: "lang.en" },
-  ]
+  // Only one locale now; add a key to expand as locales are added. `items` lets
+  // base-ui's <SelectValue> render the label ("English"), not the raw code ("en").
+  const locales: Record<string, string> = { en: t("lang.en") }
 
   return (
-    <Select value={i18n.language} onValueChange={(v) => void i18n.changeLanguage(v as string)}>
+    <Select items={locales} value={i18n.language} onValueChange={(v) => void i18n.changeLanguage(v as string)}>
       <SelectTrigger size="sm" className="w-28" aria-label={t("lang.switcher")}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        {locales.map((l) => (
-          <SelectItem key={l.code} value={l.code}>{t(l.labelKey)}</SelectItem>
+        {Object.entries(locales).map(([code, label]) => (
+          <SelectItem key={code} value={code}>{label}</SelectItem>
         ))}
       </SelectContent>
     </Select>
@@ -117,9 +117,7 @@ export function Layout() {
         aria-label={t("nav.label")}
         className="hidden w-56 shrink-0 flex-col gap-1 border-e border-border bg-sidebar px-3 py-4 md:flex"
       >
-        <div className="mb-4 px-2 text-base font-semibold tracking-tight text-sidebar-foreground">
-          toktop
-        </div>
+        <Brand className="mb-4 px-2" />
         <NavLinks />
       </nav>
 
@@ -138,7 +136,7 @@ export function Layout() {
           >
             <Menu className="size-5" aria-hidden="true" />
           </button>
-          <span className="text-base font-semibold tracking-tight">toktop</span>
+          <Brand />
           <div className="ms-auto flex items-center gap-2">
             <LanguageSwitcher />
             <ThemeToggle />
@@ -170,9 +168,7 @@ export function Layout() {
             className="absolute inset-y-0 start-0 flex w-64 max-w-[80%] flex-col gap-1 border-e border-border bg-sidebar px-3 py-4 shadow-xl"
           >
             <div className="mb-4 flex items-center justify-between px-2">
-              <span className="text-base font-semibold tracking-tight text-sidebar-foreground">
-                toktop
-              </span>
+              <Brand />
               <button
                 ref={closeRef}
                 type="button"

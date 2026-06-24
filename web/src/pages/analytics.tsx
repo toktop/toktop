@@ -1,14 +1,26 @@
-import { useState }       from "react"
-import type { ReactNode }  from "react"
-import { useTranslation }  from "react-i18next"
-import { Tabs }            from "@base-ui/react/tabs"
+import { useRef, useState } from "react"
+import type { ReactNode }   from "react"
+import { useTranslation }   from "react-i18next"
+import { Link }             from "react-router-dom"
+import { Tabs }             from "@base-ui/react/tabs"
+import { useVirtualizer }   from "@tanstack/react-virtual"
 
-import { reltime }         from "@/lib/format"
+import { reltime, fmtMs }  from "@/lib/format"
+import { DataTable }       from "@/components/data-table"
+import type { Column }     from "@/components/data-table"
+import { StatusBadge }     from "@/components/status-badge"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import {
   useMcps,
   useModels,
   useProjects,
   useSkills,
+  useToolCalls,
   useTools,
   useUnusedMcps,
   useUnusedSkills,
@@ -18,6 +30,7 @@ import type {
   ModelListItem,
   ProjectListItem,
   SkillListItem,
+  ToolCallListItem,
   ToolListItem,
 } from "@/api/types"
 
@@ -27,42 +40,18 @@ function n(v: number): string {
   return v.toLocaleString()
 }
 
-// ── shared table primitives ───────────────────────────────────────────────────
-
-function Th({ children, right }: { children: React.ReactNode; right?: boolean }) {
+// A failed/rejected count cell: a clickable button that opens the drill-down when
+// the count is non-zero, a muted "0" otherwise.
+function countCell(count: number, colorClass: string, onOpen: () => void): ReactNode {
+  if (count === 0) return <span className="text-muted-foreground">0</span>
   return (
-    <th
-      scope="col"
-      className={`px-4 py-2 font-medium ${right ? "text-right" : "text-left"}`}
+    <button
+      type="button"
+      onClick={onOpen}
+      className={`rounded-sm underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${colorClass}`}
     >
-      {children}
-    </th>
-  )
-}
-
-function Td({ children, right, mono }: { children: React.ReactNode; right?: boolean; mono?: boolean }) {
-  return (
-    <td className={`px-4 py-2 ${right ? "text-right" : ""} ${mono ? "tabular-nums" : ""}`}>
-      {children}
-    </td>
-  )
-}
-
-function TableShell({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="overflow-x-auto rounded-lg border border-border">
-      <table className="w-full text-sm">
-        {children}
-      </table>
-    </div>
-  )
-}
-
-function Thead({ children }: { children: React.ReactNode }) {
-  return (
-    <thead className="border-b border-border bg-muted/50 text-xs text-muted-foreground">
-      <tr>{children}</tr>
-    </thead>
+      {n(count)}
+    </button>
   )
 }
 
@@ -82,95 +71,233 @@ function tabStatus(
   return null
 }
 
+// A checkbox toggle reused by the mcps/skills tabs (switches the data source).
+function UnusedToggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2 text-sm select-none">
+      <input
+        type="checkbox"
+        className="h-4 w-4 rounded border-input accent-primary"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      {label}
+    </label>
+  )
+}
+
 // ── projects tab ──────────────────────────────────────────────────────────────
 
 function ProjectsTab() {
-  const { t }                       = useTranslation()
-  const { data, isLoading, error }  = useProjects()
-  const items: ProjectListItem[]    = data ?? []
+  const { t }                      = useTranslation()
+  const { data, isLoading, error } = useProjects()
+  const items: ProjectListItem[]   = data ?? []
 
   const ts: TabState = { loading: isLoading, error: error as Error | null }
   const status = tabStatus(ts, items.length === 0, t("page.analytics.empty"), t)
+  if (status) return status
 
-  return status ?? (
-    <TableShell>
-      <Thead>
-        <Th>{t("page.analytics.projects.name")}</Th>
-        <Th>{t("page.analytics.projects.source")}</Th>
-        <Th right>{t("page.analytics.projects.sessions")}</Th>
-        <Th right>{t("page.analytics.projects.turns")}</Th>
-        <Th right>{t("page.analytics.projects.tools")}</Th>
-        <Th right>{t("page.analytics.projects.lastActivity")}</Th>
-      </Thead>
-      <tbody>
-        {items.map((p) => (
-          <tr key={p.id} className="border-b border-border last:border-0 hover:bg-muted/40 transition-colors">
-            <Td>
-              <span className="font-medium">{p.name}</span>
-              {p.path && (
-                <span className="ml-2 font-mono text-xs text-muted-foreground truncate max-w-[180px] inline-block align-bottom" title={p.path}>
-                  {p.path}
-                </span>
-              )}
-            </Td>
-            <Td><span className="text-xs uppercase tracking-wide text-muted-foreground">{p.source_id}</span></Td>
-            <Td right mono>{n(p.session_count)}</Td>
-            <Td right mono>{n(p.turn_count)}</Td>
-            <Td right mono>{n(p.tool_call_count)}</Td>
-            <Td right><span className="text-xs text-muted-foreground">{reltime(p.last_activity)}</span></Td>
-          </tr>
-        ))}
-      </tbody>
-    </TableShell>
+  const columns: Column<ProjectListItem>[] = [
+    {
+      header: t("page.analytics.projects.name"), width: "w-[30%]",
+      cell: (p) => (
+        <span className="block truncate" title={p.path ?? p.name}>
+          <span className="font-medium">{p.name}</span>
+          {p.path && <span className="ml-2 font-mono text-xs text-muted-foreground">{p.path}</span>}
+        </span>
+      ),
+    },
+    {
+      header: t("page.analytics.projects.source"), width: "w-[12%]",
+      cell: (p) => <span className="text-xs uppercase tracking-wide text-muted-foreground">{p.source_id}</span>,
+    },
+    { header: t("page.analytics.projects.sessions"), width: "w-[13%]", right: true, cell: (p) => n(p.session_count) },
+    { header: t("page.analytics.projects.turns"),    width: "w-[13%]", right: true, cell: (p) => n(p.turn_count) },
+    { header: t("page.analytics.projects.tools"),    width: "w-[13%]", right: true, cell: (p) => n(p.tool_call_count) },
+    {
+      header: t("page.analytics.projects.lastActivity"), width: "w-[19%]", right: true,
+      cell: (p) => <span className="text-xs text-muted-foreground">{reltime(p.last_activity)}</span>,
+    },
+  ]
+
+  return (
+    <DataTable
+      columns={columns}
+      rows={items}
+      rowKey={(p) => p.id}
+      filterText={(p) => `${p.name} ${p.path ?? ""} ${p.source_id}`}
+    />
   )
 }
 
 // ── tools tab ─────────────────────────────────────────────────────────────────
 
+type ToolDrill = { tool: ToolListItem; status: "failed" | "rejected" }
+
 function ToolsTab() {
   const { t }                      = useTranslation()
   const { data, isLoading, error } = useTools()
   const items: ToolListItem[]      = data ?? []
+  const [drill, setDrill]          = useState<ToolDrill | null>(null)
 
   const ts: TabState = { loading: isLoading, error: error as Error | null }
   const status = tabStatus(ts, items.length === 0, t("page.analytics.empty"), t)
+  if (status) return status
 
-  return status ?? (
-    <TableShell>
-      <Thead>
-        <Th>{t("page.analytics.tools.name")}</Th>
-        <Th>{t("page.analytics.tools.kind")}</Th>
-        <Th>{t("page.analytics.tools.mcpServer")}</Th>
-        <Th right>{t("page.analytics.tools.calls")}</Th>
-        <Th right>{t("page.analytics.tools.turns")}</Th>
-        <Th right>{t("page.analytics.tools.failed")}</Th>
-        <Th right>{t("page.analytics.tools.rejected")}</Th>
-        <Th right>{t("page.analytics.tools.lastUsed")}</Th>
-      </Thead>
-      <tbody>
-        {items.map((tc, i) => (
-          <tr key={`${tc.kind}-${tc.name}-${tc.mcp_server ?? ""}-${i}`}
-              className="border-b border-border last:border-0 hover:bg-muted/40 transition-colors">
-            <Td><span className="font-mono font-medium">{tc.name}</span></Td>
-            <Td><span className="text-xs text-muted-foreground">{tc.kind}</span></Td>
-            <Td><span className="text-xs text-muted-foreground">{tc.mcp_server ?? "—"}</span></Td>
-            <Td right mono>{n(tc.call_count)}</Td>
-            <Td right mono>{n(tc.turn_count)}</Td>
-            <Td right mono>
-              {tc.failed_count > 0
-                ? <span className="text-destructive">{n(tc.failed_count)}</span>
-                : <span className="text-muted-foreground">0</span>}
-            </Td>
-            <Td right mono>
-              {tc.rejected_count > 0
-                ? <span className="text-yellow-600 dark:text-yellow-400">{n(tc.rejected_count)}</span>
-                : <span className="text-muted-foreground">0</span>}
-            </Td>
-            <Td right><span className="text-xs text-muted-foreground">{reltime(tc.last_used_at)}</span></Td>
-          </tr>
-        ))}
-      </tbody>
-    </TableShell>
+  const columns: Column<ToolListItem>[] = [
+    {
+      header: t("page.analytics.tools.name"), width: "w-[18%]",
+      cell: (tc) => <span className="block truncate font-mono font-medium" title={tc.name}>{tc.name}</span>,
+    },
+    {
+      header: t("page.analytics.tools.kind"), width: "w-[11%]",
+      cell: (tc) => <span className="text-xs text-muted-foreground">{tc.kind}</span>,
+    },
+    {
+      header: t("page.analytics.tools.mcpServer"), width: "w-[19%]",
+      cell: (tc) => <span className="block truncate text-xs text-muted-foreground" title={tc.mcp_server ?? ""}>{tc.mcp_server ?? "—"}</span>,
+    },
+    { header: t("page.analytics.tools.calls"), width: "w-[10%]", right: true, cell: (tc) => n(tc.call_count) },
+    { header: t("page.analytics.tools.turns"), width: "w-[10%]", right: true, cell: (tc) => n(tc.turn_count) },
+    {
+      header: t("page.analytics.tools.failed"), width: "w-[10%]", right: true,
+      cell: (tc) => countCell(tc.failed_count, "text-destructive", () => setDrill({ tool: tc, status: "failed" })),
+    },
+    {
+      header: t("page.analytics.tools.rejected"), width: "w-[10%]", right: true,
+      cell: (tc) => countCell(tc.rejected_count, "text-yellow-600 dark:text-yellow-400", () => setDrill({ tool: tc, status: "rejected" })),
+    },
+    {
+      header: t("page.analytics.tools.lastUsed"), width: "w-[12%]", right: true,
+      cell: (tc) => <span className="text-xs text-muted-foreground">{reltime(tc.last_used_at)}</span>,
+    },
+  ]
+
+  return (
+    <>
+      <DataTable
+        columns={columns}
+        rows={items}
+        rowKey={(tc, i) => `${tc.kind}-${tc.name}-${tc.mcp_server ?? ""}-${i}`}
+        filterText={(tc) => `${tc.name} ${tc.kind} ${tc.mcp_server ?? ""}`}
+      />
+      <ToolCallsDialog drill={drill} onClose={() => setDrill(null)} />
+    </>
+  )
+}
+
+// ── tool-call drill-down ────────────────────────────────────────────────────────
+
+// One failed/rejected call: where it happened (session link + project + when) and
+// the failure detail. The detail prefers `error`, falling back to `output` — most
+// tools (e.g. Bash) leave `error` empty and carry the failure text in `output`.
+function ToolCallEntry({ call }: { call: ToolCallListItem }) {
+  const { t }  = useTranslation()
+  const detail = call.error || call.output || ""
+  const where  = call.session_title || call.session_id
+
+  return (
+    <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <StatusBadge status={call.status} />
+        <Link
+          to={`/sessions/${call.session_id}?turn=${encodeURIComponent(call.turn_id)}`}
+          className="font-medium text-foreground hover:underline"
+          title={t("page.analytics.drilldown.openTurn")}
+        >
+          {where}
+          <span className="ms-1.5 font-normal text-muted-foreground">{t("page.analytics.drilldown.turn", { n: call.turn_index + 1 })}</span>
+        </Link>
+        {call.project_name && <span className="text-muted-foreground">{call.project_name}</span>}
+        <span className="uppercase tracking-wide text-muted-foreground">{call.source_id}</span>
+        <span className="ms-auto text-muted-foreground">{reltime(call.started_at)}</span>
+        {call.duration_ms != null && <span className="text-muted-foreground">{fmtMs(call.duration_ms)}</span>}
+      </div>
+
+      {call.input && (
+        <div className="mt-2">
+          <div className="mb-1 font-medium uppercase tracking-wide text-muted-foreground">{t("page.analytics.drilldown.input")}</div>
+          <pre className="max-h-24 overflow-auto rounded bg-background p-2 text-[11px] break-all whitespace-pre-wrap text-muted-foreground">{call.input}</pre>
+        </div>
+      )}
+
+      <div className="mt-2">
+        <div className="mb-1 font-medium uppercase tracking-wide text-muted-foreground">{t("page.analytics.drilldown.detail")}</div>
+        {detail
+          ? <pre className="max-h-48 overflow-auto rounded bg-background p-2 text-[11px] break-all whitespace-pre-wrap text-foreground">{detail}</pre>
+          : <p className="text-muted-foreground italic">{t("page.analytics.drilldown.noDetail")}</p>}
+      </div>
+    </div>
+  )
+}
+
+function ToolCallsDialog({ drill, onClose }: { drill: ToolDrill | null; onClose: () => void }) {
+  const { t }      = useTranslation()
+  const tool       = drill?.tool ?? null
+  const kindStatus = drill?.status ?? "failed"
+  const total      = tool ? (kindStatus === "failed" ? tool.failed_count : tool.rejected_count) : 0
+
+  const { data, isLoading, error } = useToolCalls(
+    { name: tool?.name ?? "", kind: tool?.kind, mcp_server: tool?.mcp_server, status: kindStatus },
+    drill !== null,
+  )
+  const calls: ToolCallListItem[] = data ?? []
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  // The drill-down can return up to DefaultToolCallLimit (500) variable-height
+  // cards; virtualize so only the visible window is in the DOM. measureElement
+  // measures each card's real height (input + output/error vary).
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({
+    count:            calls.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize:     () => 160,
+    overscan:         6,
+  })
+
+  return (
+    <Dialog open={drill !== null} onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent>
+        <div className="flex flex-col gap-1">
+          <DialogTitle>
+            <span className="font-mono">{tool?.name}</span>
+            {" · "}
+            {t(`page.analytics.tools.${kindStatus}`)}
+          </DialogTitle>
+          {!isLoading && !error && calls.length > 0 && (
+            <DialogDescription>
+              {calls.length >= total
+                ? t("page.analytics.drilldown.showingAll", { total })
+                : t("page.analytics.drilldown.showing", { shown: calls.length, total })}
+            </DialogDescription>
+          )}
+        </div>
+
+        <div ref={scrollRef} className="-mx-1 flex-1 overflow-y-auto px-1">
+          {isLoading ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">{t("common.loading")}</p>
+          ) : error ? (
+            <p className="py-8 text-center text-sm text-destructive" role="alert">{(error as Error).message || t("common.error")}</p>
+          ) : calls.length === 0 ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">{t("page.analytics.drilldown.empty")}</p>
+          ) : (
+            <div style={{ position: "relative", width: "100%", height: virtualizer.getTotalSize() }}>
+              {virtualizer.getVirtualItems().map((vi) => (
+                <div
+                  key={calls[vi.index].id}
+                  data-index={vi.index}
+                  ref={virtualizer.measureElement}
+                  className="pb-3"
+                  style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${vi.start}px)` }}
+                >
+                  <ToolCallEntry call={calls[vi.index]} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -183,172 +310,174 @@ function ModelsTab() {
 
   const ts: TabState = { loading: isLoading, error: error as Error | null }
   const status = tabStatus(ts, items.length === 0, t("page.analytics.empty"), t)
+  if (status) return status
 
-  return status ?? (
-    <TableShell>
-      <Thead>
-        <Th>{t("page.analytics.models.model")}</Th>
-        <Th>{t("page.analytics.models.provider")}</Th>
-        <Th right>{t("page.analytics.models.calls")}</Th>
-        <Th right>{t("page.analytics.models.turns")}</Th>
-        <Th right>{t("page.analytics.models.inputTokens")}</Th>
-        <Th right>{t("page.analytics.models.outputTokens")}</Th>
-        <Th right>{t("page.analytics.models.cacheRead")}</Th>
-        <Th right>{t("page.analytics.models.cacheWrite")}</Th>
-        <Th right>{t("page.analytics.models.cacheWriteLong")}</Th>
-        <Th right>{t("page.analytics.models.lastUsed")}</Th>
-      </Thead>
-      <tbody>
-        {items.map((m, i) => (
-          <tr key={`${m.provider}-${m.model}-${i}`}
-              className="border-b border-border last:border-0 hover:bg-muted/40 transition-colors">
-            <Td><span className="font-mono font-medium">{m.model || "—"}</span></Td>
-            <Td><span className="text-xs uppercase tracking-wide text-muted-foreground">{m.provider || "—"}</span></Td>
-            <Td right mono>{n(m.call_count)}</Td>
-            <Td right mono>{n(m.turn_count)}</Td>
-            <Td right mono>{n(m.input_tokens)}</Td>
-            <Td right mono>{n(m.output_tokens)}</Td>
-            <Td right mono>{n(m.cache_read_tokens)}</Td>
-            <Td right mono>{n(m.cache_write_tokens)}</Td>
-            <Td right mono>{n(m.cache_write_long_tokens)}</Td>
-            <Td right><span className="text-xs text-muted-foreground">{reltime(m.last_used_at)}</span></Td>
-          </tr>
-        ))}
-      </tbody>
-    </TableShell>
+  const columns: Column<ModelListItem>[] = [
+    {
+      header: t("page.analytics.models.model"), width: "w-[16%]",
+      cell: (m) => <span className="block truncate font-mono font-medium" title={m.model}>{m.model || "—"}</span>,
+    },
+    {
+      header: t("page.analytics.models.provider"), width: "w-[10%]",
+      cell: (m) => <span className="text-xs uppercase tracking-wide text-muted-foreground">{m.provider || "—"}</span>,
+    },
+    { header: t("page.analytics.models.calls"),          width: "w-[8%]",  right: true, cell: (m) => n(m.call_count) },
+    { header: t("page.analytics.models.turns"),          width: "w-[8%]",  right: true, cell: (m) => n(m.turn_count) },
+    { header: t("page.analytics.models.inputTokens"),    width: "w-[9%]",  right: true, cell: (m) => n(m.input_tokens) },
+    { header: t("page.analytics.models.outputTokens"),   width: "w-[9%]",  right: true, cell: (m) => n(m.output_tokens) },
+    { header: t("page.analytics.models.cacheRead"),      width: "w-[9%]",  right: true, cell: (m) => n(m.cache_read_tokens) },
+    { header: t("page.analytics.models.cacheWrite"),     width: "w-[9%]",  right: true, cell: (m) => n(m.cache_write_tokens) },
+    { header: t("page.analytics.models.cacheWriteLong"), width: "w-[10%]", right: true, cell: (m) => n(m.cache_write_long_tokens) },
+    {
+      header: t("page.analytics.models.lastUsed"), width: "w-[12%]", right: true,
+      cell: (m) => <span className="text-xs text-muted-foreground">{reltime(m.last_used_at)}</span>,
+    },
+  ]
+
+  return (
+    <DataTable
+      columns={columns}
+      rows={items}
+      minWidth="min-w-[1100px]"
+      rowKey={(m, i) => `${m.provider}-${m.model}-${i}`}
+      filterText={(m) => `${m.model} ${m.provider}`}
+    />
   )
 }
 
 // ── mcps tab ──────────────────────────────────────────────────────────────────
 
 function MCPsTab() {
-  const { t }                               = useTranslation()
-  const [unusedOnly, setUnusedOnly]         = useState(false)
-  const all                                 = useMcps()
-  const unused                              = useUnusedMcps()
-  const active                              = unusedOnly ? unused : all
-  const items: MCPListItem[]                = active.data ?? []
+  const { t }                       = useTranslation()
+  const [unusedOnly, setUnusedOnly] = useState(false)
+  const all                         = useMcps()
+  const unused                      = useUnusedMcps()
+  const active                      = unusedOnly ? unused : all
+  const items: MCPListItem[]        = active.data ?? []
+
+  const toggle = <UnusedToggle label={t("page.analytics.mcps.unusedOnly")} checked={unusedOnly} onChange={setUnusedOnly} />
 
   const ts: TabState = { loading: active.isLoading, error: active.error as Error | null }
   const status = tabStatus(ts, items.length === 0, t("page.analytics.empty"), t)
+  if (status) {
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center">{toggle}</div>
+        {status}
+      </div>
+    )
+  }
+
+  const columns: Column<MCPListItem>[] = [
+    {
+      header: t("page.analytics.mcps.server"), width: "w-[18%]",
+      cell: (m) => <span className="block truncate font-mono font-medium" title={m.server}>{m.server || "—"}</span>,
+    },
+    {
+      header: t("page.analytics.mcps.source"), width: "w-[12%]",
+      cell: (m) => <span className="text-xs uppercase tracking-wide text-muted-foreground">{m.source_id}</span>,
+    },
+    {
+      header: t("page.analytics.mcps.declared"), width: "w-[9%]",
+      cell: (m) => (
+        <span className={`text-xs ${m.declared ? "text-green-600 dark:text-green-400" : "text-muted-foreground"}`}>
+          {m.declared ? t("page.analytics.mcps.yes") : t("page.analytics.mcps.no")}
+        </span>
+      ),
+    },
+    {
+      header: t("page.analytics.mcps.scope"), width: "w-[12%]",
+      cell: (m) => <span className="text-xs text-muted-foreground">{m.scope ?? "—"}</span>,
+    },
+    { header: t("page.analytics.mcps.calls"),        width: "w-[9%]",  right: true, cell: (m) => n(m.call_count) },
+    { header: t("page.analytics.mcps.tools"),        width: "w-[9%]",  right: true, cell: (m) => n(m.tool_count) },
+    { header: t("page.analytics.mcps.turns"),        width: "w-[9%]",  right: true, cell: (m) => n(m.turn_count) },
+    { header: t("page.analytics.mcps.availability"), width: "w-[9%]",  right: true, cell: (m) => n(m.availability_observed) },
+    {
+      header: t("page.analytics.mcps.lastUsed"), width: "w-[13%]", right: true,
+      cell: (m) => <span className="text-xs text-muted-foreground">{reltime(m.last_used_at)}</span>,
+    },
+  ]
 
   return (
-    <div className="space-y-3">
-      <label className="flex items-center gap-2 text-sm select-none cursor-pointer">
-        <input
-          type="checkbox"
-          className="h-4 w-4 rounded border-input accent-primary"
-          checked={unusedOnly}
-          onChange={(e) => setUnusedOnly(e.target.checked)}
-        />
-        {t("page.analytics.mcps.unusedOnly")}
-      </label>
-
-      {status ?? (
-        <TableShell>
-          <Thead>
-            <Th>{t("page.analytics.mcps.server")}</Th>
-            <Th>{t("page.analytics.mcps.source")}</Th>
-            <Th>{t("page.analytics.mcps.declared")}</Th>
-            <Th>{t("page.analytics.mcps.scope")}</Th>
-            <Th right>{t("page.analytics.mcps.calls")}</Th>
-            <Th right>{t("page.analytics.mcps.tools")}</Th>
-            <Th right>{t("page.analytics.mcps.turns")}</Th>
-            <Th right>{t("page.analytics.mcps.availability")}</Th>
-            <Th right>{t("page.analytics.mcps.lastUsed")}</Th>
-          </Thead>
-          <tbody>
-            {items.map((m, i) => (
-              <tr key={`${m.source_id}-${m.server}-${i}`}
-                  className="border-b border-border last:border-0 hover:bg-muted/40 transition-colors">
-                <Td><span className="font-mono font-medium">{m.server || "—"}</span></Td>
-                <Td><span className="text-xs uppercase tracking-wide text-muted-foreground">{m.source_id}</span></Td>
-                <Td>
-                  <span className={`text-xs ${m.declared ? "text-green-600 dark:text-green-400" : "text-muted-foreground"}`}>
-                    {m.declared ? t("page.analytics.mcps.yes") : t("page.analytics.mcps.no")}
-                  </span>
-                </Td>
-                <Td><span className="text-xs text-muted-foreground">{m.scope ?? "—"}</span></Td>
-                <Td right mono>{n(m.call_count)}</Td>
-                <Td right mono>{n(m.tool_count)}</Td>
-                <Td right mono>{n(m.turn_count)}</Td>
-                <Td right mono>{n(m.availability_observed)}</Td>
-                <Td right><span className="text-xs text-muted-foreground">{reltime(m.last_used_at)}</span></Td>
-              </tr>
-            ))}
-          </tbody>
-        </TableShell>
-      )}
-    </div>
+    <DataTable
+      columns={columns}
+      rows={items}
+      toolbarExtra={toggle}
+      rowKey={(m, i) => `${m.source_id}-${m.server}-${i}`}
+      filterText={(m) => `${m.server} ${m.source_id} ${m.scope ?? ""}`}
+    />
   )
 }
 
 // ── skills tab ────────────────────────────────────────────────────────────────
 
 function SkillsTab() {
-  const { t }                             = useTranslation()
-  const [unusedOnly, setUnusedOnly]       = useState(false)
-  const all                               = useSkills()
-  const unused                            = useUnusedSkills()
-  const active                            = unusedOnly ? unused : all
-  const items: SkillListItem[]            = active.data ?? []
+  const { t }                       = useTranslation()
+  const [unusedOnly, setUnusedOnly] = useState(false)
+  const all                         = useSkills()
+  const unused                      = useUnusedSkills()
+  const active                      = unusedOnly ? unused : all
+  const items: SkillListItem[]      = active.data ?? []
+
+  const toggle = <UnusedToggle label={t("page.analytics.skills.unusedOnly")} checked={unusedOnly} onChange={setUnusedOnly} />
 
   const ts: TabState = { loading: active.isLoading, error: active.error as Error | null }
   const status = tabStatus(ts, items.length === 0, t("page.analytics.empty"), t)
+  if (status) {
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center">{toggle}</div>
+        {status}
+      </div>
+    )
+  }
+
+  const columns: Column<SkillListItem>[] = [
+    {
+      header: t("page.analytics.skills.name"), width: "w-[18%]",
+      cell: (s) => (
+        <span className="block truncate" title={s.name}>
+          <span className="font-mono font-medium">{s.name}</span>
+          {s.version && <span className="ml-1 text-[10px] text-muted-foreground">v{s.version}</span>}
+        </span>
+      ),
+    },
+    {
+      header: t("page.analytics.skills.source"), width: "w-[11%]",
+      cell: (s) => <span className="text-xs uppercase tracking-wide text-muted-foreground">{s.source_id}</span>,
+    },
+    {
+      header: t("page.analytics.skills.scope"), width: "w-[11%]",
+      cell: (s) => <span className="text-xs text-muted-foreground">{s.scope ?? "—"}</span>,
+    },
+    {
+      header: t("page.analytics.skills.installed"), width: "w-[10%]",
+      cell: (s) => (
+        <span className={`text-xs ${s.installed ? "text-green-600 dark:text-green-400" : "text-muted-foreground"}`}>
+          {s.installed ? t("page.analytics.skills.yes") : t("page.analytics.skills.no")}
+        </span>
+      ),
+    },
+    {
+      header: t("page.analytics.skills.description"), width: "w-[24%]",
+      cell: (s) => <span className="block truncate text-xs text-muted-foreground" title={s.description ?? ""}>{s.description || "—"}</span>,
+    },
+    { header: t("page.analytics.skills.usedCount"), width: "w-[12%]", right: true, cell: (s) => n(s.inferred_used_count) },
+    {
+      header: t("page.analytics.skills.lastUsed"), width: "w-[14%]", right: true,
+      cell: (s) => <span className="text-xs text-muted-foreground">{reltime(s.last_used_at)}</span>,
+    },
+  ]
 
   return (
-    <div className="space-y-3">
-      <label className="flex items-center gap-2 text-sm select-none cursor-pointer">
-        <input
-          type="checkbox"
-          className="h-4 w-4 rounded border-input accent-primary"
-          checked={unusedOnly}
-          onChange={(e) => setUnusedOnly(e.target.checked)}
-        />
-        {t("page.analytics.skills.unusedOnly")}
-      </label>
-
-      {status ?? (
-        <TableShell>
-          <Thead>
-            <Th>{t("page.analytics.skills.name")}</Th>
-            <Th>{t("page.analytics.skills.source")}</Th>
-            <Th>{t("page.analytics.skills.scope")}</Th>
-            <Th>{t("page.analytics.skills.installed")}</Th>
-            <Th>{t("page.analytics.skills.description")}</Th>
-            <Th right>{t("page.analytics.skills.usedCount")}</Th>
-            <Th right>{t("page.analytics.skills.lastUsed")}</Th>
-          </Thead>
-          <tbody>
-            {items.map((s, i) => (
-              <tr key={`${s.source_id}-${s.name}-${i}`}
-                  className="border-b border-border last:border-0 hover:bg-muted/40 transition-colors">
-                <Td>
-                  <span className="font-mono font-medium">{s.name}</span>
-                  {s.version && (
-                    <span className="ml-1 text-[10px] text-muted-foreground">v{s.version}</span>
-                  )}
-                </Td>
-                <Td><span className="text-xs uppercase tracking-wide text-muted-foreground">{s.source_id}</span></Td>
-                <Td><span className="text-xs text-muted-foreground">{s.scope ?? "—"}</span></Td>
-                <Td>
-                  <span className={`text-xs ${s.installed ? "text-green-600 dark:text-green-400" : "text-muted-foreground"}`}>
-                    {s.installed ? t("page.analytics.skills.yes") : t("page.analytics.skills.no")}
-                  </span>
-                </Td>
-                <Td>
-                  <span className="text-xs text-muted-foreground truncate max-w-[200px] inline-block align-bottom" title={s.description}>
-                    {s.description || "—"}
-                  </span>
-                </Td>
-                <Td right mono>{n(s.inferred_used_count)}</Td>
-                <Td right><span className="text-xs text-muted-foreground">{reltime(s.last_used_at)}</span></Td>
-              </tr>
-            ))}
-          </tbody>
-        </TableShell>
-      )}
-    </div>
+    <DataTable
+      columns={columns}
+      rows={items}
+      toolbarExtra={toggle}
+      rowKey={(s, i) => `${s.source_id}-${s.name}-${i}`}
+      filterText={(s) => `${s.name} ${s.source_id} ${s.scope ?? ""} ${s.description ?? ""}`}
+    />
   )
 }
 
@@ -360,8 +489,8 @@ const TABS: TabId[] = ["projects", "tools", "models", "mcps", "skills"]
 // ── page ──────────────────────────────────────────────────────────────────────
 
 export function AnalyticsPage() {
-  const { t }              = useTranslation()
-  const [tab, setTab]      = useState<TabId>("projects")
+  const { t }         = useTranslation()
+  const [tab, setTab] = useState<TabId>("projects")
 
   return (
     <div className="space-y-4">

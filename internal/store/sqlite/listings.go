@@ -34,6 +34,29 @@ type ToolListItem struct {
 	LastUsedAt    time.Time `json:"last_used_at,omitzero"`
 }
 
+// ToolCallListItem is one individual tool-call instance behind a ToolListItem
+// aggregate — the drill-down row. It carries the call's status/error/output plus
+// the session context (title/project) that answers "where did this happen".
+type ToolCallListItem struct {
+	ID           string    `json:"id"`
+	SessionID    string    `json:"session_id"`
+	TurnID       string    `json:"turn_id"`
+	TurnIndex    int       `json:"turn_index"`
+	Kind         string    `json:"kind"`
+	Name         string    `json:"name"`
+	MCPServer    string    `json:"mcp_server,omitzero"`
+	Status       string    `json:"status"`
+	Error        string    `json:"error,omitzero"`
+	Input        string    `json:"input,omitzero"`
+	Output       string    `json:"output,omitzero"`
+	OutputBytes  int64     `json:"output_bytes,omitzero"`
+	DurationMs   int64     `json:"duration_ms,omitzero"`
+	StartedAt    time.Time `json:"started_at,omitzero"`
+	SessionTitle string    `json:"session_title,omitzero"`
+	ProjectName  string    `json:"project_name,omitzero"`
+	SourceID     string    `json:"source_id"`
+}
+
 type MCPListItem struct {
 	SourceID     string    `json:"source_id"`
 	Server       string    `json:"server"`
@@ -84,6 +107,19 @@ type Filter struct {
 	// a baseline predicate, not a user-supplied runtime constraint — see
 	// hasRuntimeConstraint, which deliberately omits it.
 	IncludeSubagents bool
+}
+
+// ToolCallFilter scopes ListToolCalls to one tool (the kind+name+mcp_server
+// triple that identifies a ToolListItem row) and a set of tool-call statuses,
+// on top of the standard session-scope Scope. CallStatuses is the tool call's
+// own status grain (failed/rejected/…) — deliberately separate from
+// Scope.Statuses, which is turn status; the two never share a column.
+type ToolCallFilter struct {
+	Scope        Filter
+	Kind         string
+	Name         string
+	MCPServer    string
+	CallStatuses []string
 }
 
 // Activity-time expressions: when an entity actually started or ended its work.
@@ -427,6 +463,78 @@ func (s *Store) ListTools(ctx context.Context, f Filter) ([]ToolListItem, error)
 			return nil, fmt.Errorf("scan tool: %w", err)
 		}
 		item.LastUsedAt = parseTimeOpt(lastUsed)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// DefaultToolCallLimit caps an unbounded ListToolCalls (Scope.Limit <= 0) so a
+// pathological tool with thousands of calls can't return them all at once. The
+// caller already knows the true total from the ToolListItem aggregate it drilled
+// from, so it can tell the user when the result is the most-recent slice. Exported
+// so the CLI's --limit default and the store cap stay a single source of truth.
+const DefaultToolCallLimit = 500
+
+// ListToolCalls returns the individual tool-call instances behind one tool
+// aggregate, newest first — the drill-down for a ToolListItem's failed/rejected
+// (or any status) count. The kind+name+mcp_server triple pins the exact
+// aggregated row; CallStatuses narrows to the tool call's own status grain.
+func (s *Store) ListToolCalls(ctx context.Context, tcf ToolCallFilter) ([]ToolCallListItem, error) {
+	f := tcf.Scope.normalized()
+	var args []any
+	wheres := f.joinedTurnWhere(&args, toolCallActivityTimeExpr)
+	wheres = append(wheres, "tool_calls.tool_name = ?")
+	args = append(args, tcf.Name)
+	// kind / mcp_server pin the exact aggregated row when given; empty means
+	// "don't constrain" (a builtin tool's mcp_server is always empty, so name +
+	// kind already pin it, and a CLI caller can drill by bare name across kinds).
+	if tcf.Kind != "" {
+		wheres = append(wheres, "tool_calls.tool_kind = ?")
+		args = append(args, tcf.Kind)
+	}
+	if tcf.MCPServer != "" {
+		wheres = append(wheres, "COALESCE(tool_calls.mcp_server, '') = ?")
+		args = append(args, tcf.MCPServer)
+	}
+	if st := textutil.DedupNonEmpty(tcf.CallStatuses); len(st) > 0 {
+		wheres = append(wheres, inClause("tool_calls.status", st, &args))
+	}
+	clause := whereClause(wheres)
+	limit := f.Limit
+	if limit <= 0 {
+		limit = DefaultToolCallLimit
+	}
+	args = append(args, limit, f.Offset)
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT tool_calls.id, tool_calls.session_id, tool_calls.turn_id, turns.turn_index,
+		       tool_calls.tool_kind, tool_calls.tool_name, COALESCE(tool_calls.mcp_server, ''),
+		       tool_calls.status, COALESCE(tool_calls.error, ''),
+		       COALESCE(tool_calls.input_json, ''), COALESCE(tool_calls.output_text, ''),
+		       tool_calls.output_bytes, tool_calls.duration_ms,
+		       `+toolCallActivityTimeExpr+`,
+		       COALESCE(sessions.title, ''), COALESCE(projects.name, ''), sessions.source_id
+		FROM tool_calls
+		JOIN turns ON turns.id = tool_calls.turn_id
+		JOIN sessions ON sessions.id = tool_calls.session_id
+		LEFT JOIN projects ON projects.id = sessions.project_id
+		`+clause+`
+		ORDER BY `+toolCallActivityTimeExpr+` DESC, tool_calls.call_index DESC
+		LIMIT ? OFFSET ?
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list tool calls: %w", err)
+	}
+	defer rows.Close()
+	out := make([]ToolCallListItem, 0)
+	for rows.Next() {
+		var item ToolCallListItem
+		var startedAt sql.NullString
+		if err := rows.Scan(&item.ID, &item.SessionID, &item.TurnID, &item.TurnIndex, &item.Kind, &item.Name, &item.MCPServer,
+			&item.Status, &item.Error, &item.Input, &item.Output, &item.OutputBytes, &item.DurationMs,
+			&startedAt, &item.SessionTitle, &item.ProjectName, &item.SourceID); err != nil {
+			return nil, fmt.Errorf("scan tool call: %w", err)
+		}
+		item.StartedAt = parseTimeOpt(startedAt)
 		out = append(out, item)
 	}
 	return out, rows.Err()

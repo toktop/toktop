@@ -22,11 +22,6 @@ import (
 )
 
 func runUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if !web.Enabled {
-		cliErrf(stderr, "this build has no web UI; rebuild with -tags ui (or run `make ui`)")
-		return 2
-	}
-
 	fs0 := flag.NewFlagSet("ui", flag.ContinueOnError)
 	fs0.SetOutput(stderr)
 	noBrowser := fs0.Bool("no-browser", false, "print the URL instead of opening a browser")
@@ -44,9 +39,13 @@ func runUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	assets, err := web.Assets()
+	assets, ok, err := web.Assets()
 	if err != nil {
 		cliErr(stderr, err)
+		return 2
+	}
+	if !ok {
+		cliErrf(stderr, "this build has no web UI embedded; run `make ui` to build a binary with the UI")
 		return 2
 	}
 

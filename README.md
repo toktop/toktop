@@ -102,6 +102,11 @@ The bare `go build` above stamps no version metadata, so `toktop --version` repo
 `dev`. Use `make build` to inject the git-derived version, commit, and build date
 (the release workflow does the same from the pushed tag).
 
+The binary built above has **no embedded web UI** (a fresh-checkout `go build`), unlike the
+prebuilt releases. To build a UI-embedded binary you also need **Node + pnpm**: run `make ui`
+— it builds the SPA, then a plain `go build` embeds it (no build tag) — see
+[Web UI](#web-ui-opt-in-build).
+
 </details>
 
 ---
@@ -158,7 +163,7 @@ keep a daemon running so the DB stays current automatically (see
 | `toktop search <query>` | Full-text search over turn text and tool calls (FTS5) |
 | `toktop mcps` | MCP server usage rollup (`mcps unused` = declared but never called) |
 | `toktop skills` | Skill usage rollup (`skills unused` = installed but never used) |
-| `toktop tools` | Tool-call usage (call / turn / failed / rejected counts per tool) |
+| `toktop tools` | Tool-call usage per tool (call / turn / failed / rejected; `tools calls --name <tool>` drills into the individual calls — which session + turn each ran in, and why it failed) |
 | `toktop models` | Model invocation usage (call / turn / token counts, incl. cache, per provider+model) |
 | `toktop projects` | Per-project session / turn / tool counts |
 | `toktop suggestions` | Rule-engine findings (`suggestions recompute` reruns the rules) |
@@ -198,6 +203,7 @@ toktop turns --sources claude-code --since 24h --sort tokens_desc --limit 10
 toktop sessions --columns id,title,tokens,started     # show only the columns you want (trims the wide default)
 toktop search 'rate limit' kind:turn source:claude-code --limit 20   # kind:/source: tokens are separate args
 toktop mcps unused --format json
+toktop tools calls --name Bash --status failed   # drill into one tool's failed calls — session+turn + the error/output
 toktop sessions inspect 7fe8484969b12a21
 toktop turns timeline 2dcb402ffc459e93     # per-turn event timeline
 ```
@@ -353,17 +359,20 @@ and any time you can ask `toktop status` (or `GET /v1/status`) for the current s
 client** — the same `/v1` HTTP API everything else uses — so it requires the daemon to be up
 (auto-started by default, see above).
 
-**The web UI is opt-in at build time.** The standard `make build` / `go build` does not include
-it. To build with the embedded SPA:
+**Prebuilt release binaries ship with the web UI** — the install script above gives you a
+UI-ready `toktop`. Building **from source**, the UI is embedded once you build the SPA — there
+is **no build tag**; a plain `go build` simply embeds whatever is in `internal/web/dist`:
 
 ```bash
-make ui                                     # builds the React SPA then compiles it in
-# equivalent: cd web && pnpm build, then:
-go build -tags sqlite_fts5,ui ./cmd/toktop
+make ui                 # build the SPA into internal/web/dist, then compile it in
+# equivalent:
+cd web && pnpm build    # produce internal/web/dist
+go build -tags sqlite_fts5 ./cmd/toktop   # embeds it — no `ui` tag
 ```
 
-A binary built without the UI flag prints `this build has no web UI; rebuild with -tags ui`
-and exits when `toktop ui` is invoked.
+A binary built without the SPA (a plain `go build` on a fresh checkout, before `make ui`)
+still runs — `toktop ui` just prints `this build has no web UI embedded; run make ui to build
+a binary with the UI` to stderr and exits (status 2).
 
 **Start the web UI:**
 
@@ -420,7 +429,7 @@ via config `addr=tcp://host:port`; off loopback it **requires a bearer token** r
 | `GET /v1/summary` | Counts + token totals |
 | `GET /v1/sessions` · `/v1/sessions/{id}` · `/{id}/handoff` | List / one session / Evidence-based Handoff Package (`max_output_bytes`) |
 | `GET /v1/turns` · `/{id}` · `/{id}/timeline` · `/{id}/components` | Turns + per-turn detail |
-| `GET /v1/projects` · `/v1/tools` · `/v1/models` | Project / tool / model rollups |
+| `GET /v1/projects` · `/v1/tools` · `/v1/tool-calls` · `/v1/models` | Project / tool / model rollups (`tool-calls?name=…&status=…` lists the individual calls behind a tool's counts) |
 | `GET /v1/mcps` · `/v1/mcps/unused` · `/v1/skills` · `/v1/skills/unused` | MCP / skill usage |
 | `GET /v1/search` | Full-text search (`q`, `limit`, `kind`, `source`, `subagents`) |
 | `GET /v1/suggestions` · `POST /v1/suggestions:recompute` | Rule findings |

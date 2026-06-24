@@ -12,7 +12,12 @@ export default defineConfig({
     },
   },
   build: {
-    outDir:      "../internal/web/dist",
+    // Build into a subdir of the Go embed root (internal/web/dist), NOT the root
+    // itself: the root holds a committed .gitkeep that makes `//go:embed all:dist`
+    // resolve for a plain `go build` even when the SPA was never built. emptyOutDir
+    // only ever wipes this app/ subdir, so a web build — success, failure, or
+    // skipped — can never delete that placeholder and break the Go build.
+    outDir:      "../internal/web/dist/app",
     emptyOutDir: true,
   },
   server: {

@@ -59,6 +59,21 @@ func ValidateStatuses(statuses []string) error {
 	return nil
 }
 
+// ValidateToolCallStatuses rejects any status outside the tool-call grain
+// (success/failed/rejected/unknown). The tool-call drill-down (`tools calls`,
+// `GET /v1/tool-calls`) filters a call's own status, so a turn-only status like
+// `interrupted` must error here rather than silently match zero rows. Shared by
+// the CLI and HTTP so the check and message can't drift between surfaces.
+func ValidateToolCallStatuses(statuses []string) error {
+	valid := trace.ToolCallStatusValues()
+	for _, s := range statuses {
+		if !slices.Contains(valid, s) {
+			return fmt.Errorf("unknown tool-call status %q (want one of: %s)", s, strings.Join(valid, ", "))
+		}
+	}
+	return nil
+}
+
 // ParseSort splits a sort token like "started_desc" / "turns_asc" into its
 // SortBy column and descending flag. A bare token (no _desc/_asc suffix) sorts
 // ascending. Shared by the CLI and HTTP filter builders so their sort parsing

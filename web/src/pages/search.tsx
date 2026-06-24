@@ -124,6 +124,14 @@ export function SearchPage() {
   const results  = data?.results ?? []
   const searched = q.length > 0
 
+  // `items` lets base-ui's <SelectValue> show the chosen label, not the raw value
+  // ("tool_call" → "Tool call"); labels live here once and feed the rendered items too.
+  const kindItems: Record<string, string> = {
+    all:       t("page.search.filters.kindAll"),
+    turn:      t("page.search.filters.kindTurn"),
+    tool_call: t("page.search.filters.kindToolCall"),
+  }
+
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-semibold">{t("page.search.title")}</h1>
@@ -162,14 +170,12 @@ export function SearchPage() {
         {/* kind select */}
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground">{t("page.search.filters.kind")}</span>
-          <Select value={kind || "all"} onValueChange={(v) => setKind(v === "all" ? "" : (v as string))}>
+          <Select items={kindItems} value={kind || "all"} onValueChange={(v) => setKind(v === "all" ? "" : (v as string))}>
             <SelectTrigger size="sm" className="w-36" aria-label={t("page.search.filters.kind")}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">{t("page.search.filters.kindAll")}</SelectItem>
-              <SelectItem value="turn">{t("page.search.filters.kindTurn")}</SelectItem>
-              <SelectItem value="tool_call">{t("page.search.filters.kindToolCall")}</SelectItem>
+              {Object.entries(kindItems).map(([v, label]) => <SelectItem key={v} value={v}>{label}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>

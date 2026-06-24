@@ -66,6 +66,29 @@ export interface ToolCall {
   duration_ms?: number
 }
 
+// One individual tool-call instance behind a ToolListItem aggregate (the
+// drill-down row from GET /v1/tool-calls). Carries the call's status/error/output
+// plus the session context that answers "where did this happen".
+export interface ToolCallListItem {
+  id:             string
+  session_id:     string
+  turn_id:        string
+  turn_index:     number
+  kind:           string
+  name:           string
+  mcp_server?:    string
+  status:         string
+  error?:         string
+  input?:         string
+  output?:        string
+  output_bytes?:  number
+  duration_ms?:   number
+  started_at?:    string
+  session_title?: string
+  project_name?:  string
+  source_id:      string
+}
+
 export interface Turn {
   id:               string
   provider:         string

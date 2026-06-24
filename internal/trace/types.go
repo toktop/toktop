@@ -47,6 +47,18 @@ func StatusValues() []string {
 	}
 }
 
+// ToolCallStatusValues is the tool-call grain of status — what a single tool call
+// can be (unlike turn/session statuses such as active/interrupted/pending, which
+// never apply to a tool call). Used to validate the tool-call drill-down filter.
+func ToolCallStatusValues() []string {
+	return []string{
+		StatusUnknown,
+		StatusSuccess,
+		StatusFailed,
+		StatusRejected,
+	}
+}
+
 const (
 	ToolKindBuiltin = "builtin"
 	ToolKindMCP     = "mcp"

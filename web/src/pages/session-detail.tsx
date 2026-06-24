@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { useParams, Link }             from "react-router-dom"
+import { useParams, useSearchParams, Link } from "react-router-dom"
 import { useTranslation }              from "react-i18next"
 import { useQueryClient }              from "@tanstack/react-query"
 import { Tabs }                        from "@base-ui/react/tabs"
@@ -26,10 +26,17 @@ function fmtBytes(n?: number): string {
 
 // ── turn row ──────────────────────────────────────────────────────────────────
 
-function TurnRow({ turn }: { turn: Turn }) {
+function TurnRow({ turn, highlight }: { turn: Turn; highlight?: boolean }) {
   const { t }           = useTranslation()
   const [open, setOpen] = useState(false)
   const closeRef        = useRef<HTMLButtonElement>(null)
+  const rowRef          = useRef<HTMLButtonElement>(null)
+
+  // Deep-link target (e.g. from the analytics failed/rejected drill-down): scroll
+  // the turn into view and flag it so the user lands on the exact failing turn.
+  useEffect(() => {
+    if (highlight) rowRef.current?.scrollIntoView({ block: "center" })
+  }, [highlight])
 
   const userText = turn.user_message?.trim()    || ""
   const asstText = turn.assistant_final?.trim() || ""
@@ -69,9 +76,10 @@ function TurnRow({ turn }: { turn: Turn }) {
     <>
       {/* preview row — opens the full turn in a dialog */}
       <button
+        ref={rowRef}
         type="button"
         onClick={() => setOpen(true)}
-        className="block w-full space-y-1.5 rounded-lg border border-border bg-card px-4 py-3 text-start transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        className={`block w-full space-y-1.5 rounded-lg border bg-card px-4 py-3 text-start transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${highlight ? "border-ring ring-2 ring-ring/40" : "border-border"}`}
       >
         {meta}
         {userText && (
@@ -181,14 +189,14 @@ function AgentRunRow({ run }: { run: AgentRun }) {
 
 // ── turns tab ─────────────────────────────────────────────────────────────────
 
-function TurnsTab({ turns }: { turns: Turn[] }) {
+function TurnsTab({ turns, highlightTurnId }: { turns: Turn[]; highlightTurnId?: string }) {
   const { t } = useTranslation()
   if (turns.length === 0) {
     return <p className="text-sm text-muted-foreground">{t("page.session.turns.empty")}</p>
   }
   return (
     <div className="space-y-3">
-      {turns.map((turn) => <TurnRow key={turn.id} turn={turn} />)}
+      {turns.map((turn) => <TurnRow key={turn.id} turn={turn} highlight={turn.id === highlightTurnId} />)}
     </div>
   )
 }
@@ -279,9 +287,11 @@ function HandoffTab({ sessionId }: { sessionId: string }) {
 // ── page ──────────────────────────────────────────────────────────────────────
 
 export function SessionDetailPage() {
-  const { id = "" }    = useParams<{ id: string }>()
-  const { t }          = useTranslation()
-  const qc             = useQueryClient()
+  const { id = "" }      = useParams<{ id: string }>()
+  const [searchParams]   = useSearchParams()
+  const highlightTurnId  = searchParams.get("turn") ?? undefined
+  const { t }            = useTranslation()
+  const qc               = useQueryClient()
   const { data, isLoading, error } = useSession(id)
   const sess           = data?.session
   const [events, setEvents] = useState<LiveEvent[]>([])
@@ -429,7 +439,7 @@ export function SessionDetailPage() {
               </Tabs.List>
 
               <Tabs.Panel value="turns" className="pt-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
-                <TurnsTab turns={turns} />
+                <TurnsTab turns={turns} highlightTurnId={highlightTurnId} />
               </Tabs.Panel>
 
               <Tabs.Panel value="handoff" className="pt-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">

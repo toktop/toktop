@@ -1,9 +1,10 @@
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useMemo, useRef, useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
 import { useTranslation } from "react-i18next"
 import { Pause, Play } from "lucide-react"
 
 import { useStream } from "@/api/useStream"
+import { useSession } from "@/api/queries"
 import type { LiveEvent } from "@/api/types"
 import { StatusBadge } from "@/components/status-badge"
 import { LiveDot } from "@/components/live-dot"
@@ -24,16 +25,37 @@ export function EventsPage() {
   const [typeFilter, setTypeFilter] = useState("")
   const pendingRef = useRef<LiveEvent[]>([])
 
-  // While paused, buffer incoming events (so nothing is lost) and surface a count
-  // instead of mutating the visible feed; resume flushes them in.
+  // A live event's session_id is the internal id on enriched events but the
+  // provider's external id on raw hook events, and the ?session= param may be
+  // either form. Resolve the session (cache-shared with the session page) and match
+  // events against both its internal and external ids on both event fields, so a
+  // session-scoped feed actually catches its events.
+  const { data: sessData } = useSession(sessionFilter)
+  const sessionIds = useMemo(() => {
+    if (!sessionFilter) return [] as string[]
+    const s = sessData?.session
+    return [s?.id, s?.external_id, sessionFilter].filter((v): v is string => !!v)
+  }, [sessData, sessionFilter])
+  const matchesSession = useCallback(
+    (e: LiveEvent) =>
+      sessionIds.length === 0 ||
+      sessionIds.includes(e.session_id ?? "") ||
+      sessionIds.includes(e.external_session_id ?? ""),
+    [sessionIds],
+  )
+
+  // Filter by session at intake (a scoped feed only cares about one session), so
+  // the visible list AND the paused count reflect only this session — not a global
+  // tally. While paused, buffer incoming events (nothing lost); resume flushes them.
   const onEvent = useCallback((e: LiveEvent) => {
+    if (!matchesSession(e)) return
     if (paused) {
       pendingRef.current = [e, ...pendingRef.current].slice(0, CAP)
       setPending((c) => c + 1)
     } else {
       setEvents((prev) => [e, ...prev].slice(0, CAP))
     }
-  }, [paused])
+  }, [paused, matchesSession])
 
   const streamStatus = useStream(onEvent)
 
@@ -48,12 +70,13 @@ export function EventsPage() {
   }, [])
 
   const types = [...new Set(events.map((e) => e.type))].sort()
+  // `items` lets base-ui's <SelectValue> show the chosen label (e.g. "All types"),
+  // not the raw value ("all"); the sentinel + each type label live here once.
+  const typeItems: Record<string, string> = { all: t("page.events.allTypes"), ...Object.fromEntries(types.map((ty) => [ty, ty])) }
   // Sort by event time (desc) so the column reads strictly newest-first; events
   // can arrive slightly out of timestamp order across providers/pipeline stages.
-  const filtered = events.filter((e) =>
-    (!typeFilter || e.type === typeFilter) &&
-    (!sessionFilter || e.session_id === sessionFilter),
-  )
+  // (Session scoping is applied at intake; only the type refinement remains here.)
+  const filtered = events.filter((e) => !typeFilter || e.type === typeFilter)
   const shown = [...filtered].sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""))
 
   return (
@@ -75,13 +98,12 @@ export function EventsPage() {
 
       {/* toolbar */}
       <div className="flex flex-wrap items-center gap-3">
-        <Select value={typeFilter || "all"} onValueChange={(v) => setTypeFilter(v === "all" ? "" : (v as string))}>
+        <Select items={typeItems} value={typeFilter || "all"} onValueChange={(v) => setTypeFilter(v === "all" ? "" : (v as string))}>
           <SelectTrigger size="sm" className="w-48" aria-label={t("page.events.filterType")}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">{t("page.events.allTypes")}</SelectItem>
-            {types.map((ty) => <SelectItem key={ty} value={ty}>{ty}</SelectItem>)}
+            {Object.entries(typeItems).map(([v, label]) => <SelectItem key={v} value={v}>{label}</SelectItem>)}
           </SelectContent>
         </Select>
 

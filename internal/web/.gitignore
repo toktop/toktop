@@ -1,1 +1,5 @@
-/dist/
+# The built SPA is a build artifact (run `make web-dist`); only the .gitkeep
+# placeholder is committed, so `//go:embed all:dist` resolves on a fresh checkout
+# and a plain `go build` produces a (UI-less) binary without needing Node.
+/dist/*
+!/dist/.gitkeep

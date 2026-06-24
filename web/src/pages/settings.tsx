@@ -77,6 +77,9 @@ function EditableField({ fieldKey, setting }: EditableFieldProps) {
   const [savedKey, setSavedKey] = useState<string | undefined>()
 
   const isBoolKey = KEY_META[fieldKey]?.kind === "onoff"
+  // `items` lets base-ui's <SelectValue> show the chosen label ("On"/"Off"), not
+  // the raw value ("on"/"off"); labels live here once and feed the rendered items too.
+  const boolItems: Record<string, string> = { on: t("page.settings.options.on"), off: t("page.settings.options.off") }
 
   const form = useForm({
     defaultValues: { value: setting.value },
@@ -159,6 +162,7 @@ function EditableField({ fieldKey, setting }: EditableFieldProps) {
                 <>
                   {isBoolKey ? (
                     <Select
+                      items={boolItems}
                       value={field.state.value}
                       onValueChange={(v) => field.handleChange(v as string)}
                     >
@@ -172,8 +176,7 @@ function EditableField({ fieldKey, setting }: EditableFieldProps) {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="on">{t("page.settings.options.on")}</SelectItem>
-                        <SelectItem value="off">{t("page.settings.options.off")}</SelectItem>
+                        {Object.entries(boolItems).map(([v, label]) => <SelectItem key={v} value={v}>{label}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   ) : (

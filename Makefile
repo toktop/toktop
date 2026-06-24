@@ -22,29 +22,26 @@ LDFLAGS  = -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DA
 DEV_HOME ?= $(CURDIR)/tmp/toktop-dev
 DEV_ADDR ?= tcp://127.0.0.1:8787
 
-.PHONY: build vet vuln lint check fmt web-dist ui ui-check dev
+.PHONY: build vet vuln lint check fmt web-dist ui dev
 
 build:
 	$(GO) build -tags $(TAGS) -ldflags "$(LDFLAGS)" -o toktop ./cmd/toktop
 
-# Build the web UI into internal/web/dist (Vite outDir), where //go:build ui
-# embeds it. Standalone target — deliberately NOT a prerequisite of
-# `build`/`check`, so the default Go build never needs Node.
+# Build the web UI into internal/web/dist/app (Vite outDir), where embed.go's
+# `//go:embed all:dist` picks it up — no build tag. Standalone target, deliberately
+# NOT a prerequisite of `build`/`check`: the CLI build is independent of the web
+# build and never needs Node. A plain `go build` embeds whatever dist holds — the
+# committed dist/.gitkeep alone (a UI-less binary, which `toktop ui` reports), or
+# the SPA once this has run. Vite owns only dist/app, so this — even if it fails —
+# can't touch .gitkeep and so can't break a subsequent `go build`.
 web-dist:
 	cd web && pnpm install --frozen-lockfile && pnpm build
 
-# Build toktop WITH the embedded web UI. Depends on web-dist so the //go:build ui
-# embed always has assets to read.
+# Build toktop WITH the embedded web UI: build the SPA (web-dist) first, then a
+# plain `go build` embeds it. No `ui` tag — the embed is unconditional; web-dist is
+# what makes the embedded dist the real UI rather than the placeholder.
 ui: web-dist
-	$(GO) build -tags $(TAGS),ui -ldflags "$(LDFLAGS)" -o toktop ./cmd/toktop
-
-# Vet + lint the ui-tagged Go as well. The default `check` only covers the base
-# tag, so //go:build ui files (e.g. internal/web/embed.go) would never be gated.
-# Opt-in (needs web-dist for the //go:embed to resolve); run before a release.
-ui-check: web-dist
-	$(GO) vet -tags $(TAGS),ui ./...
-	golangci-lint run --build-tags $(TAGS),ui --default=none \
-		-E staticcheck -E unused -E perfsprint -E modernize -E usestdlibvars ./...
+	$(GO) build -tags $(TAGS) -ldflags "$(LDFLAGS)" -o toktop ./cmd/toktop
 
 # Web-UI development with hot reload. Runs the daemon API on a loopback TCP port
 # (--no-auth so Vite's dev proxy can reach it token-free) AND the Vite dev server

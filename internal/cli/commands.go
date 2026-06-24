@@ -366,7 +366,21 @@ func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
 	addFilterFlags(fs, &sources, &projects, &sessions, &statuses)
 	subagents := addSubagentsFlag(fs)
-	setFlagUsage(fs, "usage: toktop tools [flags]", "Roll up tool-call usage (call / turn / failed / rejected counts per tool).")
+	setFlagUsageSub(fs, "usage: toktop tools [flags]",
+		[]subcmdDoc{{"calls", "drill into one tool's individual calls (e.g. its failed/rejected instances)"}},
+		"Roll up tool-call usage (call / turn / failed / rejected counts per tool).")
+
+	// Dispatch the `calls` drill-down with the union of this command's and the leaf's
+	// value flags (toolsDispatchValueFlags), so a value flag whose argument is "calls"
+	// — including a `calls`-only flag like `--name calls` — is not mistaken for the subcommand.
+	_, rest, firstPos, isCalls := firstLeafSubcommand(args, toolsDispatchValueFlags(), "calls")
+	if !isCalls && firstPos != "" {
+		cliErrf(stderr, "unknown tools subcommand %q (want calls, or flags to list)", firstPos)
+		return 2
+	}
+	if isCalls {
+		return runToolCalls(ctx, rest, home, stdout, stderr)
+	}
 	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
 		return code
 	}
@@ -399,6 +413,136 @@ func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			strconv.Itoa(item.CallCount), strconv.Itoa(item.TurnCount),
 			strconv.Itoa(item.FailedCount), strconv.Itoa(item.RejectedCount), formatTime(item.LastUsedAt)}
 	})
+}
+
+// toolCallsFlags holds the `tools calls` flag bindings. toolCallsFlagSet registers
+// them; runToolCalls reads them, and toolsDispatchValueFlags derives the dispatch
+// value-flag vocabulary from the same set so a leaf flag value can't be mistaken
+// for the `calls` keyword — never hand-write that set (CLI conventions).
+type toolCallsFlags struct {
+	format    string
+	output    *string
+	columns   *string
+	name      string
+	kind      string
+	mcpServer string
+	since     string
+	until     string
+	limit     int
+	offset    int
+	sources   rootList
+	projects  rootList
+	sessions  rootList
+	statuses  rootList
+	subagents *bool
+}
+
+func toolCallsFlagSet(f *toolCallsFlags) *flag.FlagSet {
+	fs := flag.NewFlagSet("tools calls", flag.ContinueOnError)
+	f.format = "table"
+	fs.StringVar(&f.format, "format", f.format, formatFlagUsage)
+	f.output = addOutputFlag(fs)
+	f.columns = addColumnsFlag(fs)
+	fs.StringVar(&f.name, "name", "", "tool name to drill into (required)")
+	fs.StringVar(&f.kind, "kind", "", "tool kind (builtin or mcp) to disambiguate a name shared across kinds")
+	fs.StringVar(&f.mcpServer, "mcp-server", "", "MCP server name, for an mcp-kind tool")
+	fs.StringVar(&f.since, "since", "", "duration like 7d, 24h, or RFC3339 timestamp")
+	fs.StringVar(&f.until, "until", "", "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
+	f.limit = sqlite.DefaultToolCallLimit
+	addLimitOffsetFlags(fs, &f.limit, &f.offset)
+	addFilterFlags(fs, &f.sources, &f.projects, &f.sessions, &f.statuses)
+	f.subagents = addSubagentsFlag(fs)
+	return fs
+}
+
+// toolsDispatchValueFlags derives runTools' dispatch value-flag set from the real
+// `tools calls` leaf flag set (a superset of the bare `tools` flags), so a value
+// flag whose argument is "calls" is not mistaken for the subcommand.
+func toolsDispatchValueFlags() map[string]bool {
+	return valueFlagSet(toolCallsFlagSet(&toolCallsFlags{}))
+}
+
+// validateToolCallStatuses rejects any --status token outside the tool-call grain:
+// `tools calls --status` filters the call's own status (success/failed/rejected),
+// not turn status, so a turn-only status like `interrupted` must error, not match
+// zero rows silently.
+func validateToolCallStatuses(statuses rootList) error {
+	return query.ValidateToolCallStatuses(splitFlagValues(statuses))
+}
+
+// runToolCalls is `toktop tools calls` — the drill-down listing the individual
+// tool-call instances behind a tool's aggregate counts. --status filters the tool
+// call's OWN status (failed/rejected/success), a different grain from turn status,
+// so it is routed to CallStatuses rather than the shared turn-status filter.
+func runToolCalls(ctx context.Context, args []string, home string, stdout, stderr io.Writer) int {
+	var f toolCallsFlags
+	fs := toolCallsFlagSet(&f)
+	fs.SetOutput(stderr)
+	setFlagUsage(fs, "usage: toktop tools calls --name <tool> [--status failed|rejected] [flags]",
+		"List the individual tool-call instances for one tool — the drill-down behind its failed/rejected counts. --status filters the tool call's own status (failed/rejected/success), not turn status.")
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
+		return code
+	}
+	if err := validateListFormat(f.format); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	if f.name == "" {
+		cliErrf(stderr, "tools calls requires --name")
+		return 2
+	}
+	if code := checkPaging(f.limit, f.offset, stderr); code >= 0 {
+		return code
+	}
+	if err := validateToolCallStatuses(f.statuses); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	filter, err := parseFilterFlags(f.since, f.until, "")
+	if err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	// Pass nil turn-statuses: --status is the tool-call grain, applied via CallStatuses.
+	if err := applyMultiFilter(&filter, f.sources, f.projects, f.sessions, nil, *f.subagents); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	filter.Limit = f.limit
+	filter.Offset = f.offset
+	svc, store, err := openService(ctx, home)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	defer store.Close()
+	calls, err := svc.ListToolCalls(ctx, sqlite.ToolCallFilter{
+		Scope:        filter,
+		Kind:         f.kind,
+		Name:         f.name,
+		MCPServer:    f.mcpServer,
+		CallStatuses: splitFlagValues(f.statuses),
+	})
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	return emitList(*f.output, stdout, stderr, f.format, *f.columns, calls,
+		[]string{"session", "turn", "project", "source", "status", "duration_ms", "started", "detail"},
+		func(item sqlite.ToolCallListItem) []string {
+			return []string{
+				emptyDash(textutil.FirstNonBlank(item.SessionTitle, item.SessionID)),
+				strconv.Itoa(item.TurnIndex + 1),
+				emptyDash(item.ProjectName),
+				item.SourceID,
+				item.Status,
+				strconv.FormatInt(item.DurationMs, 10),
+				formatTime(item.StartedAt),
+				// error is usually empty for tools like Bash; the failure text lives
+				// in output, so show whichever carries the detail (mirrors the web UI).
+				oneLine(textutil.FirstNonBlank(item.Error, item.Output), 80),
+			}
+		})
 }
 
 func runModels(ctx context.Context, args []string, stdout, stderr io.Writer) int {

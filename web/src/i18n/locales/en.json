@@ -167,6 +167,20 @@
       "title":      "Analytics",
       "tabsLabel":  "Analytics tabs",
       "empty":      "No data.",
+      "filters": {
+        "search":    "Search…",
+        "noResults": "No results matching \"{{q}}\"."
+      },
+      "drilldown": {
+        "showing":     "Showing {{shown}} of {{total}} (most recent)",
+        "showingAll":  "Showing all {{total}}",
+        "empty":       "No matching calls.",
+        "turn":        "Turn {{n}}",
+        "input":       "Input",
+        "detail":      "Output / error",
+        "noDetail":    "No error or output was captured for this call.",
+        "openTurn":    "Open this turn"
+      },
       "tabs": {
         "projects": "Projects",
         "tools":    "Tools",

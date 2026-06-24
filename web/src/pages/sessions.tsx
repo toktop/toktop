@@ -57,6 +57,13 @@ function FilterBar({ onSubmit, initial }: FilterBarProps) {
   // Full project objects: the `project` filter matches sessions.project_id, so the
   // combobox value is the id while the label/search key is the (nicer) name.
   const projectList = [...(projects ?? [])].sort((a, b) => a.name.localeCompare(b.name))
+  // `items` lets base-ui's <SelectValue> show the chosen label, not the raw value
+  // ("all" → "All statuses"); labels live here once and feed the rendered items too.
+  const statusItems: Record<string, string> = {
+    all:       t("page.sessions.filters.statusAll"),
+    completed: t("page.sessions.filters.statusCompleted"),
+    unknown:   t("page.sessions.filters.statusUnknown"),
+  }
 
   const form = useForm({
     defaultValues: initial,
@@ -75,6 +82,7 @@ function FilterBar({ onSubmit, initial }: FilterBarProps) {
           <div className="flex flex-col gap-1">
             <span className="text-xs text-muted-foreground">{t("page.sessions.filters.sources")}</span>
             <Select
+              items={{ all: t("page.sessions.filters.sourcesAll"), ...Object.fromEntries(sourceOptions.map((s) => [s, s])) }}
               value={field.state.value || "all"}
               onValueChange={(v) => field.handleChange(v === "all" ? "" : (v as string))}
             >
@@ -126,6 +134,7 @@ function FilterBar({ onSubmit, initial }: FilterBarProps) {
           <div className="flex flex-col gap-1">
             <span className="text-xs text-muted-foreground">{t("page.sessions.filters.status")}</span>
             <Select
+              items={statusItems}
               value={field.state.value || "all"}
               onValueChange={(v) => field.handleChange(v === "all" ? "" : (v as string))}
             >
@@ -133,9 +142,7 @@ function FilterBar({ onSubmit, initial }: FilterBarProps) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">{t("page.sessions.filters.statusAll")}</SelectItem>
-                <SelectItem value="completed">{t("page.sessions.filters.statusCompleted")}</SelectItem>
-                <SelectItem value="unknown">{t("page.sessions.filters.statusUnknown")}</SelectItem>
+                {Object.entries(statusItems).map(([v, label]) => <SelectItem key={v} value={v}>{label}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>

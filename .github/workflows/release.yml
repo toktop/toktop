@@ -1,7 +1,10 @@
 # Cuts a GitHub Release with prebuilt binaries when a v* tag is pushed.
 #
-# CGO + the sqlite_fts5 tag are mandatory, so a C compiler must be present for
-# every target. linux/windows/darwin-arm64 build natively on their own runner;
+# Binaries embed the web UI. The SPA is built ONCE (the `web` job → pnpm build,
+# platform-agnostic assets) and shared to every platform build via an artifact, so
+# the per-platform builds need no Node — a plain `go build` embeds the downloaded
+# dist (embed.go carries no build tag). CGO + the sqlite_fts5 tag are mandatory, so a
+# C compiler must be present for every target. linux/windows/darwin-arm64 build natively on their own runner;
 # darwin/amd64 cross-compiles on the Apple-Silicon macos runner via the macOS
 # toolchain's x86_64 slice (clang -arch x86_64), since GitHub retired the free
 # Intel macos-13 runner and one macOS host targets both arches.
@@ -34,8 +37,30 @@ jobs:
             exit 1
           fi
 
-  build:
+  # Build the SPA once (platform-agnostic) and hand it to every platform build via
+  # an artifact, so the per-platform builds never touch Node.
+  web:
     needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: make web-dist
+        run: make web-dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: internal/web/dist
+
+  build:
+    needs: web
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +77,13 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+
+      # The SPA built by the `web` job → internal/web/dist, where `//go:embed all:dist`
+      # picks it up. No Node on this runner.
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: internal/web/dist
 
       # Windows ships no C compiler by default; install mingw-w64 gcc for cgo.
       # (Added to GITHUB_PATH, so it's visible to the bash build step below.)
@@ -72,6 +104,8 @@ jobs:
         run: |
           name="toktop_${{ matrix.goos }}_${{ matrix.goarch }}"
           ldflags="-X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # The SPA is already in internal/web/dist (downloaded from the web job), so a
+          # plain `go build` embeds it — no tag, no Node here.
           # darwin/amd64 has no free native runner since macos-13 retired, so it
           # cross-compiles on the arm64 runner: GOARCH picks the target and CC
           # points cgo at the x86_64 slice of the macOS toolchain.

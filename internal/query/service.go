@@ -114,6 +114,10 @@ func (s *Service) ListTools(ctx context.Context, f sqlite.Filter) ([]sqlite.Tool
 	return s.store.ListTools(ctx, f)
 }
 
+func (s *Service) ListToolCalls(ctx context.Context, tcf sqlite.ToolCallFilter) ([]sqlite.ToolCallListItem, error) {
+	return s.store.ListToolCalls(ctx, tcf)
+}
+
 func (s *Service) ListModels(ctx context.Context, f sqlite.Filter) ([]sqlite.ModelListItem, error) {
 	return s.store.ListModels(ctx, f)
 }

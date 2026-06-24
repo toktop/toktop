@@ -1,4 +1,10 @@
-# CI mirrors the local pre-release gate: `make check` = vet + lint + vuln + build.
+# CI mirrors the local pre-release gates. Two parallel jobs:
+#   • check — `make check` = vet + lint + vuln + build (Go-only). The web UI embed
+#             (embed.go) is plain Go — no build tag — so this build/vet/lint already
+#             covers it; the committed dist/.gitkeep keeps `//go:embed all:dist`
+#             resolvable without Node.
+#   • web   — `make web-dist` = build the SPA (tsc + vite). Split out because it
+#             needs Node/pnpm, which the Go path deliberately avoids.
 #
 # CGO and the `sqlite_fts5` build tag are mandatory — the SQLite driver is
 # cgo-based and toktop refuses to run without FTS5. GitHub's ubuntu runners ship
@@ -44,3 +50,26 @@ jobs:
 
       - name: make check
         run: make check
+
+  web:
+    name: web build (tsc · vite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # pnpm before setup-node so setup-node's `cache: pnpm` can find it.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      # `make web-dist` runs pnpm install --frozen-lockfile + pnpm build (tsc +
+      # vite), proving the SPA compiles. No Go step — embed.go carries no build tag
+      # and is covered by the `check` job.
+      - name: make web-dist
+        run: make web-dist

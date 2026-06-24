@@ -15,6 +15,7 @@ import type {
   SkillListItem,
   SourceRoot,
   Summary,
+  ToolCallListItem,
   ToolListItem,
 } from "./types"
 
@@ -81,6 +82,29 @@ export const useTools = (f?: Filter) =>
   useQuery({
     queryKey: ["tools", f],
     queryFn:  () => apiGet<ToolListItem[]>("/tools", f),
+  })
+
+interface ToolCallParams {
+  name:        string
+  kind?:       string
+  mcp_server?: string
+  status?:     string
+  limit?:      number
+}
+
+// useToolCalls drills into one tool's individual calls (GET /v1/tool-calls).
+// Gated by `enabled` so it only fires while a drill-down is open.
+export const useToolCalls = (p: ToolCallParams, enabled: boolean) =>
+  useQuery({
+    queryKey: ["tool-calls", p],
+    queryFn:  () => apiGet<ToolCallListItem[]>("/tool-calls", {
+      name:       p.name,
+      kind:       p.kind       || undefined,
+      mcp_server: p.mcp_server || undefined,
+      status:     p.status     || undefined,
+      limit:      p.limit,
+    }),
+    enabled,
   })
 
 export const useModels = (f?: Filter) =>
