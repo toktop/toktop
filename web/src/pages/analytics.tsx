@@ -101,9 +101,9 @@ function ProjectsTab() {
     {
       header: t("page.analytics.projects.name"), width: "w-[30%]",
       cell: (p) => (
-        <span className="block truncate" title={p.path ?? p.name}>
+        <span>
           <span className="font-medium">{p.name}</span>
-          {p.path && <span className="ml-2 font-mono text-xs text-muted-foreground">{p.path}</span>}
+          {p.path && <span className="ml-2 font-mono text-xs text-muted-foreground">{" "}{p.path}</span>}
         </span>
       ),
     },
@@ -147,7 +147,7 @@ function ToolsTab() {
   const columns: Column<ToolListItem>[] = [
     {
       header: t("page.analytics.tools.name"), width: "w-[18%]",
-      cell: (tc) => <span className="block truncate font-mono font-medium" title={tc.name}>{tc.name}</span>,
+      cell: (tc) => <span className="font-mono font-medium">{tc.name}</span>,
     },
     {
       header: t("page.analytics.tools.kind"), width: "w-[11%]",
@@ -155,7 +155,7 @@ function ToolsTab() {
     },
     {
       header: t("page.analytics.tools.mcpServer"), width: "w-[19%]",
-      cell: (tc) => <span className="block truncate text-xs text-muted-foreground" title={tc.mcp_server ?? ""}>{tc.mcp_server ?? "—"}</span>,
+      cell: (tc) => <span className="text-xs text-muted-foreground">{tc.mcp_server ?? "—"}</span>,
     },
     { header: t("page.analytics.tools.calls"), width: "w-[10%]", right: true, cell: (tc) => n(tc.call_count) },
     { header: t("page.analytics.tools.turns"), width: "w-[10%]", right: true, cell: (tc) => n(tc.turn_count) },
@@ -315,7 +315,7 @@ function ModelsTab() {
   const columns: Column<ModelListItem>[] = [
     {
       header: t("page.analytics.models.model"), width: "w-[16%]",
-      cell: (m) => <span className="block truncate font-mono font-medium" title={m.model}>{m.model || "—"}</span>,
+      cell: (m) => <span className="font-mono font-medium">{m.model || "—"}</span>,
     },
     {
       header: t("page.analytics.models.provider"), width: "w-[10%]",
@@ -371,7 +371,7 @@ function MCPsTab() {
   const columns: Column<MCPListItem>[] = [
     {
       header: t("page.analytics.mcps.server"), width: "w-[18%]",
-      cell: (m) => <span className="block truncate font-mono font-medium" title={m.server}>{m.server || "—"}</span>,
+      cell: (m) => <span className="font-mono font-medium">{m.server || "—"}</span>,
     },
     {
       header: t("page.analytics.mcps.source"), width: "w-[12%]",
@@ -437,9 +437,9 @@ function SkillsTab() {
     {
       header: t("page.analytics.skills.name"), width: "w-[18%]",
       cell: (s) => (
-        <span className="block truncate" title={s.name}>
+        <span>
           <span className="font-mono font-medium">{s.name}</span>
-          {s.version && <span className="ml-1 text-[10px] text-muted-foreground">v{s.version}</span>}
+          {s.version && <span className="ml-1 text-[10px] text-muted-foreground">{" "}v{s.version}</span>}
         </span>
       ),
     },
@@ -461,7 +461,7 @@ function SkillsTab() {
     },
     {
       header: t("page.analytics.skills.description"), width: "w-[24%]",
-      cell: (s) => <span className="block truncate text-xs text-muted-foreground" title={s.description ?? ""}>{s.description || "—"}</span>,
+      cell: (s) => <span className="text-xs text-muted-foreground">{s.description || "—"}</span>,
     },
     { header: t("page.analytics.skills.usedCount"), width: "w-[12%]", right: true, cell: (s) => n(s.inferred_used_count) },
     {

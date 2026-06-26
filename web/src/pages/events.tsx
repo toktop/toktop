@@ -8,6 +8,9 @@ import { useSession } from "@/api/queries"
 import type { LiveEvent } from "@/api/types"
 import { StatusBadge } from "@/components/status-badge"
 import { LiveDot } from "@/components/live-dot"
+import { VirtualTable } from "@/components/virtual-table"
+import type { Column } from "@/components/virtual-table"
+import { useOverflowTooltip } from "@/components/overflow-tooltip"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { clockTime } from "@/lib/format"
 
@@ -24,6 +27,9 @@ export function EventsPage() {
   const [pendingCount, setPending]  = useState(0)
   const [typeFilter, setTypeFilter] = useState("")
   const pendingRef = useRef<LiveEvent[]>([])
+  // The detail cell's file clips inside its own flex layout (the td doesn't
+  // overflow), so it reports overflow itself; every other column rides the td.
+  const tip = useOverflowTooltip()
 
   // A live event's session_id is the internal id on enriched events but the
   // provider's external id on raw hook events, and the ?session= param may be
@@ -79,6 +85,50 @@ export function EventsPage() {
   const filtered = events.filter((e) => !typeFilter || e.type === typeFilter)
   const shown = [...filtered].sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""))
 
+  // Single-line columns for the virtualized feed: every row is one fixed-height
+  // line (cells truncate), matching the analytics tables.
+  const columns: Column<LiveEvent>[] = useMemo(() => [
+    {
+      header: t("page.events.col.time"),
+      width:  "w-24",
+      cell:   (e) => <span className="font-mono text-xs text-muted-foreground" title={e.at}>{clockTime(e.at)}</span>,
+    },
+    {
+      header: t("page.events.col.type"),
+      width:  "w-44",
+      cell:   (e) => <span className="font-mono text-xs">{e.type}</span>,
+    },
+    {
+      header: t("page.events.col.provider"),
+      width:  "w-28",
+      cell:   (e) => <span className="text-xs text-muted-foreground">{e.provider || "—"}</span>,
+    },
+    {
+      header: t("page.events.col.session"),
+      width:  "w-56",
+      cell:   (e) =>
+        e.session_id ? (
+          <Link
+            to={`/sessions/${e.session_id}`}
+            className="font-mono text-xs text-primary hover:underline"
+          >
+            {e.project_name || e.session_id}
+          </Link>
+        ) : <span className="text-xs text-muted-foreground">—</span>,
+    },
+    {
+      header: t("page.events.col.detail"),
+      width:  "",
+      cell:   (e) => (
+        <span className="flex min-w-0 items-center gap-2 text-xs">
+          {e.status && <StatusBadge status={e.status} />}
+          {e.reason && <span className="shrink-0 text-muted-foreground">{e.reason}</span>}
+          {e.file && <span className="min-w-0 truncate font-mono text-muted-foreground" {...tip}>{e.file}</span>}
+        </span>
+      ),
+    },
+  ], [t, tip])
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -126,48 +176,12 @@ export function EventsPage() {
           {t("page.events.empty")}
         </p>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-border">
-          <table className="w-full text-sm">
-            <thead className="border-b border-border bg-muted/50 text-xs text-muted-foreground">
-              <tr>
-                <th scope="col" className="px-3 py-2 text-left font-medium">{t("page.events.col.time")}</th>
-                <th scope="col" className="px-3 py-2 text-left font-medium">{t("page.events.col.type")}</th>
-                <th scope="col" className="px-3 py-2 text-left font-medium">{t("page.events.col.provider")}</th>
-                <th scope="col" className="px-3 py-2 text-left font-medium">{t("page.events.col.session")}</th>
-                <th scope="col" className="px-3 py-2 text-left font-medium">{t("page.events.col.detail")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((e, i) => (
-                <tr key={e.event_id ?? i} className="border-b border-border align-top last:border-0">
-                  <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-muted-foreground" title={e.at}>{clockTime(e.at)}</td>
-                  <td className="px-3 py-2"><span className="font-mono text-xs">{e.type}</span></td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground">{e.provider || "—"}</td>
-                  <td className="px-3 py-2 text-xs">
-                    {e.session_id ? (
-                      <Link
-                        to={`/sessions/${e.session_id}`}
-                        className="font-mono text-primary hover:underline"
-                        title={e.project_name || e.session_id}
-                      >
-                        {(e.project_name || e.session_id).slice(0, 32)}
-                      </Link>
-                    ) : "—"}
-                  </td>
-                  <td className="px-3 py-2 text-xs">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {e.status && <StatusBadge status={e.status} />}
-                      {e.reason && <span className="text-muted-foreground">{e.reason}</span>}
-                      {e.file && (
-                        <span className="max-w-[18rem] truncate font-mono text-muted-foreground" title={e.file}>{e.file}</span>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <VirtualTable
+          columns={columns}
+          rows={shown}
+          rowKey={(e, i) => e.event_id ?? String(i)}
+          minWidth="min-w-[44rem]"
+        />
       )}
     </div>
   )

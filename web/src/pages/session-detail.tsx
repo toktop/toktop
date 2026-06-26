@@ -13,6 +13,7 @@ import type { AgentRun, LiveEvent, Turn } from "@/api/types"
 import { StatusBadge }                 from "@/components/status-badge"
 import { LiveDot }                     from "@/components/live-dot"
 import { RecentEvents }                from "@/components/recent-events"
+import { useOverflowTooltip }          from "@/components/overflow-tooltip"
 import { reltime, fmtTokens, fmtMs }   from "@/lib/format"
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -160,6 +161,7 @@ function TurnRow({ turn, highlight }: { turn: Turn; highlight?: boolean }) {
 
 function AgentRunRow({ run }: { run: AgentRun }) {
   const { t } = useTranslation()
+  const tip   = useOverflowTooltip()
 
   return (
     <div className="rounded-lg border border-border bg-card px-4 py-3 space-y-1.5">
@@ -179,7 +181,7 @@ function AgentRunRow({ run }: { run: AgentRun }) {
         <p className="text-sm text-foreground/80 line-clamp-2">{run.description}</p>
       )}
       {/* source provenance */}
-      <p className="text-[11px] font-mono text-muted-foreground truncate">
+      <p className="text-[11px] font-mono text-muted-foreground truncate" {...tip}>
         {t("page.session.handoff.source")}: {run.source.provider}/{run.source.session_id}
         {run.source.turn_id && `/${run.source.turn_id}`}
       </p>

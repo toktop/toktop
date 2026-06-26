@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next"
 
 import type { LiveEvent } from "@/api/types"
 import { StatusBadge } from "@/components/status-badge"
+import { useOverflowTooltip } from "@/components/overflow-tooltip"
 import { clockTime } from "@/lib/format"
 
 // RecentEvents is a compact, capped preview of the live event feed, shared by the
@@ -20,6 +21,7 @@ export function RecentEvents({
   showSession?: boolean
 }) {
   const { t } = useTranslation()
+  const tip   = useOverflowTooltip()
   return (
     <section className="space-y-2">
       <div className="flex items-center justify-between gap-2">
@@ -42,12 +44,12 @@ export function RecentEvents({
                 <Link
                   to={`/sessions/${e.session_id}`}
                   className="min-w-0 truncate text-muted-foreground hover:underline"
-                  title={e.project_name || e.session_id}
+                  {...tip}
                 >
                   {e.project_name || e.session_id}
                 </Link>
               )}
-              {e.reason && <span className="truncate text-muted-foreground">{e.reason}</span>}
+              {e.reason && <span className="min-w-0 truncate text-muted-foreground" {...tip}>{e.reason}</span>}
               <span className="ml-auto shrink-0 font-mono text-muted-foreground">{clockTime(e.at)}</span>
             </li>
           ))}

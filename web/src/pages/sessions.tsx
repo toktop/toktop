@@ -9,6 +9,7 @@ import { ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react"
 import { useSessions, useSources, useProjects } from "@/api/queries"
 import type { Session, ProjectListItem } from "@/api/types"
 import { StatusBadge } from "@/components/status-badge"
+import { useOverflowTooltip } from "@/components/overflow-tooltip"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from "@/components/ui/combobox"
 import { reltime, fmtTokens } from "@/lib/format"
@@ -376,6 +377,7 @@ function SessionRow({
   onClick,
 }: { session: Session; showKind: boolean; onClick: () => void }) {
   const { t } = useTranslation()
+  const tip   = useOverflowTooltip()
   const title = s.title ?? s.project_name ?? s.id
 
   return (
@@ -392,7 +394,7 @@ function SessionRow({
     >
       {/* title + project */}
       <td className="max-w-[240px] px-4 py-2">
-        <div className="truncate font-medium" title={title}>
+        <div className="truncate font-medium" {...tip}>
           {title}
           {s.is_subagent && (
             <span className="ml-1 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
@@ -401,7 +403,7 @@ function SessionRow({
           )}
         </div>
         {s.project_name && s.project_name !== title && (
-          <div className="truncate text-xs text-muted-foreground" title={s.project_name}>
+          <div className="truncate text-xs text-muted-foreground" {...tip}>
             {s.project_name}
           </div>
         )}

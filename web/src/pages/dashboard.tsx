@@ -9,6 +9,7 @@ import type { LiveEvent, LiveSessionItem, Summary } from "@/api/types"
 import { StatusBadge } from "@/components/status-badge"
 import { LiveDot } from "@/components/live-dot"
 import { RecentEvents } from "@/components/recent-events"
+import { useOverflowTooltip } from "@/components/overflow-tooltip"
 import { reltime } from "@/lib/format"
 
 // The dashboard is a live overview, not a session browser: it highlights the most
@@ -64,6 +65,7 @@ function LiveIndicator({ status, lastAt }: { status: StreamStatus; lastAt?: stri
 
 function SessionCard({ item }: { item: LiveSessionItem }) {
   const { t } = useTranslation()
+  const tip   = useOverflowTooltip()
   const label = cardLabel(item)
   return (
     <Link
@@ -77,9 +79,9 @@ function SessionCard({ item }: { item: LiveSessionItem }) {
         <StatusBadge status={item.current_status} />
       </div>
       <div className="min-w-0">
-        <p className="truncate text-sm font-medium" title={label}>{label}</p>
+        <p className="truncate text-sm font-medium" {...tip}>{label}</p>
         {item.project_name && item.project_name !== label && (
-          <p className="truncate text-xs text-muted-foreground" title={item.project_name}>{item.project_name}</p>
+          <p className="truncate text-xs text-muted-foreground" {...tip}>{item.project_name}</p>
         )}
       </div>
       <div className="mt-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">

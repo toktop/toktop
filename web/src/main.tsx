@@ -7,6 +7,7 @@ import "@/i18n"
 import "./index.css"
 import App from "./App.tsx"
 import { ThemeProvider } from "@/components/theme-provider.tsx"
+import { OverflowTooltipProvider } from "@/components/overflow-tooltip.tsx"
 
 const queryClient = new QueryClient()
 
@@ -15,7 +16,9 @@ createRoot(document.getElementById("root")!).render(
     <BrowserRouter>
       <QueryClientProvider client={queryClient}>
         <ThemeProvider>
-          <App />
+          <OverflowTooltipProvider>
+            <App />
+          </OverflowTooltipProvider>
         </ThemeProvider>
       </QueryClientProvider>
     </BrowserRouter>
