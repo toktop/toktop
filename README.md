@@ -379,7 +379,7 @@ a binary with the UI` to stderr and exits (status 2).
 ```bash
 toktop ui                   # bind on a random loopback port, open browser automatically
 toktop ui --no-browser      # print the URL instead of opening a browser
-toktop ui --addr 127.0.0.1:8080   # bind on a fixed port
+toktop ui --listen 127.0.0.1:8080   # bind on a fixed port
 ```
 
 `toktop ui` starts an ephemeral **loopback reverse-proxy** that:

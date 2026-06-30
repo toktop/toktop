@@ -3,13 +3,13 @@ import { useParams, useSearchParams, Link } from "react-router-dom"
 import { useTranslation }              from "react-i18next"
 import { useQueryClient }              from "@tanstack/react-query"
 import { Tabs }                        from "@base-ui/react/tabs"
-import { X }                           from "lucide-react"
 import ReactMarkdown                   from "react-markdown"
 import remarkGfm                       from "remark-gfm"
 
 import { useSession, useHandoff }      from "@/api/queries"
 import { useStream }                   from "@/api/useStream"
 import type { AgentRun, LiveEvent, Turn } from "@/api/types"
+import { Dialog, DialogContent }       from "@/components/ui/dialog"
 import { StatusBadge }                 from "@/components/status-badge"
 import { LiveDot }                     from "@/components/live-dot"
 import { RecentEvents }                from "@/components/recent-events"
@@ -30,7 +30,6 @@ function fmtBytes(n?: number): string {
 function TurnRow({ turn, highlight }: { turn: Turn; highlight?: boolean }) {
   const { t }           = useTranslation()
   const [open, setOpen] = useState(false)
-  const closeRef        = useRef<HTMLButtonElement>(null)
   const rowRef          = useRef<HTMLButtonElement>(null)
 
   // Deep-link target (e.g. from the analytics failed/rejected drill-down): scroll
@@ -44,21 +43,6 @@ function TurnRow({ turn, highlight }: { turn: Turn; highlight?: boolean }) {
   const tokenStr = fmtTokens(turn.tokens)
   const hasTools = turn.tool_call_count > 0
   const label    = t("page.session.turns.index", { n: turn.index + 1 })
-
-  // Dialog a11y: Esc closes, body scroll locks, focus moves to the close button
-  // (and returns to the trigger on close).
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false) }
-    document.addEventListener("keydown", onKey)
-    const prevOverflow = document.body.style.overflow
-    document.body.style.overflow = "hidden"
-    closeRef.current?.focus()
-    return () => {
-      document.removeEventListener("keydown", onKey)
-      document.body.style.overflow = prevOverflow
-    }
-  }, [open])
 
   const meta = (
     <div className="flex flex-wrap items-center gap-2">
@@ -97,62 +81,49 @@ function TurnRow({ turn, highlight }: { turn: Turn; highlight?: boolean }) {
         )}
       </button>
 
-      {/* full-turn dialog */}
-      {open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={label}>
-          <div className="absolute inset-0 bg-black/50" onClick={() => setOpen(false)} aria-hidden="true" />
-          <div className="relative z-10 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-xl">
-            <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
-              {meta}
-              <button
-                ref={closeRef}
-                type="button"
-                onClick={() => setOpen(false)}
-                aria-label={t("page.session.turns.close")}
-                className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-              >
-                <X className="size-5" aria-hidden="true" />
-              </button>
-            </div>
-
-            <div className="space-y-5 overflow-auto px-5 py-4">
-              {userText && (
-                <div className="space-y-1">
-                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("page.session.turns.user")}</div>
-                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{userText}</p>
+      {/* full-turn dialog — shared Dialog: base-ui owns backdrop, Esc, scroll-lock,
+          focus trap AND focus-restore to the opener row (the hand-rolled version
+          never restored focus). */}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent aria-label={label} className="max-w-2xl gap-3">
+          <div className="pe-8">{meta}</div>
+          <div className="space-y-5 overflow-auto">
+            {userText && (
+              <div className="space-y-1">
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("page.session.turns.user")}</div>
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{userText}</p>
+              </div>
+            )}
+            {asstText && (
+              <div className="space-y-1">
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("page.session.turns.assistant")}</div>
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">{asstText}</p>
+              </div>
+            )}
+            {hasTools && turn.tool_calls && turn.tool_calls.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {t("page.session.turns.tools", { n: turn.tool_call_count })}
                 </div>
-              )}
-              {asstText && (
-                <div className="space-y-1">
-                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("page.session.turns.assistant")}</div>
-                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">{asstText}</p>
-                </div>
-              )}
-              {hasTools && turn.tool_calls && turn.tool_calls.length > 0 && (
-                <div className="space-y-2">
-                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    {t("page.session.turns.tools", { n: turn.tool_call_count })}
-                  </div>
-                  <div className="divide-y divide-border rounded-md border border-border bg-muted/30">
-                    {turn.tool_calls.map((tc) => (
-                      <div key={tc.id} className="px-3 py-2 text-xs">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-mono font-medium text-foreground">{tc.name}</span>
-                          <StatusBadge status={tc.status} />
-                          {tc.duration_ms != null && <span className="text-muted-foreground">{fmtMs(tc.duration_ms)}</span>}
-                        </div>
-                        {tc.input && (
-                          <pre className="mt-1 max-h-48 overflow-auto rounded bg-background p-2 text-[11px] text-muted-foreground whitespace-pre-wrap break-all">{tc.input}</pre>
-                        )}
+                <div className="divide-y divide-border rounded-md border border-border bg-muted/30">
+                  {turn.tool_calls.map((tc) => (
+                    <div key={tc.id} className="px-3 py-2 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono font-medium text-foreground">{tc.name}</span>
+                        <StatusBadge status={tc.status} />
+                        {tc.duration_ms != null && <span className="text-muted-foreground">{fmtMs(tc.duration_ms)}</span>}
                       </div>
-                    ))}
-                  </div>
+                      {tc.input && (
+                        <pre className="mt-1 max-h-48 overflow-auto rounded bg-background p-2 text-[11px] text-muted-foreground whitespace-pre-wrap break-all">{tc.input}</pre>
+                      )}
+                    </div>
+                  ))}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

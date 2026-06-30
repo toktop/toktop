@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { apiGet, apiPost } from "./client"
 import type {
+  ActivityBucket,
   ConfigResponse,
   DaemonStatus,
   HandoffPackage,
@@ -72,6 +73,14 @@ export const useSearch = ({ q, kind, subagents }: SearchParams) =>
 
 // ── analytics list hooks ──────────────────────────────────────────────────────
 
+// Time-bucketed activity series. `bucket` is a duration (e.g. "5m", "1h"); the
+// rest of the filter (since/until/sources/…) rides the shared Filter shape.
+export const useActivity = (f?: Filter) =>
+  useQuery({
+    queryKey: ["activity", f],
+    queryFn:  () => apiGet<ActivityBucket[]>("/activity", f),
+  })
+
 export const useProjects = (f?: Filter) =>
   useQuery({
     queryKey: ["projects", f],
@@ -89,6 +98,10 @@ interface ToolCallParams {
   kind?:       string
   mcp_server?: string
   status?:     string
+  // since/until scope the drill-down to the same time window as the aggregate it
+  // was opened from, so the listed calls match the windowed failed/rejected count.
+  since?:      string
+  until?:      string
   limit?:      number
 }
 
@@ -102,6 +115,8 @@ export const useToolCalls = (p: ToolCallParams, enabled: boolean) =>
       kind:       p.kind       || undefined,
       mcp_server: p.mcp_server || undefined,
       status:     p.status     || undefined,
+      since:      p.since      || undefined,
+      until:      p.until      || undefined,
       limit:      p.limit,
     }),
     enabled,

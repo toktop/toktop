@@ -236,6 +236,29 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, projects)
 }
 
+func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
+	filter, err := parseFilter(r)
+	if err != nil {
+		writeQueryError(w, err, "invalid_filter")
+		return
+	}
+	bucketSecs := 3600
+	if raw := r.URL.Query().Get("bucket"); raw != "" {
+		d, err := query.ParseBucketWidth(raw, time.Now().UTC())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_bucket", err.Error())
+			return
+		}
+		bucketSecs = int(d.Seconds())
+	}
+	series, err := s.service.ActivitySeries(r.Context(), filter, bucketSecs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "activity_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, series)
+}
+
 func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 	filter, err := parseFilter(r)
 	if err != nil {

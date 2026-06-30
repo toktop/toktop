@@ -37,6 +37,7 @@ export function EventsPage() {
   // events against both its internal and external ids on both event fields, so a
   // session-scoped feed actually catches its events.
   const { data: sessData } = useSession(sessionFilter)
+  const resolved = !sessionFilter || sessData !== undefined
   const sessionIds = useMemo(() => {
     if (!sessionFilter) return [] as string[]
     const s = sessData?.session
@@ -50,18 +51,23 @@ export function EventsPage() {
     [sessionIds],
   )
 
-  // Filter by session at intake (a scoped feed only cares about one session), so
-  // the visible list AND the paused count reflect only this session — not a global
-  // tally. While paused, buffer incoming events (nothing lost); resume flushes them.
+  // Filter by session at intake once it resolves (a scoped feed only cares about
+  // one session), so the buffer stays scoped and the 300-cap isn't diluted by other
+  // sessions. Before it resolves the id mapping is unknown (an event may carry only
+  // the external id while ?session= is the internal id), so keep events
+  // optimistically — the render-time matchesSession filter re-evaluates the buffer
+  // once it resolves, so the earliest events aren't lost. While paused, buffer
+  // incoming events (nothing lost up to CAP); the count tracks the real buffer
+  // length, not an unbounded tally; resume flushes them.
   const onEvent = useCallback((e: LiveEvent) => {
-    if (!matchesSession(e)) return
+    if (resolved && !matchesSession(e)) return
     if (paused) {
       pendingRef.current = [e, ...pendingRef.current].slice(0, CAP)
-      setPending((c) => c + 1)
+      setPending(pendingRef.current.length)
     } else {
       setEvents((prev) => [e, ...prev].slice(0, CAP))
     }
-  }, [paused, matchesSession])
+  }, [paused, resolved, matchesSession])
 
   const streamStatus = useStream(onEvent)
 
@@ -75,14 +81,23 @@ export function EventsPage() {
     setPaused(false)
   }, [])
 
-  const types = [...new Set(events.map((e) => e.type))].sort()
+  // Scope the buffer to the session at render too, so events kept optimistically
+  // before the session resolved are re-evaluated once the id mapping is known.
+  const sessionEvents = sessionFilter ? events.filter(matchesSession) : events
+  const types = [...new Set(sessionEvents.map((e) => e.type))].sort()
   // `items` lets base-ui's <SelectValue> show the chosen label (e.g. "All types"),
-  // not the raw value ("all"); the sentinel + each type label live here once.
-  const typeItems: Record<string, string> = { all: t("page.events.allTypes"), ...Object.fromEntries(types.map((ty) => [ty, ty])) }
+  // not the raw value ("all"); the sentinel + each type label live here once. Keep
+  // the active filter selectable even after its last event scrolls out of the
+  // capped buffer, so the Select can't orphan to a blank trigger + empty feed.
+  const typeItems: Record<string, string> = {
+    all: t("page.events.allTypes"),
+    ...Object.fromEntries(types.map((ty) => [ty, ty])),
+    ...(typeFilter && !types.includes(typeFilter) ? { [typeFilter]: typeFilter } : {}),
+  }
   // Sort by event time (desc) so the column reads strictly newest-first; events
   // can arrive slightly out of timestamp order across providers/pipeline stages.
   // (Session scoping is applied at intake; only the type refinement remains here.)
-  const filtered = events.filter((e) => !typeFilter || e.type === typeFilter)
+  const filtered = sessionEvents.filter((e) => !typeFilter || e.type === typeFilter)
   const shown = [...filtered].sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""))
 
   // Single-line columns for the virtualized feed: every row is one fixed-height

@@ -18,8 +18,7 @@
     "toggle":     "Toggle theme"
   },
   "lang": {
-    "switcher":   "Language",
-    "en":         "English"
+    "switcher":   "Language"
   },
   "page": {
     "dashboard": {
@@ -38,6 +37,14 @@
       "card": {
         "turns":        "turns",
         "tools":        "tools"
+      },
+      "charts": {
+        "label":        "Insights",
+        "topProjects":  "Most active projects",
+        "topTools":     "Most used tools",
+        "byTurns":      "turns",
+        "byCalls":      "calls",
+        "empty":        "Not enough data yet."
       },
       "viewAllSessions": "View all"
     },
@@ -167,6 +174,25 @@
       "title":      "Analytics",
       "tabsLabel":  "Analytics tabs",
       "empty":      "No data.",
+      "insights": {
+        "trend":       "Activity over time",
+        "topProjects": "Most active projects",
+        "topTools":    "Most used tools",
+        "empty":       "Not enough activity in this window.",
+        "metric": {
+          "turns":    "Turns",
+          "tools":    "Tool calls",
+          "tokens":   "Tokens",
+          "sessions": "Sessions"
+        },
+        "range": {
+          "all": "All",
+          "30m": "30m",
+          "1h":  "1h",
+          "1d":  "1d",
+          "1w":  "1w"
+        }
+      },
       "filters": {
         "search":    "Search…",
         "noResults": "No results matching \"{{q}}\"."

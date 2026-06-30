@@ -110,6 +110,10 @@ func (s *Service) ListProjects(ctx context.Context, f sqlite.Filter) ([]sqlite.P
 	return s.store.ListProjects(ctx, f)
 }
 
+func (s *Service) ActivitySeries(ctx context.Context, f sqlite.Filter, bucketSecs int) ([]sqlite.ActivityBucket, error) {
+	return s.store.ActivitySeries(ctx, f, bucketSecs)
+}
+
 func (s *Service) ListTools(ctx context.Context, f sqlite.Filter) ([]sqlite.ToolListItem, error) {
 	return s.store.ListTools(ctx, f)
 }

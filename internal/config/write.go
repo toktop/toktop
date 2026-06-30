@@ -83,14 +83,21 @@ func SetKey(path, key, value string) error {
 			m["addr"] = a
 		}
 	case key == "interval":
-		d, err := time.ParseDuration(strings.TrimSpace(value))
+		// Empty reverts to the built-in default, so treat it as an unset
+		// (mirrors timezone/addr); a non-empty value must be a positive duration.
+		v := strings.TrimSpace(value)
+		if v == "" {
+			delete(m, "interval")
+			break
+		}
+		d, err := time.ParseDuration(v)
 		if err != nil {
 			return fmt.Errorf("config: interval %q: %w", value, err)
 		}
 		if d <= 0 {
 			return fmt.Errorf("config: interval must be > 0, got %q", value)
 		}
-		m["interval"] = strings.TrimSpace(value)
+		m["interval"] = v
 	default:
 		return fmt.Errorf("config: unknown key %q (want redact, autostart, idle_stop, timezone, addr, interval, or roots.<provider>)", key)
 	}

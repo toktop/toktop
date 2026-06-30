@@ -253,6 +253,16 @@ export interface ApiErrorBody {
 
 // ── analytics list items (mirrors internal/store/sqlite listings.go) ───────────
 
+// One fixed-width slot of the activity time series (GET /v1/activity).
+export interface ActivityBucket {
+  bucket:        string // RFC3339 bucket start (UTC)
+  sessions:      number
+  turns:         number
+  tool_calls:    number
+  input_tokens:  number
+  output_tokens: number
+}
+
 export interface ProjectListItem {
   id:             string
   source_id:      string

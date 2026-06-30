@@ -157,19 +157,10 @@ export function ThemeProvider({
         return
       }
 
-      setThemeState((currentTheme) => {
-        const nextTheme =
-          currentTheme === "dark"
-            ? "light"
-            : currentTheme === "light"
-              ? "dark"
-              : getSystemTheme() === "dark"
-                ? "light"
-                : "dark"
-
-        localStorage.setItem(storageKey, nextTheme)
-        return nextTheme
-      })
+      // Toggle dark↔light through the shared setTheme (single persistence path),
+      // resolving "system" to its effective theme first so the first press flips.
+      const resolved = theme === "system" ? getSystemTheme() : theme
+      setTheme(resolved === "dark" ? "light" : "dark")
     }
 
     window.addEventListener("keydown", handleKeyDown)
@@ -177,7 +168,7 @@ export function ThemeProvider({
     return () => {
       window.removeEventListener("keydown", handleKeyDown)
     }
-  }, [storageKey])
+  }, [theme, setTheme])
 
   React.useEffect(() => {
     const handleStorageChange = (event: StorageEvent) => {

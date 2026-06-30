@@ -1,16 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import { useTranslation } from "react-i18next"
 import { useQueryClient } from "@tanstack/react-query"
 
-import { useLiveStatus, useSummary } from "@/api/queries"
+import { useLiveStatus, useProjects, useSummary, useTools } from "@/api/queries"
 import { useStream, type StreamStatus } from "@/api/useStream"
 import type { LiveEvent, LiveSessionItem, Summary } from "@/api/types"
 import { StatusBadge } from "@/components/status-badge"
 import { LiveDot } from "@/components/live-dot"
 import { RecentEvents } from "@/components/recent-events"
+import { BarChartCard } from "@/components/bar-chart-card"
 import { useOverflowTooltip } from "@/components/overflow-tooltip"
-import { reltime } from "@/lib/format"
+import { reltime, fmtNum, topN } from "@/lib/format"
 
 // The dashboard is a live overview, not a session browser: it highlights the most
 // recently-active sessions (capped) and the live event pulse; browsing/filtering
@@ -31,12 +32,12 @@ function StatCard({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="rounded-lg border border-border bg-card px-4 py-3 text-card-foreground">
       <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="mt-1 text-2xl font-semibold tabular-nums">{value.toLocaleString()}</p>
+      <p className="mt-1 text-2xl font-semibold tabular-nums">{typeof value === "number" ? fmtNum(value) : value}</p>
     </div>
   )
 }
 
-function SummaryBand({ summary }: { summary: Summary }) {
+const SummaryBand = memo(function SummaryBand({ summary }: { summary: Summary }) {
   const { t } = useTranslation()
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -47,7 +48,41 @@ function SummaryBand({ summary }: { summary: Summary }) {
                 value={summary.input_tokens + summary.output_tokens} />
     </div>
   )
-}
+})
+
+// ── insights charts ────────────────────────────────────────────────────────────
+
+// Two at-a-glance rankings over the same aggregates the analytics tab serves:
+// which projects you spend turns in, and which tools get called most. Reuses the
+// cached projects/tools queries — no extra endpoint.
+const InsightsCharts = memo(function InsightsCharts() {
+  const { t }              = useTranslation()
+  const { data: projects } = useProjects()
+  const { data: tools }    = useTools()
+
+  const topProjects = useMemo(() => topN(projects, (p) => p.turn_count, (p) => p.name), [projects])
+  const topTools    = useMemo(() => topN(tools, (tc) => tc.call_count, (tc) => tc.name), [tools])
+
+  return (
+    <section className="space-y-2" aria-label={t("page.dashboard.charts.label")}>
+      <h2 className="text-sm font-semibold">{t("page.dashboard.charts.label")}</h2>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <BarChartCard
+          title={t("page.dashboard.charts.topProjects")}
+          metricLabel={t("page.dashboard.charts.byTurns")}
+          data={topProjects}
+          emptyText={t("page.dashboard.charts.empty")}
+        />
+        <BarChartCard
+          title={t("page.dashboard.charts.topTools")}
+          metricLabel={t("page.dashboard.charts.byCalls")}
+          data={topTools}
+          emptyText={t("page.dashboard.charts.empty")}
+        />
+      </div>
+    </section>
+  )
+})
 
 // ── live indicator ─────────────────────────────────────────────────────────────
 
@@ -63,7 +98,7 @@ function LiveIndicator({ status, lastAt }: { status: StreamStatus; lastAt?: stri
 
 // ── session card → the canonical session detail (same target as the /sessions list) ──
 
-function SessionCard({ item }: { item: LiveSessionItem }) {
+const SessionCard = memo(function SessionCard({ item }: { item: LiveSessionItem }) {
   const { t } = useTranslation()
   const tip   = useOverflowTooltip()
   const label = cardLabel(item)
@@ -91,7 +126,7 @@ function SessionCard({ item }: { item: LiveSessionItem }) {
       </div>
     </Link>
   )
-}
+})
 
 // ── page ──────────────────────────────────────────────────────────────────────
 
@@ -126,10 +161,15 @@ export function DashboardPage() {
   const { data: statusData, isLoading: statusLoading, error: statusError } = useLiveStatus()
   const { data: summary }                                                  = useSummary()
 
-  // Most recently active sessions, capped — the dashboard highlight.
-  const sessions = [...(statusData?.items ?? [])]
-    .sort((a, b) => (b.last_activity_at ?? "").localeCompare(a.last_activity_at ?? ""))
-    .slice(0, MAX_SESSIONS)
+  // Most recently active sessions, capped — the dashboard highlight. Memoized on
+  // statusData so the per-event re-render (setEvents) doesn't re-sort the full
+  // live-status array; it only changes when the status query refetches.
+  const sessions = useMemo(
+    () => [...(statusData?.items ?? [])]
+      .sort((a, b) => (b.last_activity_at ?? "").localeCompare(a.last_activity_at ?? ""))
+      .slice(0, MAX_SESSIONS),
+    [statusData],
+  )
 
   return (
     <div className="space-y-6">
@@ -139,6 +179,8 @@ export function DashboardPage() {
       </div>
 
       {summary && <SummaryBand summary={summary} />}
+
+      <InsightsCharts />
 
       {/* live sessions highlight — full list/filtering lives on /sessions */}
       <section className="space-y-2" aria-label={t("page.dashboard.sessions.label")}>

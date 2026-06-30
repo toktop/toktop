@@ -82,25 +82,13 @@ func (s *Server) configSettings() map[string]any {
 		return map[string]any{}
 	}
 	snap := s.cfgLoader.Current()
-	canonicalBool := func(b bool) string {
-		if b {
-			return "on"
-		}
-		return "off"
-	}
-	canonicalInterval := func(d time.Duration) string {
-		if d == 0 {
-			return ""
-		}
-		return d.String()
-	}
 	keys := []string{"redact", "autostart", "idle_stop", "timezone", "interval", "addr"}
 	values := map[string]string{
 		"redact":    config.CanonicalRedact(snap.RedactPolicy),
-		"autostart": canonicalBool(snap.Autostart),
-		"idle_stop": canonicalBool(snap.IdleStop),
+		"autostart": config.CanonicalOnOff(snap.Autostart),
+		"idle_stop": config.CanonicalOnOff(snap.IdleStop),
 		"timezone":  snap.Timezone,
-		"interval":  canonicalInterval(snap.Interval),
+		"interval":  config.CanonicalInterval(snap.Interval),
 		"addr":      snap.Addr,
 	}
 	out := make(map[string]any, len(keys))

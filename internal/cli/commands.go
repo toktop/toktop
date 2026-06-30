@@ -348,6 +348,66 @@ func runProjects(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	})
 }
 
+func runActivity(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	home, ok := resolveHome(stderr)
+	if !ok {
+		return 1
+	}
+	format := "table"
+	since := ""
+	until := ""
+	bucket := "1h"
+	var sources, projects, sessions, statuses rootList
+	fs := flag.NewFlagSet("activity", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&format, "format", format, formatFlagUsage)
+	output := addOutputFlag(fs)
+	columns := addColumnsFlag(fs)
+	addFilterFlags(fs, &sources, &projects, &sessions, &statuses)
+	fs.StringVar(&since, "since", since, "duration like 7d, 24h, or RFC3339 timestamp")
+	fs.StringVar(&until, "until", until, "upper time bound: duration like 7d, 24h, or RFC3339 timestamp")
+	fs.StringVar(&bucket, "bucket", bucket, "bucket width: duration like 5m, 1h, 6h, 1d")
+	subagents := addSubagentsFlag(fs)
+	setFlagUsage(fs, "usage: toktop activity [flags]", "Roll turns into fixed-width time buckets (turns / tools / tokens per bucket).")
+	if code := parseFlagsNoPositionals(fs, args, stdout, stderr); code >= 0 {
+		return code
+	}
+	if err := validateListFormat(format); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	width, err := query.ParseBucketWidth(bucket, time.Now().UTC())
+	if err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	filter, err := parseFilterFlags(since, until, "")
+	if err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	if err := applyMultiFilter(&filter, sources, projects, sessions, statuses, *subagents); err != nil {
+		cliErr(stderr, err)
+		return 2
+	}
+	svc, store, err := openService(ctx, home)
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	defer store.Close()
+	rows, err := svc.ActivitySeries(ctx, filter, int(width.Seconds()))
+	if err != nil {
+		cliErr(stderr, err)
+		return 1
+	}
+	return emitList(*output, stdout, stderr, format, *columns, rows, []string{"bucket", "sessions", "turns", "tools", "input_tokens", "output_tokens"}, func(b sqlite.ActivityBucket) []string {
+		return []string{formatTime(b.Bucket),
+			strconv.Itoa(b.Sessions), strconv.Itoa(b.Turns), strconv.Itoa(b.ToolCalls),
+			strconv.Itoa(b.InputTokens), strconv.Itoa(b.OutputTokens)}
+	})
+}
+
 func runTools(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	home, ok := resolveHome(stderr)
 	if !ok {

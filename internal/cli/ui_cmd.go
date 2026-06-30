@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -25,7 +24,7 @@ func runUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs0 := flag.NewFlagSet("ui", flag.ContinueOnError)
 	fs0.SetOutput(stderr)
 	noBrowser := fs0.Bool("no-browser", false, "print the URL instead of opening a browser")
-	bindAddr  := fs0.String("addr", "127.0.0.1:0", "loopback address to serve the UI on (must be 127.0.0.1/localhost)")
+	bindAddr  := fs0.String("listen", "127.0.0.1:0", "loopback address to serve the UI on (must be 127.0.0.1/localhost)")
 	setFlagUsage(fs0, "usage: toktop ui [flags]",
 		"Serve the local web UI and open it in your browser.",
 		"Starts a loopback proxy that serves the embedded SPA and forwards /v1 to the daemon.")
@@ -35,7 +34,7 @@ func runUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	host, _, err := net.SplitHostPort(*bindAddr)
 	if err != nil || !isLoopbackHost(host) {
-		cliErrf(stderr, "--addr must be a loopback address (127.0.0.1 or localhost), got %q", *bindAddr)
+		cliErrf(stderr, "--listen must be a loopback address (127.0.0.1 or localhost), got %q", *bindAddr)
 		return 2
 	}
 
@@ -62,6 +61,7 @@ func runUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	addr  := clientAddr(snap)
 	if e := ensureDaemon(ctx, home, addr, snap.Autostart, stderr); e != nil {
 		cliErr(stderr, e)
+		return 1
 	}
 	daemonToken := clientToken("", false)
 
@@ -198,29 +198,57 @@ func observeOnly(next http.Handler) http.Handler {
 }
 
 // uiAuth gates browser<->proxy traffic with an ephemeral per-launch nonce.
-// A valid ?t= sets a same-site HttpOnly cookie so subsequent same-origin
-// fetch/EventSource requests carry it automatically. Unauthenticated → 401.
+//
+// The cookie is the sole authority for real requests: a valid same-site HttpOnly
+// cookie passes, everything else is 401. The ?t= nonce is a one-time bootstrap —
+// honoured ONLY on a GET navigation that has no valid cookie yet, where it sets
+// the cookie and 302-redirects to the same path WITHOUT the nonce. So the nonce
+// never lingers in the address bar/history/Referer and never authorises a
+// mutation: a cross-site form POST carrying ?t= fails (no cookie, and ?t= is not
+// honoured for POST), which is what keeps SameSite=Strict meaningful.
+//
+// A loopback Host allow-list is the second, nonce-independent barrier: it rejects
+// DNS-rebinding, where a page on attacker.com rebinds to 127.0.0.1 and reaches
+// this server with a non-loopback Host header.
 func uiAuth(nonce string, next http.Handler) http.Handler {
 	const cookieName = "toktop_ui"
 	nb := []byte(nonce)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if q := r.URL.Query().Get("t"); subtle.ConstantTimeCompare([]byte(q), nb) == 1 {
-			http.SetCookie(w, &http.Cookie{
-				Name:     cookieName,
-				Value:    nonce,
-				Path:     "/",
-				HttpOnly: true,
-				SameSite: http.SameSiteStrictMode,
-			})
-			next.ServeHTTP(w, r)
+		if !isLoopbackHost(hostnameOnly(r.Host)) {
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		if c, err := r.Cookie(cookieName); err == nil && subtle.ConstantTimeCompare([]byte(c.Value), nb) == 1 {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if r.Method == http.MethodGet {
+			if q := r.URL.Query().Get("t"); subtle.ConstantTimeCompare([]byte(q), nb) == 1 {
+				http.SetCookie(w, &http.Cookie{
+					Name:     cookieName,
+					Value:    nonce,
+					Path:     "/",
+					HttpOnly: true,
+					SameSite: http.SameSiteStrictMode,
+				})
+				clean := *r.URL
+				q := clean.Query()
+				q.Del("t")
+				clean.RawQuery = q.Encode()
+				http.Redirect(w, r, clean.RequestURI(), http.StatusFound)
+				return
+			}
+		}
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	})
+}
+
+// hostnameOnly strips the optional :port from a Host header value.
+func hostnameOnly(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return host
 }
 
 func isLoopbackHost(host string) bool {
@@ -233,9 +261,6 @@ func isLoopbackHost(host string) bool {
 
 // openBrowser opens target in the default browser, per OS.
 func openBrowser(target string) error {
-	if _, err := url.Parse(target); err != nil {
-		return err
-	}
 	switch runtime.GOOS {
 	case "darwin":
 		return exec.Command("open", target).Start()

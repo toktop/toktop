@@ -5,6 +5,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/health", s.handleHealth)
 	s.mux.HandleFunc("GET /v1/summary", s.handleSummary)
 	s.mux.HandleFunc("GET /v1/projects", s.handleProjects)
+	s.mux.HandleFunc("GET /v1/activity", s.handleActivity)
 	s.mux.HandleFunc("GET /v1/tools", s.handleTools)
 	s.mux.HandleFunc("GET /v1/tool-calls", s.handleToolCalls)
 	s.mux.HandleFunc("GET /v1/models", s.handleModels)

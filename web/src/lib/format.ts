@@ -32,3 +32,25 @@ export function fmtMs(ms?: number): string {
   if (ms < 3_600_000)   return `${Math.round(ms / 60_000)}m`
   return `${(ms / 3_600_000).toFixed(1)}h`
 }
+
+// fmtNum renders an integer with locale thousands separators — the one place
+// plain counts are formatted, shared across the dashboard and analytics tables.
+export function fmtNum(n: number): string {
+  return n.toLocaleString()
+}
+
+// topN ranks items by a numeric metric (descending, positive only) and projects
+// them to the {label,value} shape the bar charts consume — shared by the dashboard
+// and analytics insight charts so the cutoff/sort/filter can't drift between them.
+export function topN<T>(
+  items: T[] | undefined,
+  value: (x: T) => number,
+  label: (x: T) => string,
+  n = 7,
+): { label: string; value: number }[] {
+  return [...(items ?? [])]
+    .filter((x) => value(x) > 0)
+    .sort((a, b) => value(b) - value(a))
+    .slice(0, n)
+    .map((x) => ({ label: label(x), value: value(x) }))
+}

@@ -1,14 +1,20 @@
-import { useRef, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import type { ReactNode }   from "react"
 import { useTranslation }   from "react-i18next"
 import { Link }             from "react-router-dom"
 import { Tabs }             from "@base-ui/react/tabs"
 import { useVirtualizer }   from "@tanstack/react-virtual"
+import { parseISO } from "date-fns"
+import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts"
 
-import { reltime, fmtMs }  from "@/lib/format"
+import { reltime, fmtMs, fmtNum, topN } from "@/lib/format"
 import { DataTable }       from "@/components/data-table"
 import type { Column }     from "@/components/data-table"
 import { StatusBadge }     from "@/components/status-badge"
+import { BarChartCard }    from "@/components/bar-chart-card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
+import type { ChartConfig } from "@/components/ui/chart"
 import {
   Dialog,
   DialogContent,
@@ -16,6 +22,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import {
+  useActivity,
   useMcps,
   useModels,
   useProjects,
@@ -26,6 +33,7 @@ import {
   useUnusedSkills,
 } from "@/api/queries"
 import type {
+  ActivityBucket,
   MCPListItem,
   ModelListItem,
   ProjectListItem,
@@ -34,11 +42,15 @@ import type {
   ToolListItem,
 } from "@/api/types"
 
+// Time-window filter shared by the insights charts and every tab's listing, so
+// the range chips scope the whole page at once. Empty range → undefined → no
+// since param → all-time (the default).
+type AFilter = Record<string, string> | undefined
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-function n(v: number): string {
-  return v.toLocaleString()
-}
+// local alias for the shared integer formatter (terse cell rendering)
+const n = fmtNum
 
 // A failed/rejected count cell: a clickable button that opens the drill-down when
 // the count is non-zero, a muted "0" otherwise.
@@ -57,17 +69,17 @@ function countCell(count: number, colorClass: string, onOpen: () => void): React
 
 // ── tab state helpers ─────────────────────────────────────────────────────────
 
-type TabState = { loading: boolean; error: Error | null }
-
-function tabStatus(
-  state: TabState,
-  empty: boolean,
+// tabStatus renders a tab's loading / error / empty placeholder straight from its
+// react-query result, or null when there are rows to show — so each tab drops the
+// repeated {loading,error} literal and the per-tab `error as Error` cast.
+function tabStatus<T>(
+  q: { isLoading: boolean; error: unknown; data: T[] | undefined },
   emptyLabel: string,
   t: (key: string) => string,
 ): ReactNode | null {
-  if (state.loading) return <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
-  if (state.error)   return <p className="text-sm text-destructive" role="alert">{state.error.message ?? t("common.error")}</p>
-  if (empty)         return <p className="text-sm text-muted-foreground">{emptyLabel}</p>
+  if (q.isLoading)     return <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
+  if (q.error)         return <p className="text-sm text-destructive" role="alert">{(q.error as Error).message ?? t("common.error")}</p>
+  if (!q.data?.length) return <p className="text-sm text-muted-foreground">{emptyLabel}</p>
   return null
 }
 
@@ -86,15 +98,193 @@ function UnusedToggle({ label, checked, onChange }: { label: string; checked: bo
   )
 }
 
+// ── insights (time-windowed charts above the tabs) ────────────────────────────
+
+const RANGES = ["all", "30m", "1h", "1d", "1w"] as const
+type Range = (typeof RANGES)[number]
+
+// chips → trend bucket: the API width string and the matching step in ms (used to
+// zero-fill empty buckets so the category x-axis doesn't collapse idle gaps). One
+// table keeps the two in lockstep. Widths kept to ~20-40 points across the window.
+const RANGE_BUCKET: Record<Range, { api: string; ms: number }> = {
+  "30m": { api: "1m",  ms: 60_000 },
+  "1h":  { api: "2m",  ms: 120_000 },
+  "1d":  { api: "1h",  ms: 3_600_000 },
+  "1w":  { api: "6h",  ms: 21_600_000 },
+  "all": { api: "24h", ms: 86_400_000 },
+}
+function rangeBucket(r: Range): string {
+  return RANGE_BUCKET[r].api
+}
+// Bucket starts are UTC instants floored to clean UTC boundaries (see
+// ActivitySeries); render the axis/tooltip in UTC too. date-fns format() would
+// shift them into the browser's local zone, so the ticks would no longer sit on
+// the actual bucket edges for non-UTC users.
+function pad2(n: number): string {
+  return String(n).padStart(2, "0")
+}
+function utcHHmm(d: Date): string {
+  return `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`
+}
+function utcMMdd(d: Date): string {
+  return `${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`
+}
+// bucket-axis label: within a day show the clock, across days show the date.
+function bucketTick(iso: string, r: Range): string {
+  const d = parseISO(iso)
+  return r === "30m" || r === "1h" || r === "1d" ? utcHHmm(d) : utcMMdd(d)
+}
+// compact y-axis label so a million-scale tokens series and a tens-scale turns
+// series both fit the narrow axis (1_500_000 → "1.5M", 7_000 → "7K").
+const compactNum = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 })
+
+function RangeChips({ range, onChange }: { range: Range; onChange: (r: Range) => void }) {
+  const { t } = useTranslation()
+  return (
+    <div className="flex w-fit gap-1 rounded-lg border border-border bg-muted/40 p-1">
+      {RANGES.map((r) => (
+        <button
+          key={r}
+          type="button"
+          onClick={() => onChange(r)}
+          aria-pressed={range === r}
+          className="rounded-md px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground aria-pressed:bg-background aria-pressed:text-foreground aria-pressed:shadow-sm"
+        >
+          {t(`page.analytics.insights.range.${r}`)}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+const TREND_METRICS = ["turns", "tools", "tokens", "sessions"] as const
+type TrendMetric = (typeof TREND_METRICS)[number]
+type TrendPoint = { bucket: string; turns: number; tools: number; tokens: number; sessions: number }
+
+// The activity area chart: one selectable metric over time. isAnimationActive is
+// off for the same recharts-3.8/React-19 reason as the bar charts (the enter
+// animation never fires, leaving an empty shape).
+function ActivityTrend({ data, range, loading }: { data: ActivityBucket[]; range: Range; loading: boolean }) {
+  const { t }               = useTranslation()
+  const [metric, setMetric] = useState<TrendMetric>("turns")
+  // ActivitySeries omits empty buckets; fill them with zeros here so the area
+  // chart spaces points by real time, not by index — an idle gap reads as a flat
+  // zero stretch instead of a straight slope drawn across it. Keyed by epoch ms
+  // (the server's RFC3339 "…Z" and JS's "….000Z" differ as strings). Capped so a
+  // sparse all-time span can't explode the series.
+  const points = useMemo<TrendPoint[]>(() => {
+    if (data.length === 0) return []
+    const step  = RANGE_BUCKET[range].ms
+    const byT   = new Map(data.map((b) => [parseISO(b.bucket).getTime(), b]))
+    const first = parseISO(data[0].bucket).getTime()
+    const last  = parseISO(data[data.length - 1].bucket).getTime()
+    const out: TrendPoint[] = []
+    for (let t = first; t <= last && out.length < 2000; t += step) {
+      const b = byT.get(t)
+      out.push(b
+        ? { bucket: b.bucket, turns: b.turns, tools: b.tool_calls, tokens: b.input_tokens + b.output_tokens, sessions: b.sessions }
+        : { bucket: new Date(t).toISOString(), turns: 0, tools: 0, tokens: 0, sessions: 0 })
+    }
+    return out
+  }, [data, range])
+  const config = useMemo<ChartConfig>(
+    () => ({ [metric]: { label: t(`page.analytics.insights.metric.${metric}`), color: "var(--chart-1)" } }),
+    [metric, t],
+  )
+
+  return (
+    <Card size="sm">
+      <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
+        <CardTitle className="text-sm">{t("page.analytics.insights.trend")}</CardTitle>
+        <div className="flex gap-1">
+          {TREND_METRICS.map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setMetric(m)}
+              aria-pressed={metric === m}
+              className="rounded-md px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground aria-pressed:bg-muted aria-pressed:text-foreground"
+            >
+              {t(`page.analytics.insights.metric.${m}`)}
+            </button>
+          ))}
+        </div>
+      </CardHeader>
+      <CardContent>
+        {!loading && points.length === 0 ? (
+          <p className="py-12 text-center text-sm text-muted-foreground">{t("page.analytics.insights.empty")}</p>
+        ) : (
+          <ChartContainer config={config} className="aspect-auto h-[200px] w-full">
+            <AreaChart data={points} margin={{ left: 4, right: 12, top: 8, bottom: 0 }}>
+              <CartesianGrid vertical={false} strokeDasharray="3 3" />
+              <XAxis
+                dataKey="bucket"
+                tickFormatter={(v: string) => bucketTick(v, range)}
+                tickLine={false}
+                axisLine={false}
+                tick={{ fontSize: 11 }}
+                minTickGap={24}
+              />
+              <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11 }} width={44} tickFormatter={(v: number) => compactNum.format(v)} />
+              <ChartTooltip
+                cursor={false}
+                content={<ChartTooltipContent labelFormatter={(v) => (typeof v === "string" ? `${utcMMdd(parseISO(v))} ${utcHHmm(parseISO(v))}` : "")} />}
+              />
+              <Area
+                dataKey={metric}
+                type="monotone"
+                stroke={`var(--color-${metric})`}
+                fill={`var(--color-${metric})`}
+                fillOpacity={0.15}
+                strokeWidth={2}
+                isAnimationActive={false}
+              />
+            </AreaChart>
+          </ChartContainer>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function InsightsSection({ range, filter }: { range: Range; filter: AFilter }) {
+  const { t }    = useTranslation()
+  const activity = useActivity({ ...(filter ?? {}), bucket: rangeBucket(range) })
+  const projects = useProjects(filter)
+  const tools    = useTools(filter)
+
+  const topProjects = useMemo(() => topN(projects.data, (p) => p.turn_count, (p) => p.name), [projects.data])
+  const topTools    = useMemo(() => topN(tools.data, (tc) => tc.call_count, (tc) => tc.name), [tools.data])
+
+  return (
+    <section className="space-y-3" aria-label={t("page.analytics.insights.trend")}>
+      <ActivityTrend data={activity.data ?? []} range={range} loading={activity.isLoading} />
+      <div className="grid gap-4 lg:grid-cols-2">
+        <BarChartCard
+          title={t("page.analytics.insights.topProjects")}
+          metricLabel={t("page.analytics.insights.metric.turns")}
+          data={topProjects}
+          emptyText={t("page.analytics.insights.empty")}
+        />
+        <BarChartCard
+          title={t("page.analytics.insights.topTools")}
+          metricLabel={t("page.analytics.insights.metric.tools")}
+          data={topTools}
+          emptyText={t("page.analytics.insights.empty")}
+        />
+      </div>
+    </section>
+  )
+}
+
 // ── projects tab ──────────────────────────────────────────────────────────────
 
-function ProjectsTab() {
+function ProjectsTab({ filter }: { filter: AFilter }) {
   const { t }                      = useTranslation()
-  const { data, isLoading, error } = useProjects()
+  const { data, isLoading, error } = useProjects(filter)
   const items: ProjectListItem[]   = data ?? []
 
-  const ts: TabState = { loading: isLoading, error: error as Error | null }
-  const status = tabStatus(ts, items.length === 0, t("page.analytics.empty"), t)
+  const status = tabStatus({ isLoading, error, data }, t("page.analytics.empty"), t)
   if (status) return status
 
   const columns: Column<ProjectListItem>[] = [
@@ -134,14 +324,13 @@ function ProjectsTab() {
 
 type ToolDrill = { tool: ToolListItem; status: "failed" | "rejected" }
 
-function ToolsTab() {
+function ToolsTab({ filter }: { filter: AFilter }) {
   const { t }                      = useTranslation()
-  const { data, isLoading, error } = useTools()
+  const { data, isLoading, error } = useTools(filter)
   const items: ToolListItem[]      = data ?? []
   const [drill, setDrill]          = useState<ToolDrill | null>(null)
 
-  const ts: TabState = { loading: isLoading, error: error as Error | null }
-  const status = tabStatus(ts, items.length === 0, t("page.analytics.empty"), t)
+  const status = tabStatus({ isLoading, error, data }, t("page.analytics.empty"), t)
   if (status) return status
 
   const columns: Column<ToolListItem>[] = [
@@ -181,7 +370,7 @@ function ToolsTab() {
         rowKey={(tc, i) => `${tc.kind}-${tc.name}-${tc.mcp_server ?? ""}-${i}`}
         filterText={(tc) => `${tc.name} ${tc.kind} ${tc.mcp_server ?? ""}`}
       />
-      <ToolCallsDialog drill={drill} onClose={() => setDrill(null)} />
+      <ToolCallsDialog drill={drill} filter={filter} onClose={() => setDrill(null)} />
     </>
   )
 }
@@ -231,14 +420,18 @@ function ToolCallEntry({ call }: { call: ToolCallListItem }) {
   )
 }
 
-function ToolCallsDialog({ drill, onClose }: { drill: ToolDrill | null; onClose: () => void }) {
+function ToolCallsDialog({ drill, filter, onClose }: { drill: ToolDrill | null; filter: AFilter; onClose: () => void }) {
   const { t }      = useTranslation()
   const tool       = drill?.tool ?? null
   const kindStatus = drill?.status ?? "failed"
   const total      = tool ? (kindStatus === "failed" ? tool.failed_count : tool.rejected_count) : 0
 
+  // Scope the drill-down to the page's active range window (filter.since/until)
+  // so the listed calls match the windowed failed/rejected count it was opened
+  // from — otherwise the dialog shows all-time calls against a windowed total.
   const { data, isLoading, error } = useToolCalls(
-    { name: tool?.name ?? "", kind: tool?.kind, mcp_server: tool?.mcp_server, status: kindStatus },
+    { name: tool?.name ?? "", kind: tool?.kind, mcp_server: tool?.mcp_server, status: kindStatus,
+      since: filter?.since, until: filter?.until },
     drill !== null,
   )
   const calls: ToolCallListItem[] = data ?? []
@@ -303,13 +496,12 @@ function ToolCallsDialog({ drill, onClose }: { drill: ToolDrill | null; onClose:
 
 // ── models tab ────────────────────────────────────────────────────────────────
 
-function ModelsTab() {
+function ModelsTab({ filter }: { filter: AFilter }) {
   const { t }                      = useTranslation()
-  const { data, isLoading, error } = useModels()
+  const { data, isLoading, error } = useModels(filter)
   const items: ModelListItem[]     = data ?? []
 
-  const ts: TabState = { loading: isLoading, error: error as Error | null }
-  const status = tabStatus(ts, items.length === 0, t("page.analytics.empty"), t)
+  const status = tabStatus({ isLoading, error, data }, t("page.analytics.empty"), t)
   if (status) return status
 
   const columns: Column<ModelListItem>[] = [
@@ -347,18 +539,17 @@ function ModelsTab() {
 
 // ── mcps tab ──────────────────────────────────────────────────────────────────
 
-function MCPsTab() {
+function MCPsTab({ filter }: { filter: AFilter }) {
   const { t }                       = useTranslation()
   const [unusedOnly, setUnusedOnly] = useState(false)
-  const all                         = useMcps()
+  const all                         = useMcps(filter)
   const unused                      = useUnusedMcps()
   const active                      = unusedOnly ? unused : all
   const items: MCPListItem[]        = active.data ?? []
 
   const toggle = <UnusedToggle label={t("page.analytics.mcps.unusedOnly")} checked={unusedOnly} onChange={setUnusedOnly} />
 
-  const ts: TabState = { loading: active.isLoading, error: active.error as Error | null }
-  const status = tabStatus(ts, items.length === 0, t("page.analytics.empty"), t)
+  const status = tabStatus(active, t("page.analytics.empty"), t)
   if (status) {
     return (
       <div className="space-y-3">
@@ -412,18 +603,17 @@ function MCPsTab() {
 
 // ── skills tab ────────────────────────────────────────────────────────────────
 
-function SkillsTab() {
+function SkillsTab({ filter }: { filter: AFilter }) {
   const { t }                       = useTranslation()
   const [unusedOnly, setUnusedOnly] = useState(false)
-  const all                         = useSkills()
+  const all                         = useSkills(filter)
   const unused                      = useUnusedSkills()
   const active                      = unusedOnly ? unused : all
   const items: SkillListItem[]      = active.data ?? []
 
   const toggle = <UnusedToggle label={t("page.analytics.skills.unusedOnly")} checked={unusedOnly} onChange={setUnusedOnly} />
 
-  const ts: TabState = { loading: active.isLoading, error: active.error as Error | null }
-  const status = tabStatus(ts, items.length === 0, t("page.analytics.empty"), t)
+  const status = tabStatus(active, t("page.analytics.empty"), t)
   if (status) {
     return (
       <div className="space-y-3">
@@ -489,12 +679,21 @@ const TABS: TabId[] = ["projects", "tools", "models", "mcps", "skills"]
 // ── page ──────────────────────────────────────────────────────────────────────
 
 export function AnalyticsPage() {
-  const { t }         = useTranslation()
-  const [tab, setTab] = useState<TabId>("projects")
+  const { t }             = useTranslation()
+  const [tab, setTab]     = useState<TabId>("projects")
+  const [range, setRange] = useState<Range>("all")
+  // Empty range → undefined → no since param → all-time. The same filter scopes
+  // the insights charts and every tab's listing, so the chips drive the whole page.
+  const filter: AFilter   = range === "all" ? undefined : { since: range }
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">{t("page.analytics.title")}</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold">{t("page.analytics.title")}</h1>
+        <RangeChips range={range} onChange={setRange} />
+      </div>
+
+      <InsightsSection range={range} filter={filter} />
 
       <Tabs.Root
         value={tab}
@@ -516,11 +715,11 @@ export function AnalyticsPage() {
           ))}
         </Tabs.List>
 
-        <Tabs.Panel value="projects" className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><ProjectsTab /></Tabs.Panel>
-        <Tabs.Panel value="tools"    className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><ToolsTab /></Tabs.Panel>
-        <Tabs.Panel value="models"   className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><ModelsTab /></Tabs.Panel>
-        <Tabs.Panel value="mcps"     className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><MCPsTab /></Tabs.Panel>
-        <Tabs.Panel value="skills"   className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><SkillsTab /></Tabs.Panel>
+        <Tabs.Panel value="projects" className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><ProjectsTab filter={filter} /></Tabs.Panel>
+        <Tabs.Panel value="tools"    className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><ToolsTab filter={filter} /></Tabs.Panel>
+        <Tabs.Panel value="models"   className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><ModelsTab filter={filter} /></Tabs.Panel>
+        <Tabs.Panel value="mcps"     className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><MCPsTab filter={filter} /></Tabs.Panel>
+        <Tabs.Panel value="skills"   className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><SkillsTab filter={filter} /></Tabs.Panel>
       </Tabs.Root>
     </div>
   )

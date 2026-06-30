@@ -335,6 +335,15 @@ func (s *Store) ListLiveSessions(ctx context.Context, f Filter) ([]LiveSessionIt
 
 func (s *Store) ListProjects(ctx context.Context, f Filter) ([]ProjectListItem, error) {
 	f = f.normalized()
+	// Under a since/until window, aggregate at TURN grain so a project's counts
+	// match the turn/tool-call grain of ActivitySeries/ListTools: a session that
+	// started before the window but has turns inside it contributes exactly its
+	// in-window turns, instead of being dropped wholesale (its start < since) or
+	// counted whole. Without a window, session/turn grain give identical totals,
+	// so keep the cheaper session-level path (and its zero-count projects).
+	if !f.Since.IsZero() || !f.Until.IsZero() {
+		return s.listProjectsWindowed(ctx, f)
+	}
 	// The default is_subagent exclude must live in the LEFT JOIN's ON, not the WHERE:
 	// a right-table predicate in the WHERE collapses the LEFT JOIN to an inner join,
 	// dropping a project whose only sessions are subagents instead of showing it with
@@ -370,6 +379,46 @@ func (s *Store) ListProjects(ctx context.Context, f Filter) ([]ProjectListItem, 
 		if err := rows.Scan(&item.ID, &item.SourceID, &item.Name, &item.Path,
 			&item.SessionCount, &item.TurnCount, &item.ToolCallCount, &lastActivity); err != nil {
 			return nil, fmt.Errorf("scan project: %w", err)
+		}
+		item.LastActivity = parseTimeOpt(lastActivity)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// listProjectsWindowed aggregates project activity at TURN grain for a
+// since/until window (see ListProjects). INNER JOIN turns: only projects with
+// in-window turns appear — the intended "active in this window" view — and the
+// counts (sessions/turns/tool-calls/last-activity) are all windowed, so the
+// analytics page's top-projects chart agrees with its turn-grain activity trend.
+func (s *Store) listProjectsWindowed(ctx context.Context, f Filter) ([]ProjectListItem, error) {
+	var args []any
+	wheres := f.joinedTurnWhere(&args, turnActivityTimeExpr)
+	clause := whereClause(wheres)
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT projects.id, projects.source_id, projects.name, COALESCE(projects.path, ''),
+		       COUNT(DISTINCT turns.session_id),
+		       COUNT(turns.id),
+		       COALESCE(SUM(turns.tool_call_count), 0),
+		       COALESCE(MAX(`+turnActivityTimeExpr+`), '')
+		FROM turns
+		JOIN sessions ON sessions.id = turns.session_id
+		JOIN projects ON projects.id = turns.project_id
+		`+clause+`
+		GROUP BY projects.id
+		ORDER BY MAX(`+turnActivityTimeExpr+`) DESC, projects.name
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list projects (windowed): %w", err)
+	}
+	defer rows.Close()
+	out := make([]ProjectListItem, 0)
+	for rows.Next() {
+		var item ProjectListItem
+		var lastActivity sql.NullString
+		if err := rows.Scan(&item.ID, &item.SourceID, &item.Name, &item.Path,
+			&item.SessionCount, &item.TurnCount, &item.ToolCallCount, &lastActivity); err != nil {
+			return nil, fmt.Errorf("scan project (windowed): %w", err)
 		}
 		item.LastActivity = parseTimeOpt(lastActivity)
 		out = append(out, item)
@@ -428,6 +477,67 @@ func (s *Store) ListModels(ctx context.Context, f Filter) ([]ModelListItem, erro
 		}
 		item.LastUsedAt = parseTimeOpt(lastUsed)
 		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// ActivityBucket is one fixed-width slot of the activity time series: the work
+// whose activity time falls in [Bucket, Bucket+width). Bucket is the slot's
+// start instant (UTC). Empty slots are omitted — the consumer fills the gaps.
+type ActivityBucket struct {
+	Bucket       time.Time `json:"bucket"`
+	Sessions     int       `json:"sessions"`
+	Turns        int       `json:"turns"`
+	ToolCalls    int       `json:"tool_calls"`
+	InputTokens  int       `json:"input_tokens"`
+	OutputTokens int       `json:"output_tokens"`
+}
+
+// ActivitySeries rolls turns into fixed-width time buckets (bucketSecs wide) by
+// their activity time, summing the work in each. It honours the same
+// source/project/session/status/since/until/subagent filters as the other
+// listings (via joinedTurnWhere). Only turns carrying a real activity timestamp
+// are bucketable, so an activity-less turn is excluded rather than dumped into an
+// epoch-0 slot.
+func (s *Store) ActivitySeries(ctx context.Context, f Filter, bucketSecs int) ([]ActivityBucket, error) {
+	if bucketSecs <= 0 {
+		bucketSecs = 3600
+	}
+	f = f.normalized()
+	var args []any
+	wheres := f.joinedTurnWhere(&args, turnActivityTimeExpr)
+	wheres = append(wheres, turnActivityTimeExpr+" != ''")
+	clause := whereClause(wheres)
+	// Bucket start (unix seconds) = floor(epoch / width) * width. The two width
+	// placeholders sit in the SELECT, ahead of the WHERE args.
+	bucketExpr := "CAST(unixepoch(" + turnActivityTimeExpr + ") / ? AS INTEGER) * ?"
+	full := append([]any{bucketSecs, bucketSecs}, args...)
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT `+bucketExpr+` AS bucket_epoch,
+		       COUNT(DISTINCT turns.session_id),
+		       COUNT(*),
+		       COALESCE(SUM(turns.tool_call_count), 0),
+		       COALESCE(SUM(turns.total_input_tokens), 0),
+		       COALESCE(SUM(turns.total_output_tokens), 0)
+		FROM turns
+		JOIN sessions ON sessions.id = turns.session_id
+		`+clause+`
+		GROUP BY bucket_epoch
+		ORDER BY bucket_epoch
+	`, full...)
+	if err != nil {
+		return nil, fmt.Errorf("activity series: %w", err)
+	}
+	defer rows.Close()
+	out := make([]ActivityBucket, 0)
+	for rows.Next() {
+		var epoch int64
+		var b ActivityBucket
+		if err := rows.Scan(&epoch, &b.Sessions, &b.Turns, &b.ToolCalls, &b.InputTokens, &b.OutputTokens); err != nil {
+			return nil, fmt.Errorf("scan activity bucket: %w", err)
+		}
+		b.Bucket = time.Unix(epoch, 0).UTC()
+		out = append(out, b)
 	}
 	return out, rows.Err()
 }

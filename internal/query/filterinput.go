@@ -88,6 +88,17 @@ func ParseSort(order string) (sortBy string, desc bool) {
 	return order, false
 }
 
+// ParseBucketWidth parses an activity-bucket width like "5m", "1h", "6h", "1d",
+// "1w" into a positive duration. It shares tparse with ParseSince so the calendar
+// units (d/w) that Go's time.ParseDuration rejects work on --bucket / ?bucket=
+// exactly as they do on --since/--until — one duration grammar per command.
+func ParseBucketWidth(value string, now time.Time) (time.Duration, error) {
+	if d, err := tparse.AbsoluteDuration(now, strings.TrimSpace(value)); err == nil && d > 0 {
+		return d, nil
+	}
+	return 0, fmt.Errorf("invalid bucket %q: want a positive duration like 5m, 1h, 6h, 1d", value)
+}
+
 func ParseSince(value string, now time.Time) (time.Time, error) {
 	if strings.TrimSpace(value) == "" {
 		return time.Time{}, fmt.Errorf("invalid since %q: want duration like 7d / 24h or RFC3339 timestamp", value)

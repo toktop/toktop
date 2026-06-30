@@ -217,10 +217,19 @@ func (l *Loader) Set(key, value string) error {
 	return l.Reload()
 }
 
-// Source reports where key currently resolves from for display: the config file
-// when present there, else the built-in default.
+// Source reports where key currently resolves from for display: see KeySource.
 func (l *Loader) Source(key string) string {
-	if ok, err := FileHasKey(l.path, key); err == nil && ok {
+	return KeySource(l.path, key)
+}
+
+// KeySource reports where key currently resolves from for display: the config
+// file when present there, the read error when config.json can't be parsed, else
+// the built-in default. Shared by the CLI `config get` and HTTP GET /v1/config so
+// the attribution (incl. the file_error case) can't drift between surfaces.
+func KeySource(cfgPath, key string) string {
+	if ok, err := FileHasKey(cfgPath, key); err != nil {
+		return "file_error: " + err.Error()
+	} else if ok {
 		return "file config.json"
 	}
 	return "default"
@@ -234,4 +243,23 @@ func CanonicalRedact(p redact.Policy) string {
 		return "on"
 	}
 	return "off"
+}
+
+// CanonicalOnOff renders a boolean config value (autostart/idle_stop) as its
+// canonical "on"/"off" string — the single source of truth shared by the CLI
+// `config get` and HTTP GET /v1/config display surfaces.
+func CanonicalOnOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
+// CanonicalInterval renders an interval as its canonical string ("" when unset /
+// non-positive, else Duration.String() like "1m0s"), shared by both surfaces.
+func CanonicalInterval(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	return d.String()
 }

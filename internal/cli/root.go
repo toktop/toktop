@@ -67,6 +67,7 @@ func NewRootCmd(info Info) *cobra.Command {
 		buildSimpleCmd("sessions", "List sessions; `sessions inspect <id>` for one", runSessions),
 		buildSimpleCmd("turns", "List turns; `turns inspect|timeline|components <id>` for one", runTurns),
 		buildSimpleCmd("projects", "List projects with session / turn / tool counts", runProjects),
+		buildSimpleCmd("activity", "Roll activity into time buckets (turns / tools / tokens per bucket)", runActivity),
 		buildSimpleCmd("tools", "Roll up tool call usage", runTools),
 		buildSimpleCmd("models", "Roll up model invocation usage", runModels),
 		buildSimpleCmd("mcps", "Roll up MCP usage; `mcps unused` for declared-but-uncalled", runMCPs),

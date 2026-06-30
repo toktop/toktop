@@ -177,19 +177,17 @@ func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			if fileErr != "" {
 				return fileErr
 			}
-			return keySource(cfgPath, key)
+			return config.KeySource(cfgPath, key)
 		}
 		redactVal, autostartVal, idleStopVal := "on", "on", "on"
 		tzVal, addrVal, intervalVal := "", "", ""
 		if snap != nil {
 			redactVal = config.CanonicalRedact(snap.RedactPolicy)
-			autostartVal = onOffText(snap.Autostart)
-			idleStopVal = onOffText(snap.IdleStop)
+			autostartVal = config.CanonicalOnOff(snap.Autostart)
+			idleStopVal = config.CanonicalOnOff(snap.IdleStop)
 			tzVal = snap.Timezone
 			addrVal = snap.Addr
-			if snap.Interval > 0 {
-				intervalVal = snap.Interval.String()
-			}
+			intervalVal = config.CanonicalInterval(snap.Interval)
 		}
 		apiTokenSet := ""
 		if wantKey("api_token_set") {
@@ -595,13 +593,6 @@ func boolYesNo(b bool) string {
 	return "no"
 }
 
-func onOffText(b bool) string {
-	if b {
-		return "on"
-	}
-	return "off"
-}
-
 // marshalIndentNoEscape is json.MarshalIndent without HTML escaping, so &, <, >
 // in commands (e.g. the hook curl query string) are written literally instead of
 // & / < / > — both in the dry-run preview and the settings file on
@@ -617,13 +608,3 @@ func marshalIndentNoEscape(v any) ([]byte, error) {
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
-// keySource reports where a non-env, non-roots config key resolves from for a
-// `config get` listing: file config.json when present, else default.
-func keySource(cfgPath, key string) string {
-	if ok, err := config.FileHasKey(cfgPath, key); err != nil {
-		return "file_error: " + err.Error()
-	} else if ok {
-		return "file config.json"
-	}
-	return "default"
-}

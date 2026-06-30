@@ -35,7 +35,10 @@ async function handleResponse<T>(res: Response): Promise<T> {
     }
     throw new ApiError(code, message)
   }
-  return (await res.json()) as T
+  // Read as text first so an empty 2xx body (e.g. a 204) resolves to undefined
+  // instead of res.json() throwing a raw SyntaxError that isn't an ApiError.
+  const text = await res.text()
+  return (text ? JSON.parse(text) : undefined) as T
 }
 
 export async function apiGet<T>(path: string, params?: Params): Promise<T> {

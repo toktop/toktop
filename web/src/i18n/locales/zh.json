@@ -1,0 +1,397 @@
+{
+  "nav": {
+    "label": "主导航",
+    "dashboard": "仪表盘",
+    "sessions": "会话",
+    "search": "搜索",
+    "events": "事件",
+    "analytics": "分析",
+    "daemon": "守护进程",
+    "settings": "设置",
+    "openMenu": "打开菜单",
+    "closeMenu": "关闭菜单"
+  },
+  "theme": {
+    "light": "浅色",
+    "dark": "深色",
+    "system": "跟随系统",
+    "toggle": "切换主题"
+  },
+  "lang": {
+    "switcher": "语言"
+  },
+  "page": {
+    "dashboard": {
+      "title": "仪表盘",
+      "empty": "暂无活跃会话。",
+      "updated": "更新于 {{time}}",
+      "sessions": {
+        "label": "实时会话"
+      },
+      "stat": {
+        "sessions": "会话",
+        "turns": "轮次",
+        "tools": "工具调用",
+        "tokens": "Tokens"
+      },
+      "card": {
+        "turns": "轮次",
+        "tools": "工具"
+      },
+      "charts": {
+        "label": "洞察",
+        "topProjects": "最活跃的项目",
+        "topTools": "最常用的工具",
+        "byTurns": "轮次",
+        "byCalls": "调用",
+        "empty": "数据尚不足。"
+      },
+      "viewAllSessions": "查看全部"
+    },
+    "events": {
+      "title": "事件",
+      "subtitle": "来自守护进程的实时事件流——最新在前。",
+      "filterType": "按事件类型筛选",
+      "allTypes": "全部类型",
+      "sessionScope": "仅显示一个会话的事件：",
+      "showAll": "显示全部事件",
+      "pause": "暂停",
+      "resume": "恢复（{{count}}）",
+      "count": "已显示 {{n}} 条",
+      "empty": "正在等待事件……事件流入时会显示在这里。",
+      "col": {
+        "time": "时间",
+        "type": "类型",
+        "provider": "提供方",
+        "session": "会话",
+        "detail": "详情"
+      }
+    },
+    "sessions": {
+      "title": "会话",
+      "empty": "未找到会话。",
+      "filters": {
+        "sources": "来源",
+        "sourcesAll": "全部",
+        "project": "项目",
+        "projectPH": "搜索项目……",
+        "projectNone": "暂无项目。",
+        "status": "状态",
+        "statusAll": "全部",
+        "statusCompleted": "已完成",
+        "statusUnknown": "未知",
+        "since": "起始",
+        "sincePH": "例如 7d",
+        "subagents": "包含子代理",
+        "apply": "应用"
+      },
+      "columns": {
+        "title": "标题 / 项目",
+        "provider": "提供方",
+        "status": "状态",
+        "kind": "类型",
+        "turns": "轮次",
+        "tools": "工具",
+        "tokens": "Tokens",
+        "started": "开始时间",
+        "duration": "时长"
+      },
+      "kindSubagent": "子代理",
+      "kindTopLevel": "顶层",
+      "subBadge": "子",
+      "sortBy": "按 {{column}} 排序",
+      "pagination": {
+        "showing": "第 {{from}}–{{to}} 条，共 {{total}} 条",
+        "prev": "上一页",
+        "next": "下一页"
+      }
+    },
+    "session": {
+      "title": "会话",
+      "tabsLabel": "会话标签页",
+      "tabs": {
+        "turns": "轮次",
+        "handoff": "交接"
+      },
+      "back": "返回会话列表",
+      "notFound": "未找到会话。",
+      "ambiguous": "ID 不明确——匹配到多个会话：",
+      "subagent": "子代理",
+      "parent": "父会话",
+      "agentType": "代理类型",
+      "subagentCount": "{{count}} 个子代理",
+      "turns": {
+        "empty": "暂无轮次。",
+        "index": "#{{n}}",
+        "user": "用户",
+        "assistant": "助手",
+        "tokens": "{{n}} 个 token",
+        "tools": "{{n}} 个工具",
+        "close": "关闭",
+        "noUser": "（无用户消息）",
+        "noAssistant": "（无助手消息）"
+      },
+      "handoff": {
+        "loading": "正在加载交接……",
+        "error": "加载交接失败。",
+        "workflowStatus": "工作流状态",
+        "agentRuns": "代理运行",
+        "completed": "已完成",
+        "failed": "失败",
+        "interrupted": "已中断",
+        "incomplete": "未完成",
+        "rejected": "已拒绝",
+        "noAgentRuns": "无代理运行。",
+        "duration": "{{ms}}ms",
+        "outputBytes": "{{n}} 字节输出",
+        "source": "来源",
+        "digest": "摘要",
+        "noDigest": "无可用摘要。"
+      },
+      "lastAssistant": "最后一条助手消息"
+    },
+    "search": {
+      "title": "搜索",
+      "inputLabel": "搜索",
+      "inputPH": "搜索会话与轮次……",
+      "hint": "输入即可搜索所有会话与轮次。",
+      "filters": {
+        "subagents": "包含子代理",
+        "kind": "类型",
+        "kindAll": "全部类型",
+        "kindTurn": "轮次",
+        "kindToolCall": "工具调用"
+      },
+      "result": {
+        "session": "会话",
+        "turn": "轮次",
+        "viewSession": "查看会话"
+      },
+      "noResults": "没有与 \"{{q}}\" 匹配的结果。",
+      "error": "搜索失败。"
+    },
+    "analytics": {
+      "title": "分析",
+      "tabsLabel": "分析标签页",
+      "empty": "暂无数据。",
+      "insights": {
+        "trend": "活动随时间变化",
+        "topProjects": "最活跃的项目",
+        "topTools": "最常用的工具",
+        "empty": "此时间窗内活动不足。",
+        "metric": {
+          "turns": "轮次",
+          "tools": "工具调用",
+          "tokens": "Tokens",
+          "sessions": "会话"
+        },
+        "range": {
+          "all": "全部",
+          "30m": "30m",
+          "1h": "1h",
+          "1d": "1d",
+          "1w": "1w"
+        }
+      },
+      "filters": {
+        "search": "搜索……",
+        "noResults": "没有与 \"{{q}}\" 匹配的结果。"
+      },
+      "drilldown": {
+        "showing": "显示 {{shown}} / {{total}}（最新）",
+        "showingAll": "显示全部 {{total}}",
+        "empty": "无匹配的调用。",
+        "turn": "第 {{n}} 轮",
+        "input": "输入",
+        "detail": "输出 / 错误",
+        "noDetail": "此调用未捕获错误或输出。",
+        "openTurn": "打开此轮次"
+      },
+      "tabs": {
+        "projects": "项目",
+        "tools": "工具",
+        "models": "模型",
+        "mcps": "MCP",
+        "skills": "技能"
+      },
+      "projects": {
+        "name": "项目",
+        "source": "来源",
+        "sessions": "会话",
+        "turns": "轮次",
+        "tools": "工具",
+        "lastActivity": "最近活动"
+      },
+      "tools": {
+        "name": "工具",
+        "kind": "类型",
+        "mcpServer": "MCP 服务器",
+        "calls": "调用",
+        "turns": "轮次",
+        "failed": "失败",
+        "rejected": "已拒绝",
+        "lastUsed": "最近使用"
+      },
+      "models": {
+        "model": "模型",
+        "provider": "提供方",
+        "calls": "调用",
+        "turns": "轮次",
+        "inputTokens": "输入 token",
+        "outputTokens": "输出 token",
+        "cacheRead": "缓存读取",
+        "cacheWrite": "缓存写入",
+        "cacheWriteLong": "缓存写入（长期）",
+        "lastUsed": "最近使用"
+      },
+      "mcps": {
+        "server": "服务器",
+        "source": "来源",
+        "declared": "已声明",
+        "scope": "范围",
+        "calls": "调用",
+        "tools": "工具",
+        "turns": "轮次",
+        "availability": "可用性",
+        "lastUsed": "最近使用",
+        "unusedOnly": "仅显示未使用",
+        "yes": "是",
+        "no": "否"
+      },
+      "skills": {
+        "name": "技能",
+        "source": "来源",
+        "scope": "范围",
+        "installed": "已安装",
+        "description": "描述",
+        "usedCount": "使用次数（推断）",
+        "lastUsed": "最近使用",
+        "unusedOnly": "仅显示未使用",
+        "yes": "是",
+        "no": "否"
+      }
+    },
+    "daemon": {
+      "title": "守护进程",
+      "runtime": {
+        "title": "运行时状态",
+        "state": "状态",
+        "sources": "来源",
+        "interval": "间隔",
+        "debounce": "防抖",
+        "startedAt": "启动时间",
+        "lastFull": "上次全量运行",
+        "lastFile": "上次文件运行",
+        "lastFilePath": "上次文件",
+        "pendingFiles": "待处理文件",
+        "watchedPaths": "监视路径"
+      },
+      "counters": {
+        "title": "采集计数",
+        "fullRuns": "全量运行",
+        "fullFailures": "全量失败",
+        "fileRuns": "文件运行",
+        "fileFailures": "文件失败",
+        "unmapped": "未映射文件",
+        "ingestDrop": "采集自动丢弃",
+        "emitDrop": "发送丢弃"
+      },
+      "backpressure": {
+        "title": "背压",
+        "liveSessions": "实时会话",
+        "persistQueueLen": "持久化队列长度",
+        "durableLag": "持久化滞后",
+        "persistFull": "持久化队列已满（总计）",
+        "sseDropped": "SSE 慢订阅者丢弃",
+        "spoolDropped": "缓冲丢弃",
+        "spoolDroppedBytes": "缓冲丢弃字节"
+      },
+      "config": {
+        "title": "配置",
+        "homeDir": "主目录",
+        "configDir": "配置目录",
+        "dataDir": "数据目录",
+        "apiToken": "API token",
+        "tokenSet": "已设置",
+        "tokenUnset": "未设置",
+        "redact": "脱敏策略",
+        "roots": "提供方根目录"
+      },
+      "sources": {
+        "title": "来源",
+        "empty": "未找到来源。",
+        "source": "提供方",
+        "root": "根路径",
+        "exists": "存在",
+        "yes": "是",
+        "no": "缺失"
+      }
+    },
+    "settings": {
+      "title": "设置",
+      "loading": "正在加载设置……",
+      "error": "加载设置失败。",
+      "editable": {
+        "title": "可编辑设置",
+        "desc": "更改会立即生效并持久化到 config.json。"
+      },
+      "readonly": {
+        "title": "只读设置",
+        "cliOnly": "使用 `toktop config set <key> <value>` 更改"
+      },
+      "source": {
+        "label": "来源",
+        "default": "默认值",
+        "file": "config.json"
+      },
+      "keys": {
+        "redact": "脱敏策略",
+        "autostart": "自动启动守护进程",
+        "idle_stop": "空闲停止",
+        "timezone": "时区",
+        "interval": "轮询间隔",
+        "addr": "监听地址"
+      },
+      "desc": {
+        "redact": "对存储的工具输入与输出进行脱敏（on/off）。",
+        "autostart": "UI 连接时自动启动守护进程（on/off）。",
+        "idle_stop": "无消费者连接时停止守护进程（on/off）。",
+        "timezone": "显示用时区：\"\" (local)、\"utc\"、\"local\" 或 IANA 时区（例如 America/New_York）。",
+        "interval": "轮询间隔，Go duration 格式（例如 30s、2m）。",
+        "addr": "守护进程监听地址。无法通过 Web UI 设置。"
+      },
+      "options": {
+        "on": "on",
+        "off": "off"
+      },
+      "roots": {
+        "title": "提供方根目录",
+        "cliOnly": "使用 `toktop config set <key> <value>` 更改"
+      },
+      "save": "保存",
+      "saving": "正在保存……",
+      "saved": "已保存",
+      "validation": {
+        "onOff": "必须为 \"on\" 或 \"off\"。",
+        "timezone": "必须为 \"\"、\"utc\"、\"local\" 或有效的 IANA 时区。",
+        "interval": "必须为大于 0 的 Go duration（例如 30s、5m）。",
+        "tooLong": "值过长。"
+      }
+    }
+  },
+  "events": {
+    "recent": "最近事件",
+    "viewAll": "查看全部",
+    "none": "暂无事件——事件流入时会显示在这里。"
+  },
+  "common": {
+    "loading": "加载中……",
+    "empty": "暂无结果。",
+    "error": "出错了。",
+    "live": "实时",
+    "reconnecting": "正在重连……",
+    "sessions": "会话",
+    "turns": "轮次",
+    "tokens": "tokens"
+  }
+}
